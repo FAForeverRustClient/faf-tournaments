@@ -1064,10 +1064,13 @@ function bracketColumns(el, bracket, title, gfMatch, division) {
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
     for (const m of ms.filter(x => x.round === r).sort((a, b) => a.index - b.index)) {
+      // Hide first-round byes: a match where one side is BYE is not a real game. The team that
+      // "won" the bye has already been advanced into its next-round match, so it shows there.
+      if (m.team1 === 'BYE' || m.team2 === 'BYE') continue;
       mc.appendChild(matchBox(m));
     }
     col.appendChild(mc);
-    inner.appendChild(col);
+    if (mc.children.length) inner.appendChild(col);
   }
   if (gfMatch) {
     const col = document.createElement('div');
@@ -1353,6 +1356,27 @@ function drawBracketPreview(el) {
     if (!f) return seedFallback || { txt: 'TBD', tbd: true };
     return { txt: f.type + ' of ' + vLabel(f.m, isDouble), tbd: true };
   };
+  // First-round byes: figure out which R1 pairings are [realSeed, bye]. Those aren't real games,
+  // so we don't draw them; instead the surviving seed is shown directly in its R2 match slot.
+  const promoted = {};   // 'wb:2:i:slot' -> slotLabel of the seed that byes into it
+  const r1IsBye = [];    // r1IsBye[i] = true if R1 match i is a bye (skip drawing it)
+  roundSlots.forEach((pair, i) => {
+    const aBye = pair[0] > n, bBye = pair[1] > n;
+    if (aBye || bBye) {
+      r1IsBye[i] = true;
+      const liveSeed = aBye ? pair[1] : pair[0];
+      if (liveSeed <= n) {
+        const destSlot = (i % 2) + 1;
+        promoted['wb:2:' + Math.floor(i / 2) + ':' + destSlot] = slotLabel(liveSeed);
+      }
+    }
+  });
+  const feederOrPromoted = (destId, slot, seedFallback) => {
+    const p = promoted[destId + ':' + slot];
+    if (p) return p;
+    return feederText(destId, slot, seedFallback);
+  };
+
   for (let r = 1; r <= R; r++) {
     const col = document.createElement('div');
     col.className = 'bcol';
@@ -1366,6 +1390,7 @@ function drawBracketPreview(el) {
     mc.className = 'bcol-matches';
     if (r === 1) {
       roundSlots.forEach((pair, i) => {
+        if (r1IsBye[i]) return;   // don't draw first-round byes
         const box = previewBox(slotLabel(pair[0]), slotLabel(pair[1]), boForRound(r), wbTag(r, i));
         box.dataset.pid = idFor(r, i);
         mc.appendChild(box);
@@ -1374,13 +1399,15 @@ function drawBracketPreview(el) {
       const count = bracketSize / Math.pow(2, r);
       for (let i = 0; i < count; i++) {
         const destId = 'wb:' + r + ':' + i;
-        const box = previewBox(feederText(destId, 1), feederText(destId, 2), boForRound(r), wbTag(r, i));
+        const s1 = r === 2 ? feederOrPromoted(destId, 1) : feederText(destId, 1);
+        const s2 = r === 2 ? feederOrPromoted(destId, 2) : feederText(destId, 2);
+        const box = previewBox(s1, s2, boForRound(r), wbTag(r, i));
         box.dataset.pid = idFor(r, i);
         mc.appendChild(box);
       }
     }
     col.appendChild(mc);
-    inner.appendChild(col);
+    if (mc.children.length) inner.appendChild(col); else col.remove();
   }
   // grand final placeholder for double
   if (T.bracketType === 'double') {
@@ -1475,10 +1502,13 @@ function drawPreviewConnectors(inner, idFn, R, gfId) {
       paths += '<path d="M ' + x1 + ' ' + y1 + ' L ' + mx + ' ' + y1 + ' L ' + mx + ' ' + y2 + ' L ' + x2 + ' ' + y2 + '"/>';
     };
     for (let r = 1; r < R; r++) {
-      let i = 0;
-      while (inner.querySelector('[data-pid="' + idFn(r, i) + '"]')) {
-        link(idFn(r, i), idFn(r + 1, Math.floor(i / 2)));
-        i++;
+      // R1 can have gaps (byes are not drawn), so iterate a safe upper bound and skip absent
+      // boxes rather than stopping at the first missing pid.
+      const maxI = Math.pow(2, R - r);   // upper bound on matches in round r
+      for (let i = 0; i < maxI; i++) {
+        if (inner.querySelector('[data-pid="' + idFn(r, i) + '"]')) {
+          link(idFn(r, i), idFn(r + 1, Math.floor(i / 2)));
+        }
       }
     }
     if (gfId && inner.querySelector('[data-pid="' + gfId + '"]')) {
