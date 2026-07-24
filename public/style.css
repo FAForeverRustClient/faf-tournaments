@@ -229,7 +229,7 @@ svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .ffacard.preview { opacity: .82; border-style: dashed; }
 .bmatch.ready:hover { box-shadow: 0 0 16px #ffb44722; }
 .bmatch.live { border-color: #5c9ee877; box-shadow: 0 0 14px #5c9ee81f; }
-.botag { font-family: var(--mono); font-size: 9px; color: var(--muted); letter-spacing: 1px; padding: 3px 10px 0; }
+.botag { font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--amber); letter-spacing: .8px; text-transform: uppercase; padding: 4px 10px 2px; opacity: .95; }
 .brow { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; font-size: 14px; gap: 8px; }
 .brow + .brow { border-top: 1px solid var(--line-solid); }
 .brow .bname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 2px; min-width: 0; }
