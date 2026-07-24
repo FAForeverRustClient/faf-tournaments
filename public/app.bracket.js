@@ -1358,23 +1358,57 @@ function drawBracketPreview(el) {
   };
   // First-round byes: figure out which R1 pairings are [realSeed, bye]. Those aren't real games,
   // so we don't draw them; instead the surviving seed is shown directly in its R2 match slot.
-  const promoted = {};   // 'wb:2:i:slot' -> slotLabel of the seed that byes into it
-  const r1IsBye = [];    // r1IsBye[i] = true if R1 match i is a bye (skip drawing it)
+  // First-round byes aren't real games, so we don't draw them (the surviving seed shows up in
+  // its round-2 match via the bye-aware slot labels below).
+  const r1IsBye = [];
   roundSlots.forEach((pair, i) => {
-    const aBye = pair[0] > n, bBye = pair[1] > n;
-    if (aBye || bBye) {
-      r1IsBye[i] = true;
-      const liveSeed = aBye ? pair[1] : pair[0];
-      if (liveSeed <= n) {
-        const destSlot = (i % 2) + 1;
-        promoted['wb:2:' + Math.floor(i / 2) + ':' + destSlot] = slotLabel(liveSeed);
-      }
-    }
+    if (pair[0] > n || pair[1] > n) r1IsBye[i] = true;
   });
-  const feederOrPromoted = (destId, slot, seedFallback) => {
-    const p = promoted[destId + ':' + slot];
-    if (p) return p;
-    return feederText(destId, slot, seedFallback);
+
+  // Bye-aware liveness over the virtual bracket. For each virtual match we work out how many
+  // REAL teams actually reach it, so byes (and the phantom losers-bracket matches they create)
+  // can be hidden. Memoized.
+  const liveCache = {};
+  const wbR1Real = idx => {
+    const pair = roundSlots[idx] || [];
+    return (pair[0] <= n ? 1 : 0) + (pair[1] <= n ? 1 : 0);
+  };
+  const wbR1Label = idx => {
+    const pair = roundSlots[idx] || [];
+    const live = pair[0] <= n ? pair[0] : pair[1];
+    return slotLabel(live);
+  };
+  const feederLive = (f) => {
+    const info = liveOf(f.m.id);
+    if (f.type === 'Winner') return { exists: info.winnerExists, label: info.effLabel };
+    return { exists: info.loserExists, label: { txt: 'Loser of ' + vLabel(f.m, isDouble), tbd: true } };
+  };
+  function liveOf(id) {
+    if (liveCache[id]) return liveCache[id];
+    const m = VB.byId[id];
+    let res;
+    if (m.bracket === 'wb' && m.round === 1) {
+      const rc = wbR1Real(m.index);
+      res = { winnerExists: rc >= 1, realGame: rc === 2, loserExists: rc === 2,
+              effLabel: rc === 2 ? { txt: 'Winner of ' + vLabel(m, isDouble), tbd: true } : wbR1Label(m.index) };
+    } else {
+      const f1 = VB.fd[id + ':1'], f2 = VB.fd[id + ':2'];
+      const a = f1 ? feederLive(f1) : { exists: false, label: null };
+      const b = f2 ? feederLive(f2) : { exists: false, label: null };
+      const rc = (a.exists ? 1 : 0) + (b.exists ? 1 : 0);
+      const realGame = rc === 2;
+      const effLabel = realGame ? { txt: 'Winner of ' + vLabel(m, isDouble), tbd: true }
+                     : (a.exists ? a.label : b.label);
+      res = { winnerExists: rc >= 1, realGame, loserExists: realGame, effLabel };
+    }
+    liveCache[id] = res;
+    return res;
+  }
+  const liveFeederLabel = (destId, slot) => {
+    const f = VB.fd[destId + ':' + slot];
+    if (!f) return { txt: 'TBD', tbd: true };
+    const fl = feederLive(f);
+    return fl.exists ? fl.label : { txt: 'TBD', tbd: true };
   };
 
   for (let r = 1; r <= R; r++) {
@@ -1399,9 +1433,8 @@ function drawBracketPreview(el) {
       const count = bracketSize / Math.pow(2, r);
       for (let i = 0; i < count; i++) {
         const destId = 'wb:' + r + ':' + i;
-        const s1 = r === 2 ? feederOrPromoted(destId, 1) : feederText(destId, 1);
-        const s2 = r === 2 ? feederOrPromoted(destId, 2) : feederText(destId, 2);
-        const box = previewBox(s1, s2, boForRound(r), wbTag(r, i));
+        if (!liveOf(destId).realGame) continue;
+        const box = previewBox(liveFeederLabel(destId, 1), liveFeederLabel(destId, 2), boForRound(r), wbTag(r, i));
         box.dataset.pid = idFor(r, i);
         mc.appendChild(box);
       }
@@ -1462,13 +1495,14 @@ function drawBracketPreview(el) {
         lbCounts.push(count);
         for (let i = 0; i < count; i++) {
           const destId = 'lb:' + q + ':' + i;
-          const box = previewBox(feederText(destId, 1), feederText(destId, 2),
+          if (!liveOf(destId).realGame) continue;   // skip phantom LB matches created by WB byes
+          const box = previewBox(liveFeederLabel(destId, 1), liveFeederLabel(destId, 2),
                                  lbBo, lbTag(q, i));
           box.dataset.pid = 'pl_' + q + '_' + i;
           mc.appendChild(box);
         }
         col.appendChild(mc);
-        linner.appendChild(col);
+        if (mc.children.length) linner.appendChild(col); else col.remove();
       }
       lwrap.appendChild(linner);
       lsec.appendChild(lwrap);
