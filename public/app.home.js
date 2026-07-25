@@ -632,6 +632,9 @@ async function renderTournament() {
       if (snap === lastSnapshot) return;                         // nothing changed
       T = fresh;
       lastSnapshot = snap;
+      // The chat tab manages its own live updates and remembers the open room; a full redraw here
+      // would rebuild the room list and yank the user back to Global. Keep data fresh, don't repaint.
+      if (currentTab === 'chat') return;
       drawTournament();
     } catch (e) {}
   }, 4000);
@@ -752,7 +755,10 @@ function drawTournament() {
           <h1>${esc(T.name)}</h1>
           <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}</div>
         </div>
-        <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
+        <div class="headrow-right">
+          <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals. Only affects your own screen.">${streamerMode ? '\u25C9 Streamer mode: ON' : '\u25CB Streamer mode'}</button>
+          <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
+        </div>
       </div>
       <div class="stepper" title="The tournament's progress through its stages">
         <span class="stepper-label">Stage</span>
@@ -761,6 +767,7 @@ function drawTournament() {
       <div class="tabs">
         ${tabs.map(tb => {
           let badge = (tb === 'news' && tb !== currentTab) ? newsUnreadCount() : 0;
+          if (tb === 'chat' && tb !== currentTab && (T.myMentionCount || 0) > 0) badge = T.myMentionCount;
           if (tb === 'chat' && T.viewer && T.viewer.organizer && (T.chatPingCount || 0) > 0) badge = '\uD83D\uDD14' + T.chatPingCount;
           return `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}${badge ? '<span class="tab-badge">' + badge + '</span>' : ''}</button>`;
         }).join('')}
@@ -776,6 +783,8 @@ function drawTournament() {
 
   if (typeof stopChatPoll === 'function' && currentTab !== 'chat') stopChatPoll();
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { if (typeof stopChatPoll === 'function') stopChatPoll(); currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
+  const stBtn = app.querySelector('#streamerToggle');
+  if (stBtn) stBtn.onclick = () => { setStreamerMode(!streamerMode); drawTournament(); };
 
   const pubBtn = document.getElementById('pubBtn');
   if (pubBtn) pubBtn.onclick = async () => {

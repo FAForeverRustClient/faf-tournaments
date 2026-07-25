@@ -202,7 +202,15 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 .bsection-title { font-family: var(--display); font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text); margin: 0 auto 12px; padding-left: 12px; border-left: 3px solid var(--amber); width: max-content; max-width: 100%; }
 .bsection-title.lb { border-left-color: var(--red); }
 .bsection-title.gf { border-left-color: var(--green); }
-.bracket { overflow-x: auto; max-width: 100%; padding: 8px 2px 18px; }
+.bracket { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding: 8px 2px 18px; }
+.bname-team { cursor: pointer; }
+.bname-team:hover { color: var(--amber); text-decoration: underline; }
+.tp-list { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 10px; }
+.tp-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 4px; }
+.tp-name { font-size: 14px; }
+.tp-rating { font-size: 13px; }
+.tp-total { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-top: 1px solid var(--line-solid); font-size: 13px; color: var(--muted); }
+.veto-card-foot, .veto-pop-foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-solid); }
 .binner { display: flex; gap: 46px; position: relative; width: max-content; margin: 0 auto; }
 svg.connectors { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; }
 svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
@@ -433,6 +441,10 @@ tbody tr:hover { background: #ffffff05; }
 .chat-roomlist { display: flex; flex-direction: column; gap: 4px; }
 .chat-room { text-align: left; background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 4px; color: var(--text, #dbe2ea); padding: 8px 10px; cursor: pointer; font-size: 13px; }
 .chat-room:hover { border-color: var(--amber); }
+.chat-room.mentioned { border-color: #e5484d; }
+.chat-room-badges { display: inline-flex; gap: 4px; vertical-align: middle; }
+.chat-mention-badge { display: inline-block; min-width: 16px; height: 16px; line-height: 16px; text-align: center; background: #e5484d; color: #fff; border-radius: 8px; font-size: 11px; font-weight: 700; padding: 0 4px; }
+.chat-room-group { margin: 12px 0 4px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
 .chat-room.active { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
 .chat-host { flex: 1; min-width: 280px; }
 .chat-panel { display: flex; flex-direction: column; border: 1px solid var(--line-solid); border-radius: 6px; background: var(--panel, #0f1620); overflow: hidden; }
@@ -448,6 +460,12 @@ tbody tr:hover { background: #ffffff05; }
 .chat-sys { font-size: 12px; color: var(--amber); font-style: italic; }
 .chat-input { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-solid); }
 .chat-input input { flex: 1; }
+.chat-inwrap { position: relative; flex: 1; display: flex; }
+.chat-inwrap input { flex: 1; }
+.chat-mentions { position: absolute; left: 0; bottom: calc(100% + 4px); min-width: 200px; max-width: 320px; max-height: 240px; overflow-y: auto; background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 6px; box-shadow: 0 6px 22px #000a; z-index: 40; padding: 4px; }
+.chat-mention { padding: 6px 10px; border-radius: 4px; font-size: 13px; cursor: pointer; color: var(--text, #dbe2ea); }
+.chat-mention:hover, .chat-mention.on { background: var(--amber-dim, #2a2113); color: var(--amber); }
+.chat-ping { color: var(--amber); background: #FFB44722; border-radius: 3px; padding: 0 3px; font-weight: 600; }
 .match-chat-line { margin: 4px 10px 6px; }
 .reward-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; margin-top: 6px; }
 /* tournament news */
@@ -525,6 +543,8 @@ tbody tr:hover { background: #ffffff05; }
 
 .section { margin-bottom: 26px; }
 .headrow { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.headrow-right { display: flex; align-items: center; gap: 10px; }
+.streamer-toggle.on { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
 .empty { color: var(--muted); font-style: italic; padding: 14px 0; }
 
 .tlist-item {

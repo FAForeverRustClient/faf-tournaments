@@ -239,23 +239,53 @@ function myMatchTeam(m) {
   return mine && (m.team1 === mine || m.team2 === mine) ? mine : null;
 }
 
+// Popup listing a team's members (with ratings and captain), opened by clicking a team in the bracket.
+function showTeamPopup(teamId) {
+  const tm = T.teams && T.teams.find(t => t.id === teamId);
+  if (!tm) return;
+  const mems = (tm.playerIds || []).map(pid => T.players.find(p => p.id === pid)).filter(Boolean)
+    .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+  const total = mems.reduce((s, p) => s + (p.rating || 0), 0);
+  const seed = tm.seed ? '<span class="tc-seed" style="margin-right:6px">#' + tm.seed + '</span>' : '';
+  const rows = mems.length ? mems.map(p => `<div class="tp-row">
+      <span class="tp-name">${p.id === tm.captainId ? '<span class="cap-tag">C</span> ' : ''}${esc(p.name)}${p.fafId ? ' <span class="idbadge verified">\u2713</span>' : ''}</span>
+      <span class="tp-rating mono muted">${p.rating != null ? p.rating : '—'}</span>
+    </div>`).join('') : '<div class="muted small">No members.</div>';
+  modal(`<h3>${seed}${esc(tm.name)}</h3>
+    <div class="tp-list">${rows}</div>
+    <div class="tp-total"><span>Combined rating</span><span class="mono">${total}${T.maxTeamRating != null ? ' / ' + T.maxTeamRating : ''}</span></div>
+    <div class="actions"><button class="btn ghost" id="tpClose">Close</button></div>`, root => {
+    root.querySelector('#tpClose').onclick = closeModal;
+  });
+}
+
 function matchBox(m) {
   const admin = viewerIsOrganizer();
   const box = document.createElement('div');
   box.className = 'bmatch ' + m.status;
   const row = (tid, score, slot) => {
-    const seed = tid && tid !== 'BYE' ? teamSeed(tid) : null;
-    const win = m.winner && m.winner === tid && tid !== 'BYE';
+    const win = !streamerMode && m.winner && m.winner === tid && tid !== 'BYE';
     let nm;
     if (tid === 'BYE') nm = 'bye';
-    else if (tid) nm = teamName(tid);
-    else {
+    else if (tid) {
+      // Streamer mode: if this slot was filled by a COMPLETED upstream match, showing the team
+      // would reveal that result. Mask it behind the feeder label ("Winner of WB R1 M1") instead.
+      const feed = feeders[m.id + ':' + slot];
+      if (streamerMode && feed && feed.m && feed.m.status === 'done') {
+        nm = feed.type + ' of ' + mLabel(feed.m);
+        tid = null;   // render as a TBD-style slot, not a clickable team
+      } else {
+        nm = teamName(tid);
+      }
+    } else {
       const src = feeders[m.id + ':' + slot];
       nm = src ? src.type + ' of ' + mLabel(src.m) : 'TBD';
     }
+    const seed = tid && tid !== 'BYE' ? teamSeed(tid) : null;
+    const realTeam = tid && tid !== 'BYE' && T.teams && T.teams.some(t => t.id === tid);
     return `<div class="brow ${win ? 'winner' : ''}">
-      <span class="bname ${tid && tid !== 'BYE' ? '' : 'tbd'}">${seed ? '<span class="seedtag">' + seed + '</span>' : ''}${esc(nm)}</span>
-      <span class="bscore">${score != null ? score : ''}</span></div>`;
+      <span class="bname ${tid && tid !== 'BYE' ? '' : 'tbd'}${realTeam ? ' bname-team' : ''}"${realTeam ? ' data-teamid="' + esc(tid) + '"' : ''}>${seed ? '<span class="seedtag">' + seed + '</span>' : ''}${esc(nm)}</span>
+      <span class="bscore">${(!streamerMode && score != null) ? score : ''}</span></div>`;
   };
   const canReport = !T.imported && (m.status === 'ready' || m.status === 'live') && canReportMatch(m);
   const prMine = m.pendingReport && myMatchTeam(m) && m.pendingReport.byTeam !== myMatchTeam(m);
@@ -273,9 +303,12 @@ function matchBox(m) {
   const btn = box.querySelector('.bfoot button');
   if (btn) btn.onclick = () => reportScore(m.id);
   const vlink = box.querySelector('[data-veto-link]');
-  if (vlink) vlink.onclick = (e) => { e.preventDefault(); currentTab = 'vetoes'; syncTabURL(); drawTournament(); };
+  if (vlink) vlink.onclick = (e) => { e.preventDefault(); showVetoPopup(m); };
   const mchat = box.querySelector('[data-matchchat]');
   if (mchat) mchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
+  box.querySelectorAll('[data-teamid]').forEach(nameEl => {
+    nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
+  });
   return box;
 }
 
@@ -285,6 +318,25 @@ function vetoIndicator(m) {
   const v = m.veto;
   const label = v.done ? 'See vetoed maps →' : 'Map veto in progress →';
   return `<div class="veto-mini"><a href="#" data-veto-link="${m.id}" class="veto-mini-link">${label}</a></div>`;
+}
+
+// Popup showing a single match's veto (status or final maps), plus a link to that match's chat.
+// Opened from the "See vetoed maps" link on a bracket match, so the user stays on the bracket.
+function showVetoPopup(m) {
+  if (!m || !m.veto) return;
+  const label = mLabel(m) + ' — ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
+  const chatLink = matchChatAllowed(m) ? '<a href="#" id="vpChat" class="veto-mini-link">\u{1F4AC} Open match chat</a>' : '';
+  modal(`<h3>${esc(label)}</h3>
+    <div id="vpBody"></div>
+    <div class="veto-pop-foot" style="margin-top:10px">${chatLink}</div>
+    <div class="actions"><button class="btn ghost" id="vpClose">Close</button></div>`, root => {
+    const body = root.querySelector('#vpBody');
+    body.innerHTML = vetoHTML(m);
+    wireVeto(body, m);
+    const chat = root.querySelector('#vpChat');
+    if (chat) chat.onclick = (e) => { e.preventDefault(); closeModal(); openMatchChat(m); };
+    root.querySelector('#vpClose').onclick = closeModal;
+  });
 }
 
 // ---- Maps tab: the map database + where each map is played ----
@@ -862,9 +914,15 @@ function assignPool(pool) {
 
 // Dedicated Vetoes page — each match with a veto gets its own card with the full ban/pick UI.
 function drawVetoes(el) {
-  const vetoMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
+  const isOrg = viewerIsOrganizer() || (T.viewer && T.viewer.streamer);
+  const myTeamId = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
+  let vetoMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
+  // Players only see vetoes for matches their own team is in. Organizers (and streamers) see all.
+  if (!isOrg) vetoMatches = vetoMatches.filter(m => myTeamId && (m.team1 === myTeamId || m.team2 === myTeamId));
   if (!vetoMatches.length) {
-    el.innerHTML = '<div class="panel"><div class="empty">No map vetoes are active right now. They appear here as matches become ready.</div></div>';
+    el.innerHTML = '<div class="panel"><div class="empty">' + (isOrg
+      ? 'No map vetoes are active right now. They appear here as matches become ready.'
+      : (myTeamId ? 'None of your matches have an active map veto right now.' : 'Map vetoes for your matches will appear here once your team is in a match with a veto.')) + '</div></div>';
     return;
   }
   // newest first: later rounds are the most relevant. Grand final > later rounds > earlier.
@@ -877,9 +935,11 @@ function drawVetoes(el) {
   let html = '';
   const card = (m) => {
     const label = mLabel(m);
+    const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat</a>` : '';
     return `<div class="panel section veto-card" data-vmatch="${m.id}">
       <div class="veto-card-head"><h2>${esc(label)}</h2><span class="veto-card-teams">${esc(teamName(m.team1))} <span class="muted">vs</span> ${esc(teamName(m.team2))}</span></div>
       <div class="veto-card-body"></div>
+      ${chatLink ? '<div class="veto-card-foot">' + chatLink + '</div>' : ''}
     </div>`;
   };
 
@@ -900,6 +960,8 @@ function drawVetoes(el) {
     const bodyEl = cardEl.querySelector('.veto-card-body');
     bodyEl.innerHTML = vetoHTML(m);
     wireVeto(bodyEl, m);
+    const vchat = cardEl.querySelector('[data-vchat]');
+    if (vchat) vchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
   }
 }
 

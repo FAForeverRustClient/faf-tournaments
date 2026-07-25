@@ -928,7 +928,7 @@ function drawTeams(el) {
     const anyRatings = T.players.some(p => p.rating != null);
     for (const team of T.teams.slice().sort((a, b) => a.seed - b.seed)) {
       const card = document.createElement('div');
-      card.className = 'teamcard' + (team.eliminated ? ' elim' : '');
+      card.className = 'teamcard' + ((team.eliminated && !streamerMode) ? ' elim' : '');
 
       // imported tournaments have no individual players/ratings — just show the team name
       if (T.imported) {

@@ -8,6 +8,13 @@ let T = null;
 let currentTab = 'overview';
 let pollTimer = null;
 let lastSnapshot = '';
+// Personal "streamer mode": hides match results and who's eliminated on THIS browser only, so a
+// caster can reveal on stream. Persisted locally; never sent to the server or seen by others.
+let streamerMode = (() => { try { return localStorage.getItem('faf_streamer_mode') === '1'; } catch (e) { return false; } })();
+function setStreamerMode(on) {
+  streamerMode = !!on;
+  try { localStorage.setItem('faf_streamer_mode', streamerMode ? '1' : '0'); } catch (e) {}
+}
 // form state preserved across re-renders
 const F = { capSel: {}, signup: { name: '', rating: '', team: '' }, reg: { team: '', p: [] } };
 

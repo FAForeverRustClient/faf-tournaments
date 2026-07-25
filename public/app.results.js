@@ -221,6 +221,10 @@ function reportFfaPoints(m) {
 // ----- standings -----
 
 function drawStandings(el) {
+  if (streamerMode) {
+    el.innerHTML = '<div class="panel"><div class="empty">Standings are hidden while streamer mode is on (it would reveal results). Toggle it off in the header to view them.</div></div>';
+    return;
+  }
   if (T.status !== 'running' && T.status !== 'finished') {
     el.innerHTML = '<div class="panel"><div class="empty">Standings appear once matches begin.</div></div>';
     return;
@@ -1016,6 +1020,7 @@ function drawTlog(el) {
 // A lightweight polling chat that runs independently of the main tournament poll so
 // messages arrive quickly. One active room at a time; its own timer, torn down on close.
 let _chatRoom = null;
+let _chatActiveRoom = null;
 let _chatSince = 0;
 let _chatTimer = null;
 let _chatMsgs = [];
@@ -1026,6 +1031,13 @@ async function chatRooms() {
   const tok = viewToken();
   const r = await api('/api/t/' + T.id + '/chat_rooms' + (tok ? '?token=' + encodeURIComponent(tok) : ''));
   return r;
+}
+
+// Escape text, then visually highlight @mentions (word-initial @ followed by a name run).
+// Purely cosmetic — matches loosely so "@Deli" or "@deli7961" both light up.
+function highlightMentions(text) {
+  const safe = esc(text || '');
+  return safe.replace(/(^|\s)@([^\s@]{1,40})/g, (whole, pre, name) => pre + '<span class="chat-ping">@' + name + '</span>');
 }
 
 function renderChatMessages(container) {
@@ -1039,7 +1051,7 @@ function renderChatMessages(container) {
       <span class="chat-who">${esc(m.who)}</span>
       <span class="chat-time">${time}</span>
       ${org && m.fafId ? `<span class="chat-mod"><a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a></span>` : ''}
-      <div class="chat-text">${esc(m.text)}</div>
+      <div class="chat-text">${highlightMentions(m.text)}</div>
     </div>`;
   }).join('') || '<div class="empty">No messages yet. Say hi, or type <code>!roll</code>.</div>';
   if (nearBottom) container.scrollTop = container.scrollHeight;
@@ -1053,7 +1065,7 @@ async function mountChat(host, room, label) {
     <div class="chat-head">${esc(label)}</div>
     <div class="chat-log" id="chatLog"><div class="empty">Loading\u2026</div></div>
     <div class="chat-input">
-      <input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100, !organizer to ping the organizers in this chat)" autocomplete="off">
+      <div class="chat-inwrap"><input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100, !organizer to ping the organizers, @name to mention)" autocomplete="off"><div class="chat-mentions" id="chatMentions" style="display:none"></div></div>
       <button class="btn primary small" id="chatSend">Send</button>
       ${viewerIsOrganizer() ? '' : '<button class="btn ghost small" id="chatPing" title="Flags this chat for the organizers so they know you need help">\uD83D\uDD14 Ping organizer</button>'}
     </div>
@@ -1091,7 +1103,69 @@ async function mountChat(host, room, label) {
     } catch (e) { toast(e.message, true); inp.value = text; }
   };
   host.querySelector('#chatSend').onclick = send;
-  inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } };
+
+  // ---- @mention autocomplete (Discord-style) ----
+  // Suggest from everyone signed up (players) plus team names, deduped. Typing "@" opens the
+  // list; more letters filter it. Enter/Tab/click completes the current highlight.
+  const mentionBox = host.querySelector('#chatMentions');
+  const nameList = (() => {
+    const set = new Map();
+    for (const p of (T.players || [])) if (p && p.name) set.set(p.name.toLowerCase(), p.name);
+    for (const tm of (T.teams || [])) if (tm && tm.name) set.set(tm.name.toLowerCase(), tm.name);
+    return Array.from(set.values());
+  })();
+  let mMatches = [], mSel = 0, mStart = -1;
+
+  const closeMentions = () => { mentionBox.style.display = 'none'; mMatches = []; mStart = -1; };
+  const renderMentions = () => {
+    if (!mMatches.length) { closeMentions(); return; }
+    mentionBox.innerHTML = mMatches.map((nm, i) =>
+      `<div class="chat-mention${i === mSel ? ' on' : ''}" data-mi="${i}">${esc(nm)}</div>`).join('');
+    mentionBox.style.display = '';
+    mentionBox.querySelectorAll('[data-mi]').forEach(d => {
+      d.onmousedown = (ev) => { ev.preventDefault(); applyMention(+d.dataset.mi); };
+    });
+  };
+  const applyMention = (i) => {
+    const nm = mMatches[i];
+    if (nm == null || mStart < 0) return;
+    const before = inp.value.slice(0, mStart);
+    const after = inp.value.slice(inp.selectionStart);
+    // wrap names with spaces in the mention so it reads as one token
+    const token = '@' + nm + ' ';
+    inp.value = before + token + after;
+    const pos = (before + token).length;
+    inp.setSelectionRange(pos, pos);
+    closeMentions();
+    inp.focus();
+  };
+  const updateMentions = () => {
+    const pos = inp.selectionStart;
+    const upto = inp.value.slice(0, pos);
+    // find the last "@" that starts a word and has no space since
+    const at = upto.lastIndexOf('@');
+    if (at < 0 || (at > 0 && !/\s/.test(upto[at - 1]))) { closeMentions(); return; }
+    const frag = upto.slice(at + 1);
+    if (/\s/.test(frag)) { closeMentions(); return; }   // already ended the mention
+    mStart = at;
+    const q = frag.toLowerCase();
+    mMatches = nameList.filter(nm => nm.toLowerCase().includes(q)).slice(0, 8);
+    mSel = 0;
+    renderMentions();
+  };
+  inp.addEventListener('input', updateMentions);
+  inp.addEventListener('click', updateMentions);
+
+  inp.onkeydown = (e) => {
+    if (mMatches.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); mSel = (mSel + 1) % mMatches.length; renderMentions(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); mSel = (mSel - 1 + mMatches.length) % mMatches.length; renderMentions(); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); applyMention(mSel); return; }
+      if (e.key === 'Escape') { e.preventDefault(); closeMentions(); return; }
+    }
+    if (e.key === 'Enter') { e.preventDefault(); send(); }
+  };
+  inp.addEventListener('blur', () => setTimeout(closeMentions, 120));
   const pingBtn = host.querySelector('#chatPing');
   if (pingBtn) pingBtn.onclick = async () => {
     try {
@@ -1138,22 +1212,40 @@ async function drawChatTab(el) {
       <div class="org-callout-hint">Type <code>!organizer</code> or press \uD83D\uDD14 to ping them in that chat.</div>
     </div>`
     : '';
+  const roomBtn = (r) => {
+    const badges = [];
+    if (r.mention) badges.push('<span class="chat-mention-badge">1</span>');       // you were @mentioned
+    if (r.ping && viewerIsOrganizer()) badges.push('\uD83D\uDD14');                  // organizer attention
+    const cnt = r.count ? ' <span class="muted small">(' + r.count + ')</span>' : '';
+    return `<button class="chat-room ${r.mention ? 'mentioned' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${badges.length ? '<span class="chat-room-badges">' + badges.join(' ') + '</span> ' : ''}${esc(r.label)}${cnt}</button>`;
+  };
+  const active = rooms.filter(r => !r.done);
+  const completed = rooms.filter(r => r.done);
+  const listHtml = active.map(roomBtn).join('')
+    + (completed.length
+        ? '<div class="chat-room-group">Completed matches <span class="muted small">(' + completed.length + ')</span></div>' + completed.map(roomBtn).join('')
+        : '');
   el.innerHTML = `<div class="chat-layout">
     <div class="chat-rooms panel section">
       <h2>Chats</h2>
       ${orgLine}
       ${data.muted ? '<div class="warn small" style="margin-bottom:8px">You are muted.</div>' : ''}
-      <div class="chat-roomlist">${rooms.map((r, i) => `<button class="chat-room ${i === 0 ? 'active' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${r.ping && viewerIsOrganizer() ? '\uD83D\uDD14 ' : ''}${esc(r.label)}${r.count ? ' <span class="muted small">(' + r.count + ')</span>' : ''}</button>`).join('')}</div>
+      <div class="chat-roomlist">${listHtml}</div>
     </div>
     <div class="chat-host" id="chatHost"></div>
   </div>`;
   const host = el.querySelector('#chatHost');
   const pick = (btn) => {
+    if (!btn) return;
+    _chatActiveRoom = btn.dataset.room;
     el.querySelectorAll('.chat-room').forEach(b => b.classList.toggle('active', b === btn));
     mountChat(host, btn.dataset.room, btn.dataset.label);
   };
   el.querySelectorAll('.chat-room').forEach(b => b.onclick = () => pick(b));
-  pick(el.querySelector('.chat-room'));
+  // Re-select the room the user was already in (if it still exists), not always Global — a
+  // background refresh must not yank them back to the global chat.
+  const prev = _chatActiveRoom && el.querySelector('.chat-room[data-room="' + (window.CSS && CSS.escape ? CSS.escape(_chatActiveRoom) : _chatActiveRoom) + '"]');
+  pick(prev || el.querySelector('.chat-room'));
 }
 
 function openMatchChat(m) {

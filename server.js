@@ -502,20 +502,28 @@ function chatRoomsFor(t, req, token) {
   const streamer = !organizer && isStreamer(t, token);
   const rooms = [];
   const store = t.chat || {};
-  const push = (id, label) => {
+  const rsess = currentSession(req);
+  const myPings = (rsess && t.userPings && t.userPings[rsess.fafId]) || {};
+  const push = (id, label, done) => {
     const msgs = (store[id] || []);
-    rooms.push({ id, label, count: msgs.length, last: msgs.length ? msgs[msgs.length - 1].at : 0, ping: (t.chatPings && t.chatPings[id]) ? 1 : 0 });
+    rooms.push({
+      id, label, count: msgs.length,
+      last: msgs.length ? msgs[msgs.length - 1].at : 0,
+      ping: (t.chatPings && t.chatPings[id]) ? 1 : 0,   // organizer attention flag
+      mention: myPings[id] ? 1 : 0,                     // this viewer was @mentioned here
+      done: done ? 1 : 0                                // match finished (for grouping)
+    });
   };
   // global first
   if (organizer || streamer || (currentSession(req) && (t.players || []).some(p => { const sess = currentSession(req); return sess && p.fafId === sess.fafId; }))) {
-    push('global', 'Global \u2014 everyone');
+    push('global', 'Global \u2014 everyone', false);
   }
   const mine = (organizer || streamer) ? null : viewerTeamIds(t, req);
   for (const m of (t.matches || [])) {
     if (!m.team1 || !m.team2) continue;
     const canSee = organizer || streamer || (mine && (mine.indexOf(m.team1) >= 0 || mine.indexOf(m.team2) >= 0));
     if (!canSee) continue;
-    push('match:' + m.id, matchLabel(t, m) + ' \u2014 ' + (teamById(t, m.team1) ? teamById(t, m.team1).name : '?') + ' vs ' + (teamById(t, m.team2) ? teamById(t, m.team2).name : '?'));
+    push('match:' + m.id, matchLabel(t, m) + ' \u2014 ' + (teamById(t, m.team1) ? teamById(t, m.team1).name : '?') + ' vs ' + (teamById(t, m.team2) ? teamById(t, m.team2).name : '?'), m.status === 'done');
   }
   return rooms;
 }
@@ -1838,6 +1846,9 @@ async function handleAPI(req, res, url) {
         const mine = t.players.find(p => p.fafId === sess.fafId);
         if (mine) signedUpId = mine.id;
       }
+      // how many chat rooms have an unread @mention for this viewer (for the CHAT tab badge)
+      view.myMentionCount = (sess && sess.fafId && t.userPings && t.userPings[sess.fafId])
+        ? Object.keys(t.userPings[sess.fafId]).length : 0;
       // Discord handles are contact info: visible to organizers and fellow signed-up players,
       // never to the anonymous public. Copy the player objects so the db is never mutated.
       const canSeeContacts = organizer || !!signedUpId;
@@ -1928,9 +1939,16 @@ async function handleAPI(req, res, url) {
       const since = parseInt(url.searchParams.get('since'), 10) || 0;
       const all = (t.chat && t.chat[room]) || [];
       const msgs = since ? all.filter(mm => mm.at > since) : all.slice(-200);
-      // an organizer reading the room acknowledges any pending ping
+      // an organizer reading the room acknowledges any pending organizer ping
       if (t.chatPings && t.chatPings[room] && (isAdmin(t, tok, req) || isOrganizer(t, req))) {
         delete t.chatPings[room];
+        saveDB();
+      }
+      // the reader acknowledges any @mention ping addressed to them in this room
+      const rsess = currentSession(req);
+      if (rsess && t.userPings && t.userPings[rsess.fafId] && t.userPings[rsess.fafId][room]) {
+        delete t.userPings[rsess.fafId][room];
+        if (!Object.keys(t.userPings[rsess.fafId]).length) delete t.userPings[rsess.fafId];
         saveDB();
       }
       return json(res, 200, { room, messages: msgs, muted: chatMuted(t, (currentSession(req) || {}).fafId) ? 1 : 0 });
@@ -3057,6 +3075,30 @@ async function handleAPI(req, res, url) {
         t.chat[room].push({ id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, sys: 1, text: who + ' rolled ' + roll + ' (' + lo + '\u2013' + hi + ')' });
       } else {
         t.chat[room].push({ id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, text });
+        // @mention pings: resolve @name tokens to signed-up FAF players/captains and flag a
+        // per-user, per-room ping. The mentioned person sees a red badge until they open the room.
+        const mentions = (text.match(/(?:^|\s)@([^\s@]{1,40})/g) || []).map(s => s.replace(/^\s*@/, '').toLowerCase());
+        if (mentions.length) {
+          const byName = {};
+          for (const p of (t.players || [])) {
+            if (!p.fafId) continue;                       // only logged-in FAF players can be pinged
+            if (p.name) byName[p.name.toLowerCase()] = p.fafId;
+          }
+          const pingedIds = new Set();
+          for (const mraw of mentions) {
+            // match a name that starts with the typed token (so "@nug" hits "nuggets3858")
+            let hit = byName[mraw];
+            if (!hit) { for (const nm of Object.keys(byName)) { if (nm.startsWith(mraw)) { hit = byName[nm]; break; } } }
+            if (hit && !(sess && hit === sess.fafId)) pingedIds.add(hit);  // don't ping yourself
+          }
+          if (pingedIds.size) {
+            t.userPings = t.userPings || {};
+            for (const fid of pingedIds) {
+              t.userPings[fid] = t.userPings[fid] || {};
+              t.userPings[fid][room] = now();
+            }
+          }
+        }
       }
       if (t.chat[room].length > CHAT_MAX) t.chat[room] = t.chat[room].slice(-CHAT_MAX);
       saveDB();
