@@ -324,9 +324,12 @@ function vetoIndicator(m) {
 // Opened from the "See vetoed maps" link on a bracket match, so the user stays on the bracket.
 function showVetoPopup(m) {
   if (!m || !m.veto) return;
-  const label = mLabel(m) + ' — ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
+  const nameHtml = (tid) => {
+    const real = T.teams && T.teams.some(t => t.id === tid);
+    return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(teamName(tid))}</span>`;
+  };
   const chatLink = matchChatAllowed(m) ? '<a href="#" id="vpChat" class="veto-mini-link">\u{1F4AC} Open match chat</a>' : '';
-  modal(`<h3>${esc(label)}</h3>
+  modal(`<h3>${esc(mLabel(m))} <span class="muted" style="font-weight:400">${nameHtml(m.team1)} vs ${nameHtml(m.team2)}</span></h3>
     <div id="vpBody"></div>
     <div class="veto-pop-foot" style="margin-top:10px">${chatLink}</div>
     <div class="actions"><button class="btn ghost" id="vpClose">Close</button></div>`, root => {
@@ -335,6 +338,9 @@ function showVetoPopup(m) {
     wireVeto(body, m);
     const chat = root.querySelector('#vpChat');
     if (chat) chat.onclick = (e) => { e.preventDefault(); closeModal(); openMatchChat(m); };
+    root.querySelectorAll('[data-teamid]').forEach(nameEl => {
+      nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
+    });
     root.querySelector('#vpClose').onclick = closeModal;
   });
 }
@@ -936,20 +942,25 @@ function drawVetoes(el) {
   const card = (m) => {
     const label = mLabel(m);
     const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat</a>` : '';
-    return `<div class="panel section veto-card" data-vmatch="${m.id}">
-      <div class="veto-card-head"><h2>${esc(label)}</h2><span class="veto-card-teams">${esc(teamName(m.team1))} <span class="muted">vs</span> ${esc(teamName(m.team2))}</span></div>
+    const nameHtml = (tid) => {
+      const real = T.teams && T.teams.some(t => t.id === tid);
+      return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(teamName(tid))}</span>`;
+    };
+    const doneTag = m.veto.done ? '<span class="veto-done-tag">RESULT</span>' : '';
+    return `<div class="panel section veto-card${m.veto.done ? ' veto-done' : ''}" data-vmatch="${m.id}">
+      <div class="veto-card-head"><h2>${doneTag}${esc(label)}</h2><span class="veto-card-teams">${nameHtml(m.team1)} <span class="muted">vs</span> ${nameHtml(m.team2)}</span></div>
       <div class="veto-card-body"></div>
       ${chatLink ? '<div class="veto-card-foot">' + chatLink + '</div>' : ''}
     </div>`;
   };
 
-  if (pending.length) {
-    html += '<div class="veto-section-label">Needs action</div>';
-    html += pending.map(card).join('');
-  }
   if (done.length) {
-    html += '<div class="veto-section-label" style="margin-top:20px">Completed</div>';
+    html += '<div class="veto-section-label">Completed \u2014 maps decided</div>';
     html += done.map(card).join('');
+  }
+  if (pending.length) {
+    html += '<div class="veto-section-label"' + (done.length ? ' style="margin-top:20px"' : '') + '>In progress</div>';
+    html += pending.map(card).join('');
   }
   el.innerHTML = html;
 
@@ -962,6 +973,9 @@ function drawVetoes(el) {
     wireVeto(bodyEl, m);
     const vchat = cardEl.querySelector('[data-vchat]');
     if (vchat) vchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
+    cardEl.querySelectorAll('[data-teamid]').forEach(nameEl => {
+      nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
+    });
   }
 }
 

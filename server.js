@@ -520,10 +520,13 @@ function chatRoomsFor(t, req, token) {
   }
   const mine = (organizer || streamer) ? null : viewerTeamIds(t, req);
   for (const m of (t.matches || [])) {
-    if (!m.team1 || !m.team2) continue;
+    // a match chat exists only once BOTH sides are known, real teams (not empty, BYE, or an
+    // unresolved feeder placeholder) — otherwise the list fills with "? vs ?" rooms.
+    const t1 = teamById(t, m.team1), t2 = teamById(t, m.team2);
+    if (!t1 || !t2 || m.team1 === 'BYE' || m.team2 === 'BYE') continue;
     const canSee = organizer || streamer || (mine && (mine.indexOf(m.team1) >= 0 || mine.indexOf(m.team2) >= 0));
     if (!canSee) continue;
-    push('match:' + m.id, matchLabel(t, m) + ' \u2014 ' + (teamById(t, m.team1) ? teamById(t, m.team1).name : '?') + ' vs ' + (teamById(t, m.team2) ? teamById(t, m.team2).name : '?'), m.status === 'done');
+    push('match:' + m.id, matchLabel(t, m) + ' \u2014 ' + t1.name + ' vs ' + t2.name, m.status === 'done');
   }
   return rooms;
 }

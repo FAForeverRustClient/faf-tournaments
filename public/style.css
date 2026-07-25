@@ -358,6 +358,10 @@ tbody tr:hover { background: #ffffff05; }
 .veto-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .veto-card-head h2 { margin: 0; }
 .veto-card-teams { font-size: 14px; color: var(--text); }
+.veto-card.veto-done { border-color: #2ea04355; background: linear-gradient(180deg, #16261a 0%, var(--panel, #0f1620) 60%); box-shadow: 0 0 0 1px #2ea04333; }
+.veto-done-tag { display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 1px; color: #3fb950; background: #2ea04322; border: 1px solid #2ea04366; border-radius: 3px; padding: 1px 6px; margin-right: 8px; vertical-align: 2px; }
+.vteam-name { cursor: pointer; }
+.vteam-name:hover { color: var(--amber); text-decoration: underline; }
 .veto-card .vetobox { border: none; padding: 0; background: transparent; }
 .veto-mini { margin-top: 6px; }
 .veto-mini-link { font-size: 12px; color: var(--amber); text-decoration: none; }
