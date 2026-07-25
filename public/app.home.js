@@ -756,6 +756,7 @@ function drawTournament() {
           <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}</div>
         </div>
         <div class="headrow-right">
+          ${viewerHasRights() ? `<button class="btn ghost small streamer-toggle ${playerViewMode ? 'on' : ''}" id="playerViewToggle" title="Hide organizer & admin controls on your screen and browse as a regular player. Doesn't change your actual permissions.">${playerViewMode ? '\u25C9 Viewing as player' : '\u25CB View as player'}</button>` : ''}
           <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals. Only affects your own screen.">${streamerMode ? '\u25C9 Streamer mode: ON' : '\u25CB Streamer mode'}</button>
           <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
         </div>
@@ -768,7 +769,7 @@ function drawTournament() {
         ${tabs.map(tb => {
           let badge = (tb === 'news' && tb !== currentTab) ? newsUnreadCount() : 0;
           if (tb === 'chat' && tb !== currentTab && (T.myMentionCount || 0) > 0) badge = T.myMentionCount;
-          if (tb === 'chat' && T.viewer && T.viewer.organizer && (T.chatPingCount || 0) > 0) badge = '\uD83D\uDD14' + T.chatPingCount;
+          if (tb === 'chat' && viewerIsOrganizer() && (T.chatPingCount || 0) > 0) badge = '\uD83D\uDD14' + T.chatPingCount;
           return `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}${badge ? '<span class="tab-badge">' + badge + '</span>' : ''}</button>`;
         }).join('')}
       </div>
@@ -785,6 +786,8 @@ function drawTournament() {
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { if (typeof stopChatPoll === 'function') stopChatPoll(); currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
   const stBtn = app.querySelector('#streamerToggle');
   if (stBtn) stBtn.onclick = () => { setStreamerMode(!streamerMode); drawTournament(); };
+  const pvBtn = app.querySelector('#playerViewToggle');
+  if (pvBtn) pvBtn.onclick = () => { setPlayerViewMode(!playerViewMode); drawTournament(); };
 
   const pubBtn = document.getElementById('pubBtn');
   if (pubBtn) pubBtn.onclick = async () => {

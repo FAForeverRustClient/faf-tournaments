@@ -211,9 +211,10 @@ function buildFeeders() {
   }
 }
 
-function viewerIsAdmin() { return !!(T.viewer && T.viewer.admin); }
-// organizer = site admin OR a logged-in claimed organizer (server decides). This gates all organizer actions.
-function viewerIsOrganizer() { return !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
+// Does the viewer actually hold elevated rights here (ignoring the personal "view as player" toggle)?
+function viewerHasRights() { return !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
+function viewerIsAdmin() { return !playerViewMode && !!(T.viewer && T.viewer.admin); }
+function viewerIsOrganizer() { return !playerViewMode && !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
 function viewerLoggedIn() { return !!(T.viewer && T.viewer.loggedIn) || isFafVerified(); }
 function viewerSignedUp() { return !!(T.viewer && T.viewer.signedUpPlayerId); }
 // helper: prompt login (kicks off FAF flow if configured, else the name modal)

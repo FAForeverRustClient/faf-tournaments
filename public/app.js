@@ -15,6 +15,14 @@ function setStreamerMode(on) {
   streamerMode = !!on;
   try { localStorage.setItem('faf_streamer_mode', streamerMode ? '1' : '0'); } catch (e) {}
 }
+// "View as player": when a site admin / organizer is really here as a participant, this hides the
+// organizer & admin controls (Admin tab, Log, report/edit buttons, etc.) on THIS browser so the
+// view isn't cluttered. It never changes actual permissions on the server.
+let playerViewMode = (() => { try { return localStorage.getItem('faf_player_view') === '1'; } catch (e) { return false; } })();
+function setPlayerViewMode(on) {
+  playerViewMode = !!on;
+  try { localStorage.setItem('faf_player_view', playerViewMode ? '1' : '0'); } catch (e) {}
+}
 // form state preserved across re-renders
 const F = { capSel: {}, signup: { name: '', rating: '', team: '' }, reg: { team: '', p: [] } };
 
