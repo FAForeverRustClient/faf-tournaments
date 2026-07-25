@@ -4,6 +4,30 @@ function mapRows(maps) {
   return maps.map((id, i) => '<div class="maprow"><span class="mapg">GAME ' + (i + 1) + '</span><span>' + esc(mapName(id)) + '</span></div>').join('');
 }
 
+// Popup showing a pool's maps as thumbnails — a cutout of the Maps-tab pool card, used when a
+// round's pool has too many maps to list inline in the bracket.
+function showPoolPopup(pool) {
+  if (!pool) return;
+  const ids = pool.mapIds || [];
+  const bo = pool.bo || 1;
+  const thumbs = ids.map(id => {
+    const mo = mapObj(id);
+    if (!mo) return '';
+    return `<div class="pool-thumb${mo.image ? '' : ' noimg'}"${mo.image ? ' data-map-info="' + esc(id) + '"' : ''}>
+      ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">no image</span>'}
+      <span class="pool-thumb-name">${esc(mo.name)}</span>
+    </div>`;
+  }).join('');
+  modal(`<div class="pool-card" style="border:none;padding:0">
+    <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}</span><span class="muted small">Bo${bo} &middot; ${ids.length} map${ids.length === 1 ? '' : 's'}</span></div>
+    <div class="pool-card-maps pool-thumbs" style="margin-top:10px">${thumbs || '<span class="muted small">no maps</span>'}</div>
+    <div class="actions"><button class="btn ghost" id="ppClose">Close</button></div>
+  </div>`, root => {
+    root.querySelectorAll('[data-map-info]').forEach(t => t.onclick = () => showMapInfo(t.dataset.mapInfo));
+    root.querySelector('#ppClose').onclick = closeModal;
+  });
+}
+
 function mapsLine(bracket, round, el) {
   if (T.imported) return;
   const admin = viewerIsOrganizer();
@@ -20,13 +44,22 @@ function mapsLine(bracket, round, el) {
     if (!admin && !shown) return;
     const div = document.createElement('div');
     div.className = 'mapblock';
+    const poolMaps = shown ? (shown.mapIds || []) : [];
+    let sub;
+    if (!shown) sub = '';
+    else if (poolMaps.length > 3) {
+      sub = '<div class="maprow mapsub"><button type="button" class="btn ghost small mapblock-showpool">Show pool (' + poolMaps.length + ' maps)</button></div>';
+    } else {
+      sub = '<div class="maprow mapsub">' + poolMaps.map(id => esc(mapName(id))).join(', ') + '</div>';
+    }
     div.innerHTML = '<div class="mapblock-head"><span>MAP POOL</span>' + (admin ? '<a href="#">change</a>' : '') + '</div>' +
       (shown
-        ? '<div class="maprow"><span>' + esc(shown.name) + (pool ? '' : ' <span class="muted">(default)</span>') + '</span></div>'
-          + '<div class="maprow mapsub">' + (shown.mapIds || []).map(id => esc(mapName(id))).join(', ') + '</div>'
+        ? '<div class="maprow"><span>' + esc(shown.name) + (pool ? '' : ' <span class="muted">(default)</span>') + '</span></div>' + sub
         : '<div class="maprow muted">no pools yet — add them on the Maps tab</div>');
     const a = div.querySelector('a');
     if (a) a.onclick = e => { e.preventDefault(); pickPoolForRound(bracket, round); };
+    const showBtn = div.querySelector('.mapblock-showpool');
+    if (showBtn) showBtn.onclick = () => showPoolPopup(shown);
     el.appendChild(div);
     return;
   }
@@ -362,26 +395,17 @@ function drawMaps(el) {
   const admin = viewerIsOrganizer();
   const db = T.mapDb || [];
 
-  // build a "where used" index: mapId -> [round labels]
-  // Covers both legacy per-round map lists AND rounds a map reaches through its pool
-  // being assigned there (previously pool-assigned maps wrongly showed "not assigned").
-  const usage = {};
-  const addUse = (id, label) => {
-    if (!usage[id]) usage[id] = [];
-    if (usage[id].indexOf(label) < 0) usage[id].push(label);
+  // "Played in" should reflect only DIRECT round assignments of this specific map. Maps that
+  // reach a round merely by being inside an assigned pool are shown via their pool badge instead
+  // (otherwise every map in a pool lists every round the pool touches — too much noise).
+  const directUse = {};
+  const addDirect = (id, label) => {
+    if (!directUse[id]) directUse[id] = [];
+    if (directUse[id].indexOf(label) < 0) directUse[id].push(label);
   };
   for (const key of Object.keys(T.maps || {})) {
     const [bracket, round] = key.split(':');
-    for (const id of (T.maps[key] || [])) addUse(id, roundKeyLabel(bracket, round));
-  }
-  const poolMapsById = {};
-  for (const pool of (T.mapPools || [])) poolMapsById[pool.id] = pool.mapIds || [];
-  for (const key of Object.keys(T.poolAssign || {})) {
-    const pid = T.poolAssign[key];
-    if (!pid || !poolMapsById[pid]) continue;
-    const [bk, rd] = key.split(':');
-    const label = bk === 'match' ? 'a specific match' : roundKeyLabel(bk, rd);
-    for (const id of poolMapsById[pid]) addUse(id, label);
+    for (const id of (T.maps[key] || [])) addDirect(id, roundKeyLabel(bracket, round));
   }
   // which pools each map belongs to (for a badge)
   const inPool = {};
@@ -392,11 +416,13 @@ function drawMaps(el) {
     }
   }
 
-  let html = '';
+  let adminHead = '';
+  let mapsHtml = '';
+  let poolsHtml = '';
 
   if (admin) {
     const published = db.filter(m => m.published).length;
-    html += `<div class="panel section">
+    adminHead += `<div class="panel section">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div><h2 style="margin:0">Map database</h2><div class="muted small">${db.length} map${db.length === 1 ? '' : 's'} · ${published} published${db.length - published > 0 ? ' · ' + (db.length - published) + ' hidden (prep)' : ''}</div></div>
         <div style="display:flex;gap:8px">${db.length - published > 0 ? '<button class="btn ghost" id="mapPubAll">Publish all</button>' : ''}<button class="btn ghost" id="mapImport">Import from another tourney</button><button class="btn primary" id="mapAdd">+ Add map</button></div>
@@ -407,22 +433,26 @@ function drawMaps(el) {
 
   const visible = admin ? db : db.filter(m => m.published);
   if (visible.length === 0) {
-    html += `<div class="panel"><div class="empty">${admin ? 'No maps yet. Click "Add map" to build your pool.' : 'No maps have been published yet.'}</div></div>`;
+    mapsHtml += `<div class="panel"><div class="empty">${admin ? 'No maps yet. Click "Add map" to build your pool.' : 'No maps have been published yet.'}</div></div>`;
   } else {
-    html += '<div class="panel section"><div class="mapdb-grid">';
+    mapsHtml += '<div class="panel section"><h2 style="margin:0 0 12px">All maps</h2><div class="mapdb-grid">';
     for (const m of visible) {
-      const used = usage[m.id] || [];
+      const used = directUse[m.id] || [];
       const badges = [];
       if (admin && !m.published) badges.push('<span class="idbadge late">hidden</span>');
       if (inPool[m.id]) badges.push('<span class="idbadge verified">' + esc(inPool[m.id].join(', ')) + '</span>');
-      html += `<div class="mapdb-card">
+      mapsHtml += `<div class="mapdb-card">
         <div class="mapdb-thumb${m.image ? '' : ' noimg'}" ${m.image ? 'data-map-info="' + esc(m.id) + '"' : ''}>
           ${m.image ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}">` : '<span class="mapdb-noimg-label">no image</span>'}
         </div>
         <div class="mapdb-body">
           <div class="mapdb-name">${esc(m.name)} ${badges.join(' ')}</div>
           ${m.description ? `<div class="mapdb-desc">${esc(m.description)}</div>` : ''}
-          ${used.length ? `<div class="mapdb-used">Played in: ${used.map(u => esc(u)).join(', ')}</div>` : (admin ? '<div class="mapdb-used muted">' + (inPool[m.id] ? ((T.mapPools || []).length === 1 ? 'In pool ' + esc(inPool[m.id].join(', ')) + ' \u2014 used as the default for all matches' : 'In pool ' + esc(inPool[m.id].join(', ')) + ' \u2014 assign the pool to a round below') : 'Not in any pool or round yet') + '</div>' : '')}
+          ${used.length
+            ? `<div class="mapdb-used">Played in: ${used.map(u => esc(u)).join(', ')}</div>`
+            : (inPool[m.id]
+              ? `<div class="mapdb-used muted">In pool: ${esc(inPool[m.id].join(', '))}</div>`
+              : (admin ? '<div class="mapdb-used muted">Not in any pool or round yet</div>' : ''))}
           ${admin ? `<div class="mapdb-actions">
             <button class="btn ghost small" data-mapedit="${m.id}">Edit</button>
             <button class="btn ghost small" data-mappub="${m.id}">${m.published ? 'Hide' : 'Publish'}</button>
@@ -431,7 +461,7 @@ function drawMaps(el) {
         </div>
       </div>`;
     }
-    html += '</div></div>';
+    mapsHtml += '</div></div>';
   }
 
   // ---- map pools (players see published ones; organizers see all + controls) ----
@@ -439,15 +469,15 @@ function drawMaps(el) {
     const pools = T.mapPools || [];
     const showPools = admin || pools.length > 0;
     if (showPools) {
-    html += `<div class="panel section">
+    poolsHtml += `<div class="panel section">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div><h2 style="margin:0">Map pools</h2><div class="muted small">${admin ? 'Group maps into pools, then assign each pool to rounds or matches. A match\'s veto draws from its assigned pool.' : 'The maps in play for each stage of the tournament.'}</div></div>
         ${admin ? `<button class="btn primary" id="poolAdd"${db.length === 0 ? ' disabled title="Add maps first"' : ''}>+ New pool</button>` : ''}
       </div>`;
     if (pools.length === 0) {
-      html += '<div class="empty" style="margin-top:12px">No pools yet.' + (db.length === 0 ? ' Add maps first.' : ' Create one to group maps.') + '</div>';
+      poolsHtml += '<div class="empty" style="margin-top:12px">No pools yet.' + (db.length === 0 ? ' Add maps first.' : ' Create one to group maps.') + '</div>';
     } else {
-      html += '<div class="pool-cards">';
+      poolsHtml += '<div class="pool-cards">';
       for (const pool of pools) {
         const names = (pool.mapIds || []).map(id => mapName(id));
         // where is this pool assigned?
@@ -459,7 +489,7 @@ function drawMaps(el) {
             else assignedTo.push(roundKeyLabel(bk, rd));
           }
         }
-        html += `<div class="pool-card">
+        poolsHtml += `<div class="pool-card">
           <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}${(admin && !pool.published) ? ' <span class="idbadge late">hidden</span>' : ''}</span><span class="muted small">Bo${pool.bo || 1} &middot; ${names.length} map${names.length === 1 ? '' : 's'}</span></div>
           <div class="pool-card-maps pool-thumbs">${names.length ? (pool.mapIds || []).map(id => {
             const mo = mapObj(id);
@@ -487,13 +517,13 @@ function drawMaps(el) {
           </div>` : ''}
         </div>`;
       }
-      html += '</div>';
+      poolsHtml += '</div>';
     }
-    html += '</div>';
+    poolsHtml += '</div>';
     }
   }
 
-  el.innerHTML = html;
+  el.innerHTML = adminHead + poolsHtml + mapsHtml;
 
   const addBtn = document.getElementById('mapAdd');
   if (addBtn) addBtn.onclick = () => editMapEntry(null);
@@ -671,7 +701,7 @@ function editPool(existing) {
     <h3>${existing ? 'Edit pool' : 'New pool'}</h3>
     <label>Pool name</label>
     <input type="text" id="plName" maxlength="40" value="${esc(pool.name)}" placeholder="e.g. Finals pool" autocomplete="off">
-    <label style="margin-top:12px">Maps in this pool</label>
+    <label style="margin-top:12px">Maps in this pool <span id="plCountLbl" class="h2-strong"></span></label>
     <div class="pick-rows" id="plMaps">
       ${db.map(m => `<button type="button" class="pick-row${(pool.mapIds || []).indexOf(m.id) >= 0 ? ' on' : ''}" data-mapid="${m.id}"><span class="pr-name">${esc(m.name)}</span>${!m.published ? '<span class="idbadge late">hidden</span>' : ''}<span class="pr-tick"></span></button>`).join('')}
     </div>
@@ -718,6 +748,8 @@ function editPool(existing) {
         </span></div>`).join('');
       const cnt = root.querySelector('#plCount');
       if (cnt) cnt.textContent = nMaps ? nMaps + ' map' + (nMaps === 1 ? '' : 's') + ' selected' : 'Click maps to add them to this pool';
+      const cntLbl = root.querySelector('#plCountLbl');
+      if (cntLbl) cntLbl.textContent = '(' + nMaps + ' selected \u2014 needs ' + need + ' ban/pick step' + (need === 1 ? '' : 's') + ')';
       const bo = parseInt(root.querySelector('#plBo').value, 10);
       const picks = vseq.filter(s => s.action === 'pick').length;
       const sum = root.querySelector('#plSummary');

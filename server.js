@@ -3169,6 +3169,9 @@ async function handleAPI(req, res, url) {
         pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq, bo: bo, published: b.published ? 1 : 0 };
         t.mapPools.push(pool);
       }
+      if (pool.published) {
+        for (const id of (pool.mapIds || [])) { const mp = mapById(t, id); if (mp && !mp.published) mp.published = true; }
+      }
       tlog(t, req, b.admin, (b.id ? 'edited pool "' : 'created pool "') + pool.name + '" (' + ids.length + ' maps, Bo' + pool.bo + ')');
       saveDB();
       return json(res, 200, { ok: true, id: pool.id });
@@ -3270,9 +3273,18 @@ async function handleAPI(req, res, url) {
       const pool = poolById(t, b.id);
       if (!pool) return bad(res, 'Pool not found');
       pool.published = b.published ? 1 : 0;
-      tlog(t, req, b.admin, (b.published ? 'published' : 'hid') + ' pool "' + pool.name + '"');
+      let alsoPublished = 0;
+      if (pool.published) {
+        // A published pool is visible to players, so its maps must be visible too — otherwise
+        // players would see raw ids. Publish any still-hidden maps in the pool.
+        for (const id of (pool.mapIds || [])) {
+          const mp = mapById(t, id);
+          if (mp && !mp.published) { mp.published = true; alsoPublished++; }
+        }
+      }
+      tlog(t, req, b.admin, (b.published ? 'published' : 'hid') + ' pool "' + pool.name + '"' + (alsoPublished ? ' (and published ' + alsoPublished + ' map' + (alsoPublished === 1 ? '' : 's') + ' in it)' : ''));
       saveDB();
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, mapsPublished: alsoPublished });
     }
 
     if (sub === 'pool_delete') {
