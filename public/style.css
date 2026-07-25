@@ -445,6 +445,10 @@ tbody tr:hover { background: #ffffff05; }
 .chat-room-badges { display: inline-flex; gap: 4px; vertical-align: middle; }
 .chat-mention-badge { display: inline-block; min-width: 16px; height: 16px; line-height: 16px; text-align: center; background: #e5484d; color: #fff; border-radius: 8px; font-size: 11px; font-weight: 700; padding: 0 4px; }
 .chat-room-group { margin: 12px 0 4px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.chat-group-toggle { width: 100%; text-align: left; background: none; border: none; cursor: pointer; padding: 8px 4px 4px; display: flex; align-items: center; gap: 6px; }
+.chat-group-toggle:hover { color: var(--text, #dbe2ea); }
+.cg-caret { font-size: 10px; }
+.chat-completed { display: flex; flex-direction: column; gap: 4px; }
 .chat-room.active { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
 .chat-host { flex: 1; min-width: 280px; }
 .chat-panel { display: flex; flex-direction: column; border: 1px solid var(--line-solid); border-radius: 6px; background: var(--panel, #0f1620); overflow: hidden; }

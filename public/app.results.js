@@ -1021,6 +1021,7 @@ function drawTlog(el) {
 // messages arrive quickly. One active room at a time; its own timer, torn down on close.
 let _chatRoom = null;
 let _chatActiveRoom = null;
+let _chatCompletedOpen = false;   // completed-match chats collapsed by default
 let _chatSince = 0;
 let _chatTimer = null;
 let _chatMsgs = [];
@@ -1221,9 +1222,14 @@ async function drawChatTab(el) {
   };
   const active = rooms.filter(r => !r.done);
   const completed = rooms.filter(r => r.done);
+  // any completed room the viewer was @mentioned in should surface the group even when collapsed
+  const completedMention = completed.some(r => r.mention);
   const listHtml = active.map(roomBtn).join('')
     + (completed.length
-        ? '<div class="chat-room-group">Completed matches <span class="muted small">(' + completed.length + ')</span></div>' + completed.map(roomBtn).join('')
+        ? `<button class="chat-room-group chat-group-toggle ${_chatCompletedOpen ? 'open' : ''}" id="chatCompletedToggle">
+             <span class="cg-caret">${_chatCompletedOpen ? '\u25BE' : '\u25B8'}</span> Completed matches <span class="muted small">(${completed.length})</span>${completedMention && !_chatCompletedOpen ? ' <span class="chat-mention-badge">!</span>' : ''}
+           </button>
+           <div class="chat-completed" id="chatCompletedWrap" style="display:${_chatCompletedOpen ? '' : 'none'}">${completed.map(roomBtn).join('')}</div>`
         : '');
   el.innerHTML = `<div class="chat-layout">
     <div class="chat-rooms panel section">
@@ -1242,6 +1248,15 @@ async function drawChatTab(el) {
     mountChat(host, btn.dataset.room, btn.dataset.label);
   };
   el.querySelectorAll('.chat-room').forEach(b => b.onclick = () => pick(b));
+  const cToggle = el.querySelector('#chatCompletedToggle');
+  if (cToggle) cToggle.onclick = () => {
+    _chatCompletedOpen = !_chatCompletedOpen;
+    const wrap = el.querySelector('#chatCompletedWrap');
+    if (wrap) wrap.style.display = _chatCompletedOpen ? '' : 'none';
+    cToggle.classList.toggle('open', _chatCompletedOpen);
+    const caret = cToggle.querySelector('.cg-caret');
+    if (caret) caret.textContent = _chatCompletedOpen ? '\u25BE' : '\u25B8';
+  };
   // Re-select the room the user was already in (if it still exists), not always Global — a
   // background refresh must not yank them back to the global chat.
   const prev = _chatActiveRoom && el.querySelector('.chat-room[data-room="' + (window.CSS && CSS.escape ? CSS.escape(_chatActiveRoom) : _chatActiveRoom) + '"]');
