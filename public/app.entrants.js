@@ -438,20 +438,30 @@ function drawOpenTeams(el) {
     : '';
   const fullTeams = T.teams.filter(x => x.playerIds.length >= size);
   const useCheckin = !!T.checkInDeadline || fullTeams.some(x => x.checkedIn);
+  // Teams are ordered by combined rating (highest first) — this is also the default seeding, so
+  // the rank shown here is each team's projected seed until the organizer locks/reseeds. If real
+  // seeds have been set (post-lock), respect those. Checked-in teams still sort ahead when
+  // check-in is active, so the participant cap reflects who's actually in.
+  const seeded = fullTeams.some(x => x.seed);
   const orderedFull = fullTeams.slice().sort((a, b) => {
     if (useCheckin && !!a.checkedIn !== !!b.checkedIn) return a.checkedIn ? -1 : 1;
-    return (a.createdAt || 0) - (b.createdAt || 0);
+    if (seeded) return (a.seed || 9999) - (b.seed || 9999);
+    return teamRating(b) - teamRating(a);
   });
+  // map team id -> seed number to display (real seed if set, else rank in this ordering)
+  const seedFor = {};
+  orderedFull.forEach((tm, i) => { seedFor[tm.id] = tm.seed || (i + 1); });
   const participants = cap ? orderedFull.slice(0, cap) : orderedFull;
   const waitlist = cap ? orderedFull.slice(cap) : [];
-  const forming = T.teams.filter(x => x.playerIds.length < size).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const forming = T.teams.filter(x => x.playerIds.length < size).slice().sort((a, b) => teamRating(b) - teamRating(a));
 
   const teamCard = (tm) => {
     const mems = tm.playerIds.map(pid => T.players.find(p => p.id === pid)).filter(Boolean);
     const full = tm.playerIds.length >= size;
     const openSlots = size - tm.playerIds.length;
+    const seedBadge = (full && seedFor[tm.id]) ? `<span class="tc-seed" title="${seeded ? 'Seed' : 'Projected seed (by rating)'}">#${seedFor[tm.id]}</span> ` : '';
     return `<div class="teamcard ${full ? 'full' : 'open'}">
-      <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-counts">${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${full ? 'ok' : ''}" title="Players / team size">${tm.playerIds.length}/${size}</span></span></div>
+      <div class="tc-head"><span class="tc-name">${seedBadge}${esc(tm.name)}</span><span class="tc-counts">${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count" title="Combined rating">' + sum + '</span>'; })()}<span class="tc-count ${full ? 'ok' : ''}" title="Players / team size">${tm.playerIds.length}/${size}</span></span></div>
       <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}</div>`).join('')}</div>
       ${full ? `<div class="tc-checkin">${tm.checkedIn ? '<span class="idbadge verified">checked in</span>' : '<span class="idbadge late">not checked in</span>'}</div>` : ''}
       ${canJoin && !full ? ((tm.joinRequests || []).some(r => r.playerId === myPlayer.id)
@@ -466,6 +476,7 @@ function drawOpenTeams(el) {
     html += '<div class="panel section"><h2>Teams</h2><div class="empty">No teams yet. Be the first to create one.</div></div>';
   } else {
     html += `<div class="panel section"><h2>Participants <span class="h2-strong">(${participants.length}${cap ? ' of ' + cap : ''}${T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>${minMaxNote}`;
+    html += participants.length ? `<p class="muted small" style="margin:-4px 0 10px">Ordered by combined rating. The <span class="tc-seed" style="margin:0">#</span> is each team's ${seeded ? 'seed' : 'projected seed (rating order) — final seeds are set when the organizer locks teams' + (admin ? ', from the Bracket tab' : '')}.</p>` : '';
     html += participants.length ? '<div class="teamgrid">' + participants.map(teamCard).join('') + '</div>' : '<div class="empty">No full teams yet.</div>';
     html += '</div>';
     if (waitlist.length) {
