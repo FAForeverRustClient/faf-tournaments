@@ -26,11 +26,28 @@ function reportScoreAdmin(m) {
     <input type="text" id="rReplays" value="${esc((m.replayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534001, 21534050">
     <label style="margin-top:10px">Draw replay IDs <span class="muted small">(optional \u2014 games that ended drawn and were replayed)</span></label>
     <input type="text" id="rDrawReplays" value="${esc((m.drawReplayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534010">
+    <div class="ff-block">
+      <div class="muted small" style="margin-bottom:6px">Or record a forfeit \u2014 award the win with no score (the other team is marked <strong>FF</strong>):</div>
+      <div class="row" style="gap:8px">
+        <button type="button" class="btn ghost small" id="rFf1">${esc(teamName(m.team1))} forfeits</button>
+        <button type="button" class="btn ghost small" id="rFf2">${esc(teamName(m.team2))} forfeits</button>
+      </div>
+    </div>
     <div class="actions">
       <button class="btn ghost" id="rCancel">Cancel</button>
       <button class="btn primary" id="rGo">Save score</button>
     </div>`, root => {
     root.querySelector('#rCancel').onclick = closeModal;
+    const doForfeit = async (loserId) => {
+      const winName = teamName(loserId === m.team1 ? m.team2 : m.team1);
+      if (!confirm('Award the win to ' + winName + ' by forfeit? The other team will be marked FF with no score.')) return;
+      try {
+        await api('/api/t/' + T.id + '/report', { matchId: m.id, forfeit: loserId, token: myToken() });
+        closeModal(); toast('Forfeit recorded'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+    const ff1 = root.querySelector('#rFf1'); if (ff1) ff1.onclick = () => doForfeit(m.team1);
+    const ff2 = root.querySelector('#rFf2'); if (ff2) ff2.onclick = () => doForfeit(m.team2);
     const conf = async (accept) => {
       try { await api('/api/t/' + T.id + '/report_confirm', { matchId: m.id, accept: accept ? 1 : 0, admin: adminToken(), token: myToken() }); closeModal(); toast(accept ? 'Accepted' : 'Rejected'); await refresh(); }
       catch (e) { toast(e.message, true); }

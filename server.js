@@ -3958,6 +3958,26 @@ async function handleAPI(req, res, url) {
 
       if (m.status !== 'ready' && m.status !== 'live') return bad(res, 'Match not ready yet');
       const maxW = Math.ceil(m.bo / 2);
+
+      // Forfeit: award the win without a played score. b.forfeit is the team id that forfeited;
+      // that side is shown as "FF" (-1), the other is finalized as the winner. Organizer only.
+      if (b.forfeit) {
+        if (!admin) return json(res, 403, { error: 'Only the organizer can record a forfeit' });
+        const ffId = String(b.forfeit);
+        if (ffId !== m.team1 && ffId !== m.team2) return bad(res, 'Forfeiting team is not in this match');
+        const winId = ffId === m.team1 ? m.team2 : m.team1;
+        if (!winId || winId === 'BYE') return bad(res, 'The opponent is not set yet');
+        m.forfeit = ffId;
+        m.pendingReport = null;
+        delete m.replayIds; delete m.drawReplayIds;
+        const fs1 = ffId === m.team1 ? -1 : maxW;
+        const fs2 = ffId === m.team1 ? maxW : -1;
+        tlog(t, req, b.token, tTeamName(t, ffId) + ' forfeited vs ' + tTeamName(t, winId) + ' \u2014 win awarded to ' + tTeamName(t, winId) + (m.status === 'done' ? ' (correction)' : ''));
+        finalizeMatch(t, m, fs1, fs2);
+        saveDB();
+        return json(res, 200, { ok: true });
+      }
+      delete m.forfeit;   // a normal score clears any prior forfeit flag
       const s1 = parseInt(b.score1, 10), s2 = parseInt(b.score2, 10);
       if (!(s1 >= 0 && s2 >= 0 && s1 <= maxW && s2 <= maxW)) return bad(res, 'Scores must be between 0 and ' + maxW);
       if (m.hcap && s1 < 1) return bad(res, 'This grand final starts 1-0 (upper bracket advantage)');

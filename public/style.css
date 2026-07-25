@@ -244,6 +244,8 @@ svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .brow.winner { background: #6fcf8e12; }
 .brow.winner .bname { color: var(--green); font-weight: 600; }
 .brow .bscore { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.ff-mark { font-family: var(--mono); font-size: 11px; font-weight: 700; color: #ff6369; letter-spacing: 1px; }
+.ff-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-solid); }
 .brow.winner .bscore { color: var(--green); }
 .bname.tbd { color: var(--muted); font-style: italic; }
 .bfoot { padding: 5px 10px; border-top: 1px solid var(--line-solid); text-align: right; }

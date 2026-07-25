@@ -263,16 +263,18 @@ function showTeamPopup(teamId) {
 function matchBox(m) {
   const admin = viewerIsOrganizer();
   const box = document.createElement('div');
-  box.className = 'bmatch ' + m.status;
+  // masked = hidden by streamer mode, unless this specific match has been revealed
+  const masked = streamerMode && !revealedMatches.has(m.id);
+  box.className = 'bmatch ' + (masked ? 'ready' : m.status);
   const row = (tid, score, slot) => {
-    const win = !streamerMode && m.winner && m.winner === tid && tid !== 'BYE';
+    const win = !masked && m.winner && m.winner === tid && tid !== 'BYE';
     let nm;
     if (tid === 'BYE') nm = 'bye';
     else if (tid) {
       // Streamer mode: if this slot was filled by a COMPLETED upstream match, showing the team
       // would reveal that result. Mask it behind the feeder label ("Winner of WB R1 M1") instead.
       const feed = feeders[m.id + ':' + slot];
-      if (streamerMode && feed && feed.m && feed.m.status === 'done') {
+      if (masked && feed && feed.m && feed.m.status === 'done') {
         nm = feed.type + ' of ' + mLabel(feed.m);
         tid = null;   // render as a TBD-style slot, not a clickable team
       } else {
@@ -284,25 +286,34 @@ function matchBox(m) {
     }
     const seed = tid && tid !== 'BYE' ? teamSeed(tid) : null;
     const realTeam = tid && tid !== 'BYE' && T.teams && T.teams.some(t => t.id === tid);
+    const isFf = m.forfeit && tid === m.forfeit;
+    const scoreTxt = masked ? '' : (isFf ? '<span class="ff-mark" title="Forfeit">FF</span>' : (score != null && score >= 0 ? score : ''));
     return `<div class="brow ${win ? 'winner' : ''}">
       <span class="bname ${tid && tid !== 'BYE' ? '' : 'tbd'}${realTeam ? ' bname-team' : ''}"${realTeam ? ' data-teamid="' + esc(tid) + '"' : ''}>${seed ? '<span class="seedtag">' + seed + '</span>' : ''}${esc(nm)}</span>
-      <span class="bscore">${(!streamerMode && score != null) ? score : ''}</span></div>`;
+      <span class="bscore">${scoreTxt}</span></div>`;
   };
   const canReport = !T.imported && (m.status === 'ready' || m.status === 'live') && canReportMatch(m);
   const prMine = m.pendingReport && myMatchTeam(m) && m.pendingReport.byTeam !== myMatchTeam(m);
   const prTag = m.pendingReport ? '<span class="pr-tag" title="A score was submitted and awaits the opponent\u2019s confirmation">\u23F3 ' + m.pendingReport.score1 + '\u2013' + m.pendingReport.score2 + ' unconfirmed</span>' : '';
   const canCorrect = !T.imported && m.status === 'done' && viewerIsAdmin();
   box.dataset.mid = m.id;
-  box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
+  box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${(!masked && m.status === 'live') ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
-    vetoIndicator(m) +
+    (masked ? '' : vetoIndicator(m)) +
     ((m.team1 && m.team2 && matchChatAllowed(m)) ? '<div class="match-chat-line"><a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a></div>' : '') +
-    ((m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
+    ((!masked && m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
       ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(esc).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(esc).join(', ') : '') + '</div>' : '') +
-    ((canReport || canCorrect || m.pendingReport)
+    ((streamerMode && m.status === 'done')
+      ? `<div class="bfoot"><button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? '\u25C9 Hide result' : '\u25CB Reveal result'}</button></div>` : '') +
+    ((!masked && (canReport || canCorrect || m.pendingReport))
       ? `<div class="bfoot">${prTag}${(canReport || canCorrect) ? `<button class="btn ${canReport ? 'amber' : 'ghost'} small">${prMine ? 'Confirm score' : canReport ? (viewerIsOrganizer() ? 'Report score' : 'Submit score') : 'Correct'}</button>` : ''}</div>` : '');
-  const btn = box.querySelector('.bfoot button');
+  const btn = box.querySelector('.bfoot button:not([data-reveal])');
   if (btn) btn.onclick = () => reportScore(m.id);
+  const revBtn = box.querySelector('[data-reveal]');
+  if (revBtn) revBtn.onclick = () => {
+    if (revealedMatches.has(m.id)) revealedMatches.delete(m.id); else revealedMatches.add(m.id);
+    drawTournament();
+  };
   const vlink = box.querySelector('[data-veto-link]');
   if (vlink) vlink.onclick = (e) => { e.preventDefault(); showVetoPopup(m); };
   const mchat = box.querySelector('[data-matchchat]');

@@ -23,6 +23,9 @@ function setPlayerViewMode(on) {
   playerViewMode = !!on;
   try { localStorage.setItem('faf_player_view', playerViewMode ? '1' : '0'); } catch (e) {}
 }
+// In streamer mode, individual matches can be temporarily "revealed" (show score + who advanced)
+// so the caster can look at a result on demand. Session-only; cleared on reload.
+const revealedMatches = new Set();
 // form state preserved across re-renders
 const F = { capSel: {}, signup: { name: '', rating: '', team: '' }, reg: { team: '', p: [] } };
 
