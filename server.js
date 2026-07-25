@@ -2673,7 +2673,9 @@ async function handleAPI(req, res, url) {
     // Site admin attaches organizer rights to a FAF account directly (useful for
     // tournaments that predate identity tracking, where the list is empty).
     if (sub === 'add_organizer') {
-      if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
+      // Any organizer (or site admin) may add a co-organizer to their own tournament. Removal
+      // stays site-admin-only (handled by remove_organizer).
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const fid = String(b.fafId || '').trim();
       if (!fid) return bad(res, 'FAF id required');
       if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
@@ -2684,8 +2686,8 @@ async function handleAPI(req, res, url) {
       saveDB();
       audit(req, 'organizer_added', {
         tournamentId: t.id, tournamentName: t.name,
-        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
-        detail: t.organizerNames[fid] + ' (' + fid + ') \u2014 added directly'
+        actor: actorOf(req, b.admin),
+        detail: t.organizerNames[fid] + ' (' + fid + ') \u2014 added by an organizer'
       });
       return json(res, 200, { ok: true });
     }

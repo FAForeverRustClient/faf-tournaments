@@ -362,7 +362,7 @@ async function drawAdmin(el) {
     const orgs = T.organizers || [];
     html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${orgs.length})</span></h2>
       <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
-      <p class="muted small">Add an organizer below by FAF name or id. Only a site admin can remove one. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
+      <p class="muted small">Add an organizer below by FAF name or id. Any organizer can add co-organizers; only a site admin can remove one. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
       ${orgs.length ? '' : '<div class="empty" style="margin:10px 0">No FAF account holds organizer rights here yet. Add one below by FAF name or id.</div>'}
       <div class="pick-rows" style="margin-top:10px">${orgs.map(o => `<div class="pick-row on" style="cursor:default">
         <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span> ${o.hidden ? '<span class="idbadge late" title="Not shown to players">hidden</span>' : ''}</span>
@@ -371,7 +371,7 @@ async function drawAdmin(el) {
       </div>`).join('')}</div>
       <div style="margin-top:10px">
         ${fafAuth.user && (sa || (fafAuth.user.director && T.category === 'official')) && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf" style="margin-bottom:10px">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
-        ${sa ? '<div id="orgAdd"></div>' : ''}
+        <div id="orgAdd"></div>
       </div></div>`;
   }
 
@@ -683,7 +683,7 @@ async function drawAdmin(el) {
     result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="orgAddGo">Make organizer</button>`;
     result.querySelector('#orgAddGo').onclick = async () => {
       try {
-        await api('/api/t/' + T.id + '/add_organizer', { fafId: found.fafId, name: found.name, admin: siteAdmin() });
+        await api('/api/t/' + T.id + '/add_organizer', { fafId: found.fafId, name: found.name, admin: adminToken() });
         toast('Organizer added'); await refresh();
       } catch (e) { toast(e.message, true); }
     };
