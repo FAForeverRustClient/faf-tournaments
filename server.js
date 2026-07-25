@@ -3313,6 +3313,21 @@ async function handleAPI(req, res, url) {
         delete t.poolAssign[key];
         tlog(t, req, b.admin, 'cleared the pool assignment of ' + key.replace(':', ' round ').replace('match round ', 'match '));
       }
+      // Re-run veto init for matches affected by this assignment. A match that already exists but
+      // had no runnable veto (e.g. its old pool's Bo didn't match) can now get one. Matches whose
+      // veto has already been acted on are left alone (initVeto guards stepIndex > 0).
+      if (t.veto && t.veto.enabled && Array.isArray(t.matches)) {
+        for (const m of t.matches) {
+          if (m.bracket === 'ffa' || m.status === 'done') continue;
+          if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') continue;
+          const mk = 'match:' + m.id, rk = m.bracket + ':' + m.round;
+          if (key !== mk && key !== rk) continue;               // not affected by this key
+          if (key === rk && t.poolAssign['match:' + m.id]) continue;  // a per-match override wins
+          if (m.veto && m.veto.stepIndex > 0) continue;         // veto already in progress
+          m.veto = null;
+          initVeto(t, m);
+        }
+      }
       saveDB();
       return json(res, 200, { ok: true });
     }
