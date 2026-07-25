@@ -122,6 +122,18 @@ function loadDB() {
     }
     if (t.divisions === undefined) t.divisions = 0;
     for (const tm of (t.teams || [])) { if (tm.division === undefined) tm.division = 0; }
+    // Self-heal open-teams data: drop any team member ids that no longer point at a real player
+    // (a past withdrawal that did not detach cleanly left ghost slots, e.g. 2/2 with 1 member).
+    if (Array.isArray(t.teams) && Array.isArray(t.players)) {
+      const _alive = new Set(t.players.map(p => p.id));
+      for (const tm of t.teams) {
+        if (Array.isArray(tm.playerIds)) tm.playerIds = tm.playerIds.filter(pid => _alive.has(pid));
+        if (Array.isArray(tm.invites)) tm.invites = tm.invites.filter(iv => _alive.has(iv.playerId));
+        if (Array.isArray(tm.joinRequests)) tm.joinRequests = tm.joinRequests.filter(r => _alive.has(r.playerId));
+        if (tm.captainId && !_alive.has(tm.captainId)) tm.captainId = tm.playerIds[0] || null;
+      }
+      if (t.status === 'signup') t.teams = t.teams.filter(tm => (tm.playerIds || []).length > 0);
+    }
     for (const m of (t.matches || [])) {
       if (!m.bracket) m.bracket = 'wb';
       if (!m.bo) m.bo = t.bestOf || 3;
@@ -2191,6 +2203,26 @@ async function handleAPI(req, res, url) {
           t.players = t.players.filter(x => (x.teamName || '').toLowerCase() !== key);
         } else {
           t.players = t.players.filter(x => x.id !== b.playerId);
+        }
+        // Open-teams cleanup: a withdrawing player must be pulled out of any team they were on,
+        // or the team keeps a ghost slot (shows 2/2 with one real member and nobody can join).
+        if (Array.isArray(t.teams)) {
+          for (const tm of t.teams) {
+            const was = tm.playerIds.length;
+            tm.playerIds = tm.playerIds.filter(pid => pid !== p.id);
+            if (tm.invites) tm.invites = tm.invites.filter(iv => iv.playerId !== p.id);
+            if (tm.joinRequests) tm.joinRequests = tm.joinRequests.filter(r => r.playerId !== p.id);
+            if (tm.playerIds.length !== was) {
+              if (!tm.playerIds.length) {
+                // team is now empty — remove it entirely
+                tm._remove = true;
+              } else if (tm.captainId === p.id) {
+                // captain left — hand the armband to the next remaining member
+                tm.captainId = tm.playerIds[0];
+              }
+            }
+          }
+          t.teams = t.teams.filter(tm => !tm._remove);
         }
       } else if ((t.status === 'draft' || t.status === 'drafted') && !p.teamId) {
         // resignation of an undrafted player mid-draft
