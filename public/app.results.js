@@ -1265,7 +1265,7 @@ async function drawChatTab(el) {
 
 function openMatchChat(m) {
   const label = mLabel(m) + ' \u2014 ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
-  modal(`<h3>Match chat</h3><div id="mcHost"></div>
+  modal(`<h3>Match chat</h3><div id="mcHost" class="chat-compact"></div>
     <div class="actions"><button class="btn ghost" id="mcClose">Close</button></div>`, root => {
     root.querySelector('#mcClose').onclick = () => { stopChatPoll(); closeModal(); };
     mountChat(root.querySelector('#mcHost'), 'match:' + m.id, label);

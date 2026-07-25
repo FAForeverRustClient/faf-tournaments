@@ -955,13 +955,13 @@ function drawVetoes(el) {
     </div>`;
   };
 
-  if (done.length) {
-    html += '<div class="veto-section-label">Completed \u2014 maps decided</div>';
-    html += done.map(card).join('');
-  }
   if (pending.length) {
-    html += '<div class="veto-section-label"' + (done.length ? ' style="margin-top:20px"' : '') + '>In progress</div>';
+    html += '<div class="veto-section-label">In progress \u2014 needs action</div>';
     html += pending.map(card).join('');
+  }
+  if (done.length) {
+    html += '<div class="veto-section-label"' + (pending.length ? ' style="margin-top:20px"' : '') + '>Completed \u2014 maps decided</div>';
+    html += done.map(card).join('');
   }
   el.innerHTML = html;
 
