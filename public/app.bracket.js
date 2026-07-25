@@ -272,9 +272,10 @@ function matchBox(m) {
     if (tid === 'BYE') nm = 'bye';
     else if (tid) {
       // Streamer mode: if this slot was filled by a COMPLETED upstream match, showing the team
-      // would reveal that result. Mask it behind the feeder label ("Winner of WB R1 M1") instead.
+      // would reveal that result — UNLESS that feeder match has itself been revealed, in which
+      // case the advancing team should now appear here.
       const feed = feeders[m.id + ':' + slot];
-      if (masked && feed && feed.m && feed.m.status === 'done') {
+      if (masked && feed && feed.m && feed.m.status === 'done' && !revealedMatches.has(feed.m.id)) {
         nm = feed.type + ' of ' + mLabel(feed.m);
         tid = null;   // render as a TBD-style slot, not a clickable team
       } else {
