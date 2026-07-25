@@ -24,8 +24,16 @@ function setPlayerViewMode(on) {
   try { localStorage.setItem('faf_player_view', playerViewMode ? '1' : '0'); } catch (e) {}
 }
 // In streamer mode, individual matches can be temporarily "revealed" (show score + who advanced)
-// so the caster can look at a result on demand. Session-only; cleared on reload.
-const revealedMatches = new Set();
+// so the caster can look at a result on demand. Persisted per-tournament so a refresh keeps them.
+let revealedMatches = new Set();
+function revealKey() { const id = tourneyId(); return id ? 'faf_reveal_' + id : null; }
+function loadRevealed() {
+  revealedMatches = new Set();
+  try { const raw = localStorage.getItem(revealKey()); if (raw) JSON.parse(raw).forEach(x => revealedMatches.add(x)); } catch (e) {}
+}
+function saveRevealed() {
+  try { const k = revealKey(); if (k) localStorage.setItem(k, JSON.stringify(Array.from(revealedMatches))); } catch (e) {}
+}
 // form state preserved across re-renders
 const F = { capSel: {}, signup: { name: '', rating: '', team: '' }, reg: { team: '', p: [] } };
 

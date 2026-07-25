@@ -611,6 +611,7 @@ function maybePromptLateSignup() {
 
 async function renderTournament() {
   captureTokensFromURL();
+  loadRevealed();
   try { await loadTournament(); }
   catch (e) {
     app.innerHTML = '<div class="page"><div class="panel"><div class="empty">Tournament not found.</div><a href="/">← Back</a></div></div>';

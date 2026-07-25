@@ -40,9 +40,14 @@ function reportScoreAdmin(m) {
     root.querySelector('#rCancel').onclick = closeModal;
     const doForfeit = async (loserId) => {
       const winName = teamName(loserId === m.team1 ? m.team2 : m.team1);
-      if (!confirm('Award the win to ' + winName + ' by forfeit? The other team will be marked FF with no score.')) return;
+      const s1v = root.querySelector('#rs1').value, s2v = root.querySelector('#rs2').value;
+      const hasScore = s1v !== '' && s2v !== '' && !(parseInt(s1v, 10) === 0 && parseInt(s2v, 10) === 0);
+      const scoreMsg = hasScore ? ('\n\nThe score ' + s1v + '\u2013' + s2v + ' will be kept, with ' + winName + ' marked the winner.') : ('\n\n' + winName + ' will get the win with the other team marked FF (no score).');
+      if (!confirm('Award the win to ' + winName + ' by forfeit?' + scoreMsg)) return;
       try {
-        await api('/api/t/' + T.id + '/report', { matchId: m.id, forfeit: loserId, token: myToken() });
+        const payload = { matchId: m.id, forfeit: loserId, token: myToken() };
+        if (hasScore) { payload.score1 = s1v; payload.score2 = s2v; }
+        await api('/api/t/' + T.id + '/report', payload);
         closeModal(); toast('Forfeit recorded'); await refresh();
       } catch (e) { toast(e.message, true); }
     };

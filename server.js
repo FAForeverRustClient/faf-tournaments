@@ -3967,13 +3967,24 @@ async function handleAPI(req, res, url) {
         if (ffId !== m.team1 && ffId !== m.team2) return bad(res, 'Forfeiting team is not in this match');
         const winId = ffId === m.team1 ? m.team2 : m.team1;
         if (!winId || winId === 'BYE') return bad(res, 'The opponent is not set yet');
+        // Optional played score (e.g. it was 1-1 then a team forfeited). If given and valid, keep
+        // those numbers for display; otherwise mark the forfeiting side FF (-1). Either way the win
+        // is forced to the non-forfeiting team, regardless of the numbers.
+        let fs1, fs2;
+        const hasScore = b.score1 !== undefined && b.score2 !== undefined && b.score1 !== '' && b.score2 !== '';
+        if (hasScore) {
+          const ps1 = parseInt(b.score1, 10), ps2 = parseInt(b.score2, 10);
+          if (!(ps1 >= 0 && ps2 >= 0 && ps1 <= maxW && ps2 <= maxW)) return bad(res, 'Forfeit score must be between 0 and ' + maxW);
+          fs1 = ps1; fs2 = ps2;
+        } else {
+          fs1 = ffId === m.team1 ? -1 : maxW;
+          fs2 = ffId === m.team1 ? maxW : -1;
+        }
         m.forfeit = ffId;
         m.pendingReport = null;
         delete m.replayIds; delete m.drawReplayIds;
-        const fs1 = ffId === m.team1 ? -1 : maxW;
-        const fs2 = ffId === m.team1 ? maxW : -1;
-        tlog(t, req, b.token, tTeamName(t, ffId) + ' forfeited vs ' + tTeamName(t, winId) + ' \u2014 win awarded to ' + tTeamName(t, winId) + (m.status === 'done' ? ' (correction)' : ''));
-        finalizeMatch(t, m, fs1, fs2);
+        tlog(t, req, b.token, tTeamName(t, ffId) + ' forfeited vs ' + tTeamName(t, winId) + (hasScore ? ' at ' + fs1 + '\u2013' + fs2 : '') + ' \u2014 win awarded to ' + tTeamName(t, winId) + (m.status === 'done' ? ' (correction)' : ''));
+        finalizeMatch(t, m, fs1, fs2, winId);
         saveDB();
         return json(res, 200, { ok: true });
       }

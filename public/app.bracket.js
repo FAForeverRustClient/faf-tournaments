@@ -287,7 +287,7 @@ function matchBox(m) {
     }
     const seed = tid && tid !== 'BYE' ? teamSeed(tid) : null;
     const realTeam = tid && tid !== 'BYE' && T.teams && T.teams.some(t => t.id === tid);
-    const isFf = m.forfeit && tid === m.forfeit;
+    const isFf = m.forfeit && tid === m.forfeit && score != null && score < 0;
     const scoreTxt = masked ? '' : (isFf ? '<span class="ff-mark" title="Forfeit">FF</span>' : (score != null && score >= 0 ? score : ''));
     return `<div class="brow ${win ? 'winner' : ''}">
       <span class="bname ${tid && tid !== 'BYE' ? '' : 'tbd'}${realTeam ? ' bname-team' : ''}"${realTeam ? ' data-teamid="' + esc(tid) + '"' : ''}>${seed ? '<span class="seedtag">' + seed + '</span>' : ''}${esc(nm)}</span>
@@ -298,7 +298,7 @@ function matchBox(m) {
   const prTag = m.pendingReport ? '<span class="pr-tag" title="A score was submitted and awaits the opponent\u2019s confirmation">\u23F3 ' + m.pendingReport.score1 + '\u2013' + m.pendingReport.score2 + ' unconfirmed</span>' : '';
   const canCorrect = !T.imported && m.status === 'done' && viewerIsAdmin();
   box.dataset.mid = m.id;
-  box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${(!masked && m.status === 'live') ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
+  box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${(!masked && m.forfeit) ? ' · <span class="ff-mark">FORFEIT</span>' : ''}${(!masked && m.status === 'live') ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
     (masked ? '' : vetoIndicator(m)) +
     ((m.team1 && m.team2 && matchChatAllowed(m)) ? '<div class="match-chat-line"><a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a></div>' : '') +
@@ -313,6 +313,7 @@ function matchBox(m) {
   const revBtn = box.querySelector('[data-reveal]');
   if (revBtn) revBtn.onclick = () => {
     if (revealedMatches.has(m.id)) revealedMatches.delete(m.id); else revealedMatches.add(m.id);
+    saveRevealed();
     drawTournament();
   };
   const vlink = box.querySelector('[data-veto-link]');
