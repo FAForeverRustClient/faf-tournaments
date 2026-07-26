@@ -13,75 +13,111 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Single elimination, double elimination (with an optional "upper-bracket finalist starts the grand final 1-0 up"), Swiss, or FFA.
 - FFA modes: points over rounds (placement points per lobby, optional cut after each round, optional final lobby between the top X) or knockout (top 1-4 advance per lobby).
 - Swiss: Bo1/Bo3 rounds, optional final between the top 2, optional fast pairing (next matchup starts as soon as two teams are free).
-- Best-of per round is configured at creation, visible to players before the bracket starts, and adjustable until the bracket is generated.
-- Optional max teams/entrants cap.
+- Best-of per round: set presets at creation, or turn on **per-round Bo** to give every winners/losers/grand-final round its own best-of. Per-round Bo is editable on the Bracket tab both before generation (on the preview) and after (on the live bracket, affecting only rounds whose matches haven't started). The format summary collapses equal consecutive rounds, e.g. "WB R1-2 Bo3 - WB R3 Bo5 - LB R1-2 Bo1 - GF Bo5".
+- First-round byes are not drawn. A seed with a bye appears directly in its round-2 match, which keeps large brackets compact. The losers bracket hides the phantom matches that byes would create, matching exactly what the engine generates.
+- Optional max teams/entrants cap and optional minimum-teams target.
 
 ### Identity and access (FAF login)
 - FAF OAuth login (OpenID Connect via Ory Hydra). It stays dormant until the three `FAF_*` environment variables are set; without them the site runs the legacy name-only flow unchanged, so any build is safe to deploy at any time.
-- With FAF login on, actions are gated by FAF identity: players carry their FAF account, and captains act by their FAF identity (no per-captain links to hand out).
-- Hosting approval: when FAF login is on, creating a tournament requires per-account approval by the site admin (Requests tab). When it is off, anyone can create, as before.
+- With FAF login on, actions are gated by FAF identity: players carry their FAF account, captains act by their FAF identity (no per-captain links), and the player's rating is pulled from FAF automatically at signup (see Ratings).
+- Hosting approval: when FAF login is on, creating a tournament requires per-account approval by a site admin (Requests tab) or a directorship. When it is off, anyone can create, as before.
+
+### Ratings
+- A tournament's rating type (global, 1v1, 2v2, 3v3, 4v4, ranked-change, or none) is set at creation.
+- For a rated tournament with FAF login on, the player's rating is fetched from FAF automatically at signup - the player never types it. An optional rating date pulls each player's rating as of that date rather than "now"; the date is editable on the Admin tab and shown to players.
+- Only an unrated tournament (`none`) asks players to enter a rating manually. This applies to normal signups and to late signups via the late-signup link.
 
 ### Teams and seeding
-- Premade teams (one player registers the whole team), open teams (players sign up solo then self-organise; only full teams enter the bracket, incomplete ones become reserves), or captain draft.
+- **Premade teams** and **captain draft** are the two team modes. "Premade teams" uses a create-team / request-to-join / invite system: players sign up solo, then either create a team (becoming captain) or join one. Captains (and organizers) can invite pool players directly, and teamless players can request to join a team; the captain approves or declines. Only full teams enter the bracket; incomplete teams become reserves.
 - Captain draft with pick order (bottom-to-top every round, or snake) and a live pick-order display. A captain can undo their own most recent pick until the next captain picks; the organizer can undo the last pick at any time.
 - Solo brackets: every signup is an entrant.
-- Seeding by rating or random, with a manual seed override before the bracket starts (reorder, nudge, randomize, reset).
+- Seeding by rating or random, with a manual seed override before the bracket starts (reorder, nudge, randomize, reset). During team formation, the Teams tab lists teams by combined rating and shows each team's projected seed (its rank by rating) until real seeds are locked.
 - King/Prince divisions: split full teams into skill divisions by combined rating, each playing its own bracket (single/double elim only).
+- Withdrawing or removing a player detaches them cleanly from any team (captain reassigns to the next member; emptied teams are removed during signup), so teams never keep a "ghost" slot.
 
 ### Team rename
 - Organizers and site admins can rename any team, any time, as often as needed.
 - In a team game (more than one player per team), a captain gets a single one-time rename of their own team. Solo tournaments have no captain rename. Duplicate names are rejected.
 
 ### Maps, pools, and vetoes
-- A per-tournament map database with preview images, descriptions, and publish/hide.
-- Named map pools, each with its own best-of and its own ban/pick order. A pool's sequence length is tied to its size so that exactly one map is left as the decider, which means one order cannot serve pools of different sizes even at the same best-of.
-- Pools can be assigned to whole rounds or to specific matches, including before the bracket is generated (rounds are projected from the expected team count).
-- Optional per-match veto engine: the two sides (Team A acts first) alternate bans and picks per the pool's order. A/B sides are decided per match by the captain's rating (random / lower-rated-is-A / lower-rated-is-B / manual). Vetoes can be enabled or disabled mid-bracket.
+- A per-tournament map database with preview images, descriptions, and publish/hide. On the Maps tab, pools are listed first, then an "All maps" grid. A map card shows "Played in [rounds]" only for direct round assignments, and "In pool: [name]" for pool membership.
+- Named map pools, each with its own best-of and its own ban/pick order. The edit-pool dialog shows a live map count and the number of ban/pick steps required. A pool's sequence length is tied to its size so that exactly one map is left as the decider, which means one order cannot serve pools of different sizes even at the same best-of.
+- Publishing a pool also publishes every hidden map inside it (a published pool is shown to players, so its maps must be visible too).
+- Pools can be assigned to whole rounds or to specific matches, including before the bracket is generated (rounds are projected from the expected team count). Reassigning a pool re-initialises the veto on affected ready matches, so a fixed pool takes effect immediately.
+- Optional per-match veto engine: the two sides (Team A acts first) alternate bans and picks per the pool's order. A veto runs only when the assigned pool's best-of matches the match's best-of and both teams are known. A/B sides are decided per match by the captain's rating (random / lower-rated-is-A / lower-rated-is-B / manual). "All upfront" completes the whole ban/pick before game 1; "continuous" reveals steps as games are played. Vetoes can be enabled or disabled mid-bracket.
 - Maps are referenced by id everywhere and resolved to names at display time, so renaming a map updates it everywhere and deleting one cascades cleanly.
 
 ### Running a tournament
 - Launch queue shows what is next; running scores (e.g. 1-0 in a Bo3) display live.
 - Captains report their own matches; the organizer can correct results.
+- Organizer score reporting supports an explicit winner and replay IDs together: you can record a match as, say, 1-1 with one team marked the winner (green) and keep the replay IDs - useful when a series was tied and decided by a forfeit. A pure forfeit (no games played) marks the losing side "FF" and awards the win; either way the correct team advances and the match is tagged FORFEIT.
+- Clicking a team anywhere in the bracket opens a popup listing its members, ratings, captain, seed, and combined rating.
 - Player editing at any time (this is also the substitution mechanism).
 - Standings tab: placements for elimination formats, W/L/game-diff for Swiss, points leaderboard for FFA.
+
+### Chat
+- Per-tournament chat with a Global room and a room per match (created only once both teams are known). Match chats for finished matches collapse into a "Completed matches" group, minimised by default.
+- `@name` mention autocomplete (Discord-style): type `@`, a filtered dropdown of players and team names appears, and the mention is highlighted in the message. A mentioned FAF player who is signed up gets a red badge on that room and on the CHAT tab until they read it.
+- `!organizer` (or the ping button) flags a room for the organizers; `!roll` posts a 1-100 roll.
+- Match chats are also linked from the Bracket and Vetoes tabs.
+
+### Vetoes tab
+- Shows each match's ban/pick veto. Players see only vetoes for matches their own team is in; organizers, casters (streamer link), tournament directors on official events, and site admins see all.
+- In-progress vetoes are listed first (newest round first), then completed ones (highlighted, with the decided maps).
+- On a **finished** tournament, a Veto statistics panel shows "most banned" and "most played" maps. It is visible only to organizers of that tournament, tournament directors (on official tournaments), and site admins.
+
+### Streamer mode and view-as-player (personal, per-browser toggles)
+- **Streamer mode** hides match results, scores, and who has advanced (a later slot shows "Winner of WB R1 M1" instead of the team), plus elimination styling and the standings table - for on-stream reveals. Each completed match has a "Reveal result" button to un-mask it one at a time; reveals persist across refreshes. Streamer mode only affects your own screen and never changes permissions.
+- **View as player** (shown only to organizers/admins) hides the organizer and admin controls on your screen so you can browse a tournament as a regular participant. It is a display filter only and does not change your actual permissions.
 
 ### Dates and time zones
 - Optional event date and time (entered in UTC) per tournament, editable any time.
 - Stored in UTC, displayed in each viewer's chosen time zone (remembered per browser). The Completed list is ordered most-recent-first.
+- The overview's "latest update" news block is hidden once a tournament is finished.
 
 ### Importing from Challonge
 - Import a completed Challonge tournament (single or double elimination) as a read-only bracket via the Import button. Bracket topology, per-game series scores, and final placements are reconstructed.
-- Gated by a separate import password so a trusted helper can import without full site-admin rights. A Challonge API v1 key is entered per import and never stored.
+- A Challonge API v1 key is entered per import and never stored.
 
-### Site admin
-- `/siteadmin`, gated by `ADMIN_PASSWORD`.
-- Requests tab: pending hosting requests (approve/deny), the allowed list (with revoke), and a direct grant by FAF id.
-- Logs tab: the audit log, newest first (capped, trimmed oldest-first).
+---
+
+## Roles and access
+
+Access is by FAF identity when FAF login is on. The roles:
+
+- **Site admin** - a FAF-linked identity with full control of the server, including deletion. Site admins are managed in the `/siteadmin` console (add/remove by FAF name or id, with a last-admin guard). The `ADMIN_PASSWORD` is not itself an admin login; it is used once to *link* the currently logged-in FAF account as a site admin (log in with FAF, then submit the password on `/siteadmin`). Because that link always re-adds, the password holder can never be locked out.
+- **Tournament director** - has organizer rights on all official tournaments, plus a director console (bans, logs, archived tournaments, articles). Managed by site admins.
+- **Organizer** - whoever creates a tournament. Any organizer can add co-organizers to their own tournament (by FAF name or id); only a site admin can remove one. With FAF login on, organizers are recognised by their FAF identity. (The old "organizer link" has been removed; add organizers via the Organizers panel instead.)
+- **Editor** and **Importer** - request-or-grant roles. A user can request the role and a site admin approves in the Requests tab, or a site admin grants it directly. Importer allows using the Challonge importer; editor allows editing content as configured.
+- **Captains** - with FAF login on, captains act by their FAF identity: they draft on their turn, invite/approve teammates, ban/pick in the veto, report their matches, and get one team rename in team games.
+- **Bans** - site admins and directors can ban FAF accounts from participating.
+- **Everyone else** - the public view is read-only plus signup.
 
 ---
 
 ## Architecture
 
-Plain `http` server, no framework, JSON file storage. Since the last refactor the code is split into small modules; there is still no build step and no runtime dependency.
+Plain `http` server, no framework, JSON file storage. The code is split into small modules; there is still no build step and no runtime dependency.
 
 ```
 server.js            HTTP layer: router, auth/OAuth, sessions, static + image serving,
-                     storage (loadDB/saveDB), audit, hosting approval
+                     storage (loadDB/saveDB with self-healing migrations), audit,
+                     hosting approval, roles (site admins, directors, editors, importers, bans)
 challonge.js         Challonge import
 lib/util.js          leaf helpers (ids, names, dates, base64url, entity lookups, ...)
-lib/bracket.js       pure bracket math (seeding, sizing, best-of validation)
-lib/match.js         match core + veto engine (create/route/evaluate/finalize, builders,
-                     pools, ban/pick sequence, A/B)
+lib/bracket.js       pure bracket math (seeding, sizing, best-of validation, per-round Bo lists)
+lib/match.js         match core + veto engine (create/route/evaluate/finalize with optional
+                     forced winner, builders, pools, ban/pick sequence, A/B)
 lib/swiss.js         Swiss standings/pairing/progression
 lib/ffa.js           FFA groups/points/ranking/rounds
-lib/teams.js         team formation (manual/open/grouped, draft, seeding)
+lib/teams.js         team formation (open create/join/invite, draft, seeding)
 lib/maps.js          map lookups and the public (id-stripped) map view
 public/index.html
-public/app.js        client (loaded first)
-public/app.home.js   client (home, tournament shell, overview)
-public/app.entrants.js  client (players, teams/draft, start config)
-public/app.bracket.js   client (bracket/rounds, veto)
-public/app.results.js   client (report, standings, admin, routing)
+public/app.js        client (loaded first; shared globals, helpers, streamer/player-view state)
+public/app.home.js   client (home, tournament shell, overview, header toggles, poll loop)
+public/app.entrants.js  client (players, teams/draft/open-team invites, start config)
+public/app.bracket.js   client (bracket/rounds, per-round Bo, bye hiding, veto, veto stats, team popup)
+public/app.results.js   client (report/forfeit, standings, chat, admin, routing)
 public/style.css
 docker-compose.yml
 ```
@@ -89,7 +125,9 @@ docker-compose.yml
 The client is delivered as several ordinary (non-module) scripts loaded in order; together they run in one shared global scope, exactly as a single file would.
 
 ### Storage
-A single JSON file at `DATA_DIR/db.json`, keyed by `tournaments`, `sessions` (FAF login), `oauthPending`, `auditLog` (capped at 5000), `hostRequests`, and `hostAllowed`. Map preview images are written as binary to `MAP_IMG_DIR` and served from `/map-images/<file>`; `db.json` stores only the filename.
+A single JSON file at `DATA_DIR/db.json`, keyed by `tournaments`, `sessions` (FAF login), `oauthPending`, `auditLog` (capped at 5000), `hostRequests`, `hostAllowed`, `siteAdmins`, `directors`, `editorAllowed`/`editorRequests`, `importerAllowed`/`importerRequests`, and `bans`. Per-user chat `@mention` pings are tracked per tournament. Map preview images are written as binary to `MAP_IMG_DIR` and served from `/map-images/<file>`; `db.json` stores only the filename.
+
+On load, `loadDB` runs small self-healing migrations: legacy "premade" tournaments are converted to the create/join/invite model, and teams with stale member ids (from an old withdrawal) are repaired. These only touch data during signup and never remove a team that has real players.
 
 ---
 
@@ -109,8 +147,7 @@ Edit the repo URL in `docker-compose.yml` to point at your fork. The container c
 |---|---|
 | `PORT` | HTTP port (default 8090). |
 | `DATA_DIR` | Where `db.json` is stored (default `./data`). |
-| `ADMIN_PASSWORD` | Enables the site-admin console. Gates the whole admin area. Not set = disabled. |
-| `IMPORT_PASSWORD` | Enables the Challonge Import button for anyone with this password (importer access only, not full admin). Not set = only site admins can import. |
+| `ADMIN_PASSWORD` | Bootstrap for site admin: log in with FAF, then submit this password on `/siteadmin` to link your account as a site admin. Not set = the console can't be bootstrapped. |
 | `FAF_CLIENT_ID` | FAF OAuth client id. |
 | `FAF_CLIENT_SECRET` | FAF OAuth client secret (never in the repo). |
 | `FAF_REDIRECT_URI` | Must exactly match what FAF registered, e.g. `https://your.host/auth/faf/callback`. |
@@ -118,11 +155,16 @@ Edit the repo URL in `docker-compose.yml` to point at your fork. The container c
 
 FAF login is active only when all three `FAF_*` variables are set. Removing them reverts to the legacy name-only flow (a safe rollback). Set secrets in your compose/stack config, never in the repo.
 
+`IMPORT_PASSWORD` is no longer used - importer access is now a role granted in the site-admin console. If it is still set in your environment it is simply ignored.
+
+### First site admin
+With FAF login on, do this once after deploy: log in with FAF, open `/siteadmin`, and submit `ADMIN_PASSWORD`. That links your FAF account as a site admin. From then on, manage admins, directors, and other roles from the console; the password is only ever needed to (re-)link an account.
+
 ---
 
 ## Updating
 
-Overwrite the changed files on GitHub (the web UI upload works; the folder structure in an update zip matches the repo), then restart the container - it re-clones on start.
+Overwrite the changed files on GitHub (the web UI upload works; the folder structure in an update zip matches the repo), then restart the container - it re-clones on start. Update zips may include files under `lib/`; make sure those land in the repo's `lib/` folder, not the root.
 
 If updates do not appear after a restart: static files are served with no-cache headers, but a reverse proxy in front (e.g. Nginx Proxy Manager) may cache CSS/JS itself. Turn OFF any "Cache Assets" option on the proxy host, then hard-refresh once (Ctrl+Shift+R). Favicons cache aggressively - reopen the tab if the icon looks stale.
 
@@ -136,13 +178,3 @@ No dependencies are needed to run the app. For editing there are optional dev-on
 - Type-check (JSDoc + `// @ts-check`, no emit): `npm run typecheck`
 
 Type-checking is opt-in per file via a top-of-file `// @ts-check` comment; `lib/util.js` and `lib/bracket.js` are checked today, the larger modules are not yet annotated. There is no compile step - `@ts-check` catches bugs in the editor and CI without changing what runs.
-
----
-
-## Roles
-
-- Site admin: password from `ADMIN_PASSWORD`; manages everything on the server, including deletion.
-- Importer: password from `IMPORT_PASSWORD`; can use the Challonge importer and nothing else.
-- Organizer: whoever creates the tournament. With FAF login on, hosting requires site-admin approval first, and the organizer is recognised by their FAF identity.
-- Captains: with FAF login on, captains act by their FAF identity - they draft on their turn, ban/pick in the veto, report their matches, and get one team rename in team games.
-- Everyone else: the public view is read-only plus signup.
