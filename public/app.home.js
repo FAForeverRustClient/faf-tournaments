@@ -588,16 +588,24 @@ function maybePromptLateSignup() {
     });
     return;
   }
+  const autoRated = fafAuth.enabled && T.ratingType && T.ratingType !== 'none';
+  const ratingInfo = autoRated
+    ? '<p class="muted small">Your <strong>' + esc(ratingTypeLabel(T.ratingType)) + '</strong> rating will be pulled from FAF automatically' + (T.ratingDate ? ' as of <strong>' + new Date(T.ratingDate).toLocaleDateString() + '</strong>' : '') + ' \u2014 you don\u2019t enter it.</p>'
+    : '<p class="muted small">Enter your FAF rating:</p><input type="number" id="lsRating" min="0" max="4000" placeholder="e.g. 1500" style="width:140px">';
   modal(`<h3>Sign up as a late entry?</h3>
     <p>Do you want to sign up to <strong>${esc(T.name)}</strong> as a late signup?</p>
-    <p class="muted small">Signups are closed, but this link lets you join${fafAuth.enabled ? ' as <strong>' + esc(me()) + '</strong>' : ''}. Enter your rating:</p>
-    <input type="number" id="lsRating" min="0" max="4000" placeholder="e.g. 1500" style="width:140px">
+    <p class="muted small">Signups are closed, but this link lets you join${fafAuth.enabled ? ' as <strong>' + esc(me()) + '</strong>' : ''}.</p>
+    ${ratingInfo}
     <div class="actions"><button class="btn ghost" id="lsNo">Cancel</button><button class="btn primary" id="lsYes">Sign up</button></div>`, root => {
     root.querySelector('#lsNo').onclick = closeModal;
     root.querySelector('#lsYes').onclick = async () => {
-      const rating = root.querySelector('#lsRating').value;
-      if (rating === '') return toast('Enter your rating', true);
-      const body = { rating, lateToken: late.token };
+      const body = { lateToken: late.token };
+      if (!autoRated) {
+        const rEl = root.querySelector('#lsRating');
+        const rating = rEl ? rEl.value : '';
+        if (rating === '') return toast('Enter your rating', true);
+        body.rating = rating;
+      }
       if (!fafAuth.enabled) { const nm = prompt('Your FAF name:'); if (!nm) return; body.name = nm; }
       try {
         await api('/api/t/' + late.id + '/signup', body);
@@ -1008,7 +1016,7 @@ function drawOverview(el) {
       }).join('')}</div>`;
   }
 
-  if ((T.news || []).length) {
+  if ((T.news || []).length && T.status !== 'finished') {
     const n = T.news[0];
     const unread = newsUnreadCount();
     html += `<div class="panel section news-post${n.important ? ' news-important' : ''}">

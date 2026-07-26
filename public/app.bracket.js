@@ -968,6 +968,42 @@ function drawVetoes(el) {
     </div>`;
   };
 
+  // ---- veto statistics (finished tournament; organizers, official-tourney directors, site admins) ----
+  const canSeeStats = viewerIsOrganizer()
+    || (fafAuth.user && fafAuth.user.director && T.category === 'official');
+  if (T.status === 'finished' && canSeeStats) {
+    const banCount = {}, playCount = {}, seen = {};
+    for (const m of vetoMatches) {
+      const v = m.veto; if (!v) continue;
+      for (const b of (v.banned || [])) { if (b.map) { banCount[b.map] = (banCount[b.map] || 0) + 1; seen[b.map] = 1; } }
+      for (const pk of (v.picks || [])) { if (pk.map) { playCount[pk.map] = (playCount[pk.map] || 0) + 1; seen[pk.map] = 1; } }
+      if (v.decider && v.decider.map) { playCount[v.decider.map] = (playCount[v.decider.map] || 0) + 1; seen[v.decider.map] = 1; }
+    }
+    const ids = Object.keys(seen);
+    if (ids.length) {
+      const totalBans = ids.reduce((s, id) => s + (banCount[id] || 0), 0);
+      const totalPlays = ids.reduce((s, id) => s + (playCount[id] || 0), 0);
+      const barRow = (id, n, denom, cls) => {
+        const pct = denom ? Math.round(n / denom * 100) : 0;
+        return `<div class="vstat-row"><span class="vstat-name">${esc(mapName(id))}</span>
+          <span class="vstat-bar"><span class="vstat-fill ${cls}" style="width:${denom ? Math.max(4, n / Math.max(1, denom) * 100) : 0}%"></span></span>
+          <span class="vstat-num">${n}</span></div>`;
+      };
+      const banRows = ids.slice().filter(id => banCount[id]).sort((a, b) => (banCount[b] || 0) - (banCount[a] || 0))
+        .map(id => barRow(id, banCount[id], Math.max(...ids.map(x => banCount[x] || 0)), 'ban')).join('');
+      const playRows = ids.slice().filter(id => playCount[id]).sort((a, b) => (playCount[b] || 0) - (playCount[a] || 0))
+        .map(id => barRow(id, playCount[id], Math.max(...ids.map(x => playCount[x] || 0)), 'play')).join('');
+      html += `<div class="panel section vstat-panel">
+        <div class="veto-card-head"><h2>Veto statistics</h2><span class="muted small">Organizers only</span></div>
+        <p class="muted small">Across ${vetoMatches.filter(m => m.veto && m.veto.done).length} completed veto${vetoMatches.filter(m => m.veto && m.veto.done).length === 1 ? '' : 's'} \u2014 ${totalBans} bans, ${totalPlays} maps played.</p>
+        <div class="vstat-cols">
+          <div class="vstat-col"><div class="vstat-h">Most banned</div>${banRows || '<div class="muted small">No bans.</div>'}</div>
+          <div class="vstat-col"><div class="vstat-h">Most played</div>${playRows || '<div class="muted small">No maps played.</div>'}</div>
+        </div>
+      </div>`;
+    }
+  }
+
   if (pending.length) {
     html += '<div class="veto-section-label">In progress \u2014 needs action</div>';
     html += pending.map(card).join('');

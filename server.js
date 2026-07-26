@@ -3959,36 +3959,24 @@ async function handleAPI(req, res, url) {
       if (m.status !== 'ready' && m.status !== 'live') return bad(res, 'Match not ready yet');
       const maxW = Math.ceil(m.bo / 2);
 
-      // Forfeit: award the win without a played score. b.forfeit is the team id that forfeited;
-      // that side is shown as "FF" (-1), the other is finalized as the winner. Organizer only.
-      if (b.forfeit) {
+      // Forfeit shorthand: {forfeit: loserId} with no score/winner still works — derive the winner
+      // as the other team and mark the loser FF (-1). A score and/or explicit winner can also be
+      // supplied (handled by the normal path below), e.g. a 1-1 that ended in a forfeit.
+      const noScore = (b.score1 === undefined || b.score1 === '') && (b.score2 === undefined || b.score2 === '');
+      if (b.forfeit && !b.winner && noScore) {
         if (!admin) return json(res, 403, { error: 'Only the organizer can record a forfeit' });
         const ffId = String(b.forfeit);
         if (ffId !== m.team1 && ffId !== m.team2) return bad(res, 'Forfeiting team is not in this match');
         const winId = ffId === m.team1 ? m.team2 : m.team1;
         if (!winId || winId === 'BYE') return bad(res, 'The opponent is not set yet');
-        // Optional played score (e.g. it was 1-1 then a team forfeited). If given and valid, keep
-        // those numbers for display; otherwise mark the forfeiting side FF (-1). Either way the win
-        // is forced to the non-forfeiting team, regardless of the numbers.
-        let fs1, fs2;
-        const hasScore = b.score1 !== undefined && b.score2 !== undefined && b.score1 !== '' && b.score2 !== '';
-        if (hasScore) {
-          const ps1 = parseInt(b.score1, 10), ps2 = parseInt(b.score2, 10);
-          if (!(ps1 >= 0 && ps2 >= 0 && ps1 <= maxW && ps2 <= maxW)) return bad(res, 'Forfeit score must be between 0 and ' + maxW);
-          fs1 = ps1; fs2 = ps2;
-        } else {
-          fs1 = ffId === m.team1 ? -1 : maxW;
-          fs2 = ffId === m.team1 ? maxW : -1;
-        }
         m.forfeit = ffId;
         m.pendingReport = null;
-        delete m.replayIds; delete m.drawReplayIds;
-        tlog(t, req, b.token, tTeamName(t, ffId) + ' forfeited vs ' + tTeamName(t, winId) + (hasScore ? ' at ' + fs1 + '\u2013' + fs2 : '') + ' \u2014 win awarded to ' + tTeamName(t, winId) + (m.status === 'done' ? ' (correction)' : ''));
+        const fs1 = ffId === m.team1 ? -1 : maxW, fs2 = ffId === m.team1 ? maxW : -1;
+        tlog(t, req, b.token, tTeamName(t, ffId) + ' forfeited vs ' + tTeamName(t, winId) + ' \u2014 win awarded to ' + tTeamName(t, winId) + (m.status === 'done' ? ' (correction)' : ''));
         finalizeMatch(t, m, fs1, fs2, winId);
         saveDB();
         return json(res, 200, { ok: true });
       }
-      delete m.forfeit;   // a normal score clears any prior forfeit flag
       const s1 = parseInt(b.score1, 10), s2 = parseInt(b.score2, 10);
       if (!(s1 >= 0 && s2 >= 0 && s1 <= maxW && s2 <= maxW)) return bad(res, 'Scores must be between 0 and ' + maxW);
       if (m.hcap && s1 < 1) return bad(res, 'This grand final starts 1-0 (upper bracket advantage)');
@@ -4006,7 +3994,27 @@ async function handleAPI(req, res, url) {
         m.drawReplayIds = b.drawReplayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
         if (!m.drawReplayIds.length) delete m.drawReplayIds;
       }
-      if (s1 === maxW || s2 === maxW) {
+      // Optional explicit winner (organizer only). Lets a match be finalized with a winner even
+      // when the score doesn't reach the normal threshold — e.g. it was 1-1 and one side forfeited,
+      // or any inconclusive score the organizer needs to resolve. Replay IDs are kept as normal.
+      let winOverride = null;
+      if (b.winner) {
+        if (!admin) return json(res, 403, { error: 'Only the organizer can set a winner directly' });
+        if (b.winner !== m.team1 && b.winner !== m.team2) return bad(res, 'Winner must be one of the two teams');
+        winOverride = String(b.winner);
+      } else if (b.forfeit) {
+        // forfeit with a played score but no explicit winner: the winner is the other team
+        if (!admin) return json(res, 403, { error: 'Only the organizer can record a forfeit' });
+        const ffId = String(b.forfeit);
+        if (ffId !== m.team1 && ffId !== m.team2) return bad(res, 'Forfeiting team is not in this match');
+        winOverride = ffId === m.team1 ? m.team2 : m.team1;
+      }
+      if (b.forfeit) { m.forfeit = String(b.forfeit); } else { delete m.forfeit; }
+
+      if (winOverride) {
+        finalizeMatch(t, m, s1, s2, winOverride);
+        tlog(t, req, b.token, 'set ' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ' to ' + s1 + '\u2013' + s2 + ', winner ' + tTeamName(t, winOverride) + (m.forfeit ? ' (forfeit)' : '') + (m.status === 'done' ? ' (correction)' : ''));
+      } else if (s1 === maxW || s2 === maxW) {
         finalizeMatch(t, m, s1, s2);
       } else {
         m.score1 = s1; m.score2 = s2;

@@ -246,6 +246,7 @@ svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .brow .bscore { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .ff-mark { font-family: var(--mono); font-size: 11px; font-weight: 700; color: #ff6369; letter-spacing: 1px; }
 .ff-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-solid); }
+.win-pick.on { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
 .brow.winner .bscore { color: var(--green); }
 .bname.tbd { color: var(--muted); font-style: italic; }
 .bfoot { padding: 5px 10px; border-top: 1px solid var(--line-solid); text-align: right; }
@@ -364,6 +365,17 @@ tbody tr:hover { background: #ffffff05; }
 .veto-done-tag { display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 1px; color: #3fb950; background: #2ea04322; border: 1px solid #2ea04366; border-radius: 3px; padding: 1px 6px; margin-right: 8px; vertical-align: 2px; }
 .vteam-name { cursor: pointer; }
 .vteam-name:hover { color: var(--amber); text-decoration: underline; }
+.vstat-panel { border-color: #FFB44744; }
+.vstat-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 8px; }
+.vstat-h { font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.vstat-row { display: grid; grid-template-columns: 130px 1fr 28px; align-items: center; gap: 8px; margin-bottom: 5px; }
+.vstat-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vstat-bar { height: 12px; background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 3px; overflow: hidden; }
+.vstat-fill { display: block; height: 100%; }
+.vstat-fill.ban { background: #ff6369aa; }
+.vstat-fill.play { background: #3fb95099; }
+.vstat-num { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
+@media (max-width: 640px) { .vstat-cols { grid-template-columns: 1fr; } }
 .veto-card .vetobox { border: none; padding: 0; background: transparent; }
 .veto-mini { margin-top: 6px; }
 .veto-mini-link { font-size: 12px; color: var(--amber); text-decoration: none; }

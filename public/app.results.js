@@ -19,40 +19,32 @@ function reportScoreAdmin(m) {
     ${pr ? '<p class="warn small">Pending player submission: ' + pr.score1 + '–' + pr.score2 + ' by ' + esc(pr.byName || '') + ' — <button class="btn primary small" id="rAccept">Accept it</button> <button class="btn ghost small" id="rReject">Reject it</button></p>' : ''}
     ${maps.length ? '<div class="mapblock"><div class="mapblock-head"><span>MAP POOL</span></div>' + mapRows(maps) + '</div>' : ''}
     <div class="row">
-      <div style="flex:1"><label>${esc(teamName(m.team1))}</label><input type="number" id="rs1" min="${m.hcap ? 1 : 0}" max="${maxW}" value="${m.score1 != null ? m.score1 : (m.hcap ? 1 : 0)}"></div>
-      <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="rs2" min="0" max="${maxW}" value="${m.score2 != null ? m.score2 : 0}"></div>
+      <div style="flex:1"><label>${esc(teamName(m.team1))}</label><input type="number" id="rs1" min="${m.hcap ? 1 : 0}" max="${maxW}" value="${(m.score1 != null && m.score1 >= 0) ? m.score1 : (m.hcap ? 1 : 0)}"></div>
+      <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="rs2" min="0" max="${maxW}" value="${(m.score2 != null && m.score2 >= 0) ? m.score2 : 0}"></div>
     </div>
     <label style="margin-top:10px">Replay IDs <span class="muted small">(optional, comma-separated \u2014 one per game, kept for the archive)</span></label>
     <input type="text" id="rReplays" value="${esc((m.replayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534001, 21534050">
     <label style="margin-top:10px">Draw replay IDs <span class="muted small">(optional \u2014 games that ended drawn and were replayed)</span></label>
     <input type="text" id="rDrawReplays" value="${esc((m.drawReplayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534010">
     <div class="ff-block">
-      <div class="muted small" style="margin-bottom:6px">Or record a forfeit \u2014 award the win with no score (the other team is marked <strong>FF</strong>):</div>
+      <label>Winner <span class="muted small">(only needed if the score doesn't decide it \u2014 e.g. 1\u20131 and someone forfeited)</span></label>
       <div class="row" style="gap:8px">
-        <button type="button" class="btn ghost small" id="rFf1">${esc(teamName(m.team1))} forfeits</button>
-        <button type="button" class="btn ghost small" id="rFf2">${esc(teamName(m.team2))} forfeits</button>
+        <button type="button" class="btn ghost small win-pick" data-win="${esc(m.team1)}">${esc(teamName(m.team1))}</button>
+        <button type="button" class="btn ghost small win-pick" data-win="${esc(m.team2)}">${esc(teamName(m.team2))}</button>
+        <button type="button" class="btn ghost small win-pick" data-win="">By score</button>
       </div>
+      <label style="margin-top:8px"><input type="checkbox" id="rFfChk"> Mark this result as a forfeit</label>
     </div>
     <div class="actions">
       <button class="btn ghost" id="rCancel">Cancel</button>
       <button class="btn primary" id="rGo">Save score</button>
     </div>`, root => {
     root.querySelector('#rCancel').onclick = closeModal;
-    const doForfeit = async (loserId) => {
-      const winName = teamName(loserId === m.team1 ? m.team2 : m.team1);
-      const s1v = root.querySelector('#rs1').value, s2v = root.querySelector('#rs2').value;
-      const hasScore = s1v !== '' && s2v !== '' && !(parseInt(s1v, 10) === 0 && parseInt(s2v, 10) === 0);
-      const scoreMsg = hasScore ? ('\n\nThe score ' + s1v + '\u2013' + s2v + ' will be kept, with ' + winName + ' marked the winner.') : ('\n\n' + winName + ' will get the win with the other team marked FF (no score).');
-      if (!confirm('Award the win to ' + winName + ' by forfeit?' + scoreMsg)) return;
-      try {
-        const payload = { matchId: m.id, forfeit: loserId, token: myToken() };
-        if (hasScore) { payload.score1 = s1v; payload.score2 = s2v; }
-        await api('/api/t/' + T.id + '/report', payload);
-        closeModal(); toast('Forfeit recorded'); await refresh();
-      } catch (e) { toast(e.message, true); }
-    };
-    const ff1 = root.querySelector('#rFf1'); if (ff1) ff1.onclick = () => doForfeit(m.team1);
-    const ff2 = root.querySelector('#rFf2'); if (ff2) ff2.onclick = () => doForfeit(m.team2);
+    // winner picker: highlight the chosen team; '' means decide by score
+    let chosenWinner = m.winner || '';
+    const paintWin = () => root.querySelectorAll('.win-pick').forEach(b => b.classList.toggle('on', b.dataset.win === chosenWinner));
+    root.querySelectorAll('.win-pick').forEach(b => b.onclick = () => { chosenWinner = b.dataset.win; paintWin(); });
+    paintWin();
     const conf = async (accept) => {
       try { await api('/api/t/' + T.id + '/report_confirm', { matchId: m.id, accept: accept ? 1 : 0, admin: adminToken(), token: myToken() }); closeModal(); toast(accept ? 'Accepted' : 'Rejected'); await refresh(); }
       catch (e) { toast(e.message, true); }
@@ -61,10 +53,13 @@ function reportScoreAdmin(m) {
     const rr = root.querySelector('#rReject'); if (rr) rr.onclick = () => conf(false);
     root.querySelector('#rGo').onclick = async () => {
       try {
+        const ff = root.querySelector('#rFfChk').checked;
         await api('/api/t/' + T.id + '/report', {
           matchId: m.id,
           score1: root.querySelector('#rs1').value,
           score2: root.querySelector('#rs2').value,
+          winner: chosenWinner || undefined,
+          forfeit: (ff && chosenWinner) ? (chosenWinner === m.team1 ? m.team2 : m.team1) : undefined,
           replayIds: root.querySelector('#rReplays').value.split(',').map(s => s.trim()).filter(Boolean),
           drawReplayIds: root.querySelector('#rDrawReplays').value.split(',').map(s => s.trim()).filter(Boolean),
           token: myToken()
