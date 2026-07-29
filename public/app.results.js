@@ -704,7 +704,7 @@ async function drawAdmin(el) {
         toast('Organizer added'); await refresh();
       } catch (e) { toast(e.message, true); }
     };
-  });
+  }, { tournamentId: T.id });
   el.querySelectorAll('[data-orgvis]').forEach(b => b.onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/organizer_visibility', { fafId: b.dataset.orgvis, hidden: b.dataset.hidden === '1' ? 0 : 1, admin: adminToken() });

@@ -703,7 +703,8 @@ async function renderSiteAdmin() {
 // {fafId,name} via /api/admin_lookup, then calls onPick.
 // Shared "add by FAF name or id" box. A purely numeric entry is taken as a FAF id directly
 // (no lookup needed); anything else is resolved to an id via /api/admin_lookup by exact name.
-function adminLookupBox(container, onPick) {
+function adminLookupBox(container, onPick, opts) {
+  opts = opts || {};
   container.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap">
     <input type="text" class="alName" placeholder="FAF name or id" autocomplete="off" style="flex:1;min-width:200px">
     <button class="btn alGo">Look up</button></div>
@@ -721,7 +722,9 @@ function adminLookupBox(container, onPick) {
     }
     result.textContent = 'Looking up…';
     try {
-      const rr = await fetch('/api/admin_lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: v }) });
+      const payload = { name: v };
+      if (opts.tournamentId) payload.tournamentId = opts.tournamentId;
+      const rr = await fetch('/api/admin_lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const d = await rr.json().catch(() => ({}));
       if (!rr.ok) throw new Error(d.error || 'Lookup failed');
       result.innerHTML = '';

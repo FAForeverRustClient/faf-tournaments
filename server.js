@@ -1284,12 +1284,18 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
-  // FAF player lookup for the site-admin/director tools (ban list, director list). Uses the
-  // caller's own FAF token; requires site-admin password or a director session.
+  // FAF player lookup for the site-admin/director tools (ban list, director list) and for
+  // organizers resolving a name to add a co-organizer. Uses the caller's own FAF token.
   if (parts.length === 2 && parts[1] === 'admin_lookup' && method === 'POST') {
     const b = await readBody(req);
-    const okAdmin = isSiteAdmin(req) || isDirector(req);
-    if (!okAdmin) return json(res, 403, { error: 'Site admin or director only' });
+    // site admins and directors may always look up; an organizer may look up for their own
+    // tournament (b.tournamentId), since they're allowed to add co-organizers to it.
+    let okAdmin = isSiteAdmin(req) || isDirector(req);
+    if (!okAdmin && b.tournamentId) {
+      const ot = db.tournaments[b.tournamentId];
+      if (ot && isOrganizer(ot, req)) okAdmin = true;
+    }
+    if (!okAdmin) return json(res, 403, { error: 'Organizer, director, or site admin only' });
     const login = cleanName(b.name, 40);
     if (!login) return bad(res, 'Enter a FAF name');
     const token = await fafValidToken(currentSession(req));
