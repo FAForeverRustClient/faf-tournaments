@@ -555,7 +555,7 @@ tbody tr:hover { background: #ffffff05; }
 }
 #toast.show { opacity: 1; }
 #toast.err { border-left-color: var(--red); }
-.modal-bg { position: fixed; inset: 0; background: rgba(5,9,14,.75); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; backdrop-filter: blur(2px); }
+.modal-bg { position: fixed; inset: 0; background: rgba(5,9,14,.86); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
 .modal { background: var(--panel); border: 1px solid #35506e; border-radius: var(--radius); padding: 24px; width: 100%; max-width: 480px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px #000c, 0 0 30px #5c9ee814; }
 .modal h3 { margin: 0 0 6px; font-size: 18px; }
 .modal .row { display: flex; gap: 12px; align-items: flex-start; }
@@ -866,3 +866,17 @@ tr.pickrow.on td:nth-child(2) { color: var(--green); font-weight: 600; }
 .sr-item:hover, .sr-ed:hover { border-color: var(--amber); }
 .sr-name, .sr-ed-name { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
 .sr-count { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.st-row.st-unused .st-name { color: var(--muted); }
+
+/* While a modal is open, stop the page behind it animating. Infinite CSS animations force
+   continuous compositing of everything underneath a full-screen overlay, which spins up fans
+   on long pages (the Matches tab in particular). */
+body.modal-open .pill.running::before,
+body.modal-open .livechip::before,
+body.modal-open .turnbanner { animation: none !important; }
+
+/* map thumbnails inside the match-details veto log */
+.vlog-thumb { width: 34px; height: 34px; object-fit: cover; border-radius: 3px; border: 1px solid var(--line-solid); display: block; }
+.vlog-thumb.ban { opacity: .4; filter: grayscale(.7); }
+.vlog-noimg { width: 34px; height: 34px; border-radius: 3px; border: 1px dashed var(--line-solid); display: block; }
+.vlog-row.with-thumb { grid-template-columns: 22px 52px 34px minmax(90px, 150px) 1fr; }

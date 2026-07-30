@@ -441,9 +441,14 @@ function modal(html, onMount, opts) {
   root.querySelector('.modal-bg').addEventListener('mousedown', e => {
     if (e.target.classList.contains('modal-bg')) closeModal();
   });
+  // pause background animations while the overlay covers the page (see style.css)
+  document.body.classList.add('modal-open');
   if (onMount) onMount(root);
 }
-function closeModal() { document.getElementById('modalRoot').innerHTML = ''; }
+function closeModal() {
+  document.getElementById('modalRoot').innerHTML = '';
+  document.body.classList.remove('modal-open');
+}
 
 const BO_OPTS = [1, 3, 5, 7];
 function boSelect(id, val) {

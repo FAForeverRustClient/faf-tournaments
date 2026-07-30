@@ -260,6 +260,14 @@ function showTeamPopup(teamId) {
   });
 }
 
+// A match with BYE on either side is not a real game: the team that "won" the bye has already
+// been advanced into its next match. Byes also CASCADE — a phantom match routes BYE into the slot
+// it feeds, so whole early losers-bracket rounds can be phantom too. The bracket hides these, and
+// every other view must use the same rule or the counts disagree with what people can see.
+function isPhantomMatch(m) {
+  return !m || m.team1 === 'BYE' || m.team2 === 'BYE';
+}
+
 function matchBox(m) {
   const admin = viewerIsOrganizer();
   const box = document.createElement('div');
@@ -1023,6 +1031,9 @@ function drawVetoes(el) {
     wireVeto(bodyEl, m);
     const vchat = cardEl.querySelector('[data-vchat]');
     if (vchat) vchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
+    // map thumbnails open the full preview. Only wired on the tab, not inside the match-details
+    // popup, where opening another modal would replace the popup the user is reading.
+    cardEl.querySelectorAll('[data-map-info]').forEach(t => t.onclick = () => showMapInfo(t.dataset.mapInfo));
     cardEl.querySelectorAll('[data-teamid]').forEach(nameEl => {
       nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
     });
@@ -1058,14 +1069,23 @@ function vetoOrderedLog(v) {
 function vetoLogHTML(v) {
   const log = vetoOrderedLog(v);
   if (!log.length) return '';
-  const rows = log.map(e => `<div class="vlog-row">
+  // small map preview per row; banned maps are dimmed. Clicking opens the full map lightbox.
+  const thumb = (id, banned) => {
+    const mo = mapObj(id);
+    if (mo && mo.image) {
+      return `<img class="vlog-thumb${banned ? ' ban' : ''}" src="/map-images/${encodeURIComponent(mo.image)}" alt="" loading="lazy" decoding="async" width="34" height="34" data-map-info="${esc(id)}">`;
+    }
+    return `<span class="vlog-noimg"${mo ? ' data-map-info="' + esc(id) + '"' : ''}></span>`;
+  };
+  const rows = log.map(e => `<div class="vlog-row with-thumb">
       <span class="vlog-n">${e.n}</span>
       <span class="vlog-act ${e.action}">${e.action === 'ban' ? 'BAN' : 'PICK'}</span>
+      ${thumb(e.map, e.action === 'ban')}
       <span class="vlog-team">${esc(teamName(e.by))}</span>
       <span class="vlog-map">${esc(mapName(e.map))}${e.action === 'pick' && e.game ? ' <span class="muted">(Game ' + e.game + ')</span>' : ''}</span>
     </div>`).join('');
   const dec = v.decider
-    ? `<div class="vlog-row decider"><span class="vlog-n">\u2605</span><span class="vlog-act dec">DECIDER</span><span class="vlog-team muted">last map standing</span><span class="vlog-map">${esc(mapName(v.decider.map))}${v.decider.game ? ' <span class="muted">(Game ' + v.decider.game + ')</span>' : ''}</span></div>`
+    ? `<div class="vlog-row decider with-thumb"><span class="vlog-n">\u2605</span><span class="vlog-act dec">DECIDER</span>${thumb(v.decider.map, false)}<span class="vlog-team muted">last map standing</span><span class="vlog-map">${esc(mapName(v.decider.map))}${v.decider.game ? ' <span class="muted">(Game ' + v.decider.game + ')</span>' : ''}</span></div>`
     : '';
   return `<div class="veto-log"><div class="veto-head">Ban / pick order</div>${rows}${dec}</div>`;
 }
@@ -1267,7 +1287,7 @@ function bracketColumns(el, bracket, title, gfMatch, division) {
     for (const m of ms.filter(x => x.round === r).sort((a, b) => a.index - b.index)) {
       // Hide first-round byes: a match where one side is BYE is not a real game. The team that
       // "won" the bye has already been advanced into its next-round match, so it shows there.
-      if (m.team1 === 'BYE' || m.team2 === 'BYE') continue;
+      if (isPhantomMatch(m)) continue;
       mc.appendChild(matchBox(m));
     }
     col.appendChild(mc);
@@ -1950,7 +1970,7 @@ function matchStateLabel(m, masked) {
 }
 
 function drawMatchesTab(el) {
-  const all = (T.matches || []).filter(m => m.bracket !== 'ffa');
+  const all = (T.matches || []).filter(m => m.bracket !== 'ffa' && !isPhantomMatch(m));
   if (!all.length) {
     el.innerHTML = '<div class="panel"><div class="empty">No matches yet. They appear once the bracket is generated.</div></div>';
     return;
