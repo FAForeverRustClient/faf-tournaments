@@ -1030,6 +1030,46 @@ function drawVetoes(el) {
 }
 
 // veto section HTML for a match (empty string if no veto)
+// Rebuild the veto's actions in the true order they happened. `banned` and `picks` are each
+// appended in step order, but interleaved bans/picks lose their relative order across the two
+// arrays — the sequence tells us which array the next completed step came from.
+function vetoOrderedLog(v) {
+  if (!v || !Array.isArray(v.sequence)) return [];
+  const bans = (v.banned || []).slice();
+  const picks = (v.picks || []).slice().sort((a, b) => a.game - b.game);
+  let bi = 0, pi = 0;
+  const out = [];
+  const doneSteps = Math.min(v.done ? v.sequence.length : (v.stepIndex || 0), v.sequence.length);
+  for (let i = 0; i < doneSteps; i++) {
+    const st = v.sequence[i];
+    if (!st) break;
+    if (st.action === 'ban') {
+      const b = bans[bi++];
+      if (b) out.push({ n: i + 1, action: 'ban', by: b.by, map: b.map });
+    } else {
+      const p = picks[pi++];
+      if (p) out.push({ n: i + 1, action: 'pick', by: p.by, map: p.map, game: p.game });
+    }
+  }
+  return out;
+}
+
+// Ordered "who did what" list for a veto — the step number, the team, and the map.
+function vetoLogHTML(v) {
+  const log = vetoOrderedLog(v);
+  if (!log.length) return '';
+  const rows = log.map(e => `<div class="vlog-row">
+      <span class="vlog-n">${e.n}</span>
+      <span class="vlog-act ${e.action}">${e.action === 'ban' ? 'BAN' : 'PICK'}</span>
+      <span class="vlog-team">${esc(teamName(e.by))}</span>
+      <span class="vlog-map">${esc(mapName(e.map))}${e.action === 'pick' && e.game ? ' <span class="muted">(Game ' + e.game + ')</span>' : ''}</span>
+    </div>`).join('');
+  const dec = v.decider
+    ? `<div class="vlog-row decider"><span class="vlog-n">\u2605</span><span class="vlog-act dec">DECIDER</span><span class="vlog-team muted">last map standing</span><span class="vlog-map">${esc(mapName(v.decider.map))}${v.decider.game ? ' <span class="muted">(Game ' + v.decider.game + ')</span>' : ''}</span></div>`
+    : '';
+  return `<div class="veto-log"><div class="veto-head">Ban / pick order</div>${rows}${dec}</div>`;
+}
+
 function vetoHTML(m) {
   if (!m.veto) return '';
   const v = m.veto;
@@ -1073,7 +1113,9 @@ function vetoHTML(m) {
   if (v.done) {
     h += '<div class="veto-head">Maps</div><div class="veto-games">';
     h += games.map(g => `<div class="veto-game"><span class="vg-num">Game ${g.game}</span>${mapChip(g.map, 'play')}${g === v.decider ? '<span class="vg-dec">decider</span>' : ''}</div>`).join('');
-    h += '</div></div>';
+    h += '</div>';
+    h += vetoLogHTML(v);
+    h += '</div>';
     return h;
   }
 
@@ -1097,6 +1139,7 @@ function vetoHTML(m) {
     }).join('') + '</div>';
     if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span>' + mapChip(g.map, 'play') + '</div>').join('') + '</div>';
     h += '</div>';
+    h += vetoLogHTML(v);
   }
 
   // remaining maps: clickable if it's the viewer's turn (ban or pick)
@@ -1889,3 +1932,176 @@ function drawFfaRounds(el) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Matches tab — a flat list of every match, for observers, casters and players
+// who just want "what's on and what's done" without reading the bracket. It is
+// an ALTERNATIVE view: it never replaces the bracket, vetoes or chat.
+// ---------------------------------------------------------------------------
+
+// Human status for the list. Mirrors the pipeline: waiting -> picks & bans -> live -> concluded.
+function matchStateLabel(m, masked) {
+  if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return { txt: 'Waiting', cls: 'wait' };
+  if (!masked && m.status === 'done') return { txt: 'Concluded', cls: 'done' };
+  if (masked && m.status === 'done') return { txt: 'Played', cls: 'live' };
+  if (m.veto && !m.veto.done) return { txt: 'Picks & bans', cls: 'veto' };
+  if (m.status === 'live') return { txt: 'Live', cls: 'live' };
+  return { txt: 'Ready', cls: 'ready' };
+}
+
+function drawMatchesTab(el) {
+  const all = (T.matches || []).filter(m => m.bracket !== 'ffa');
+  if (!all.length) {
+    el.innerHTML = '<div class="panel"><div class="empty">No matches yet. They appear once the bracket is generated.</div></div>';
+    return;
+  }
+  const myTeamId = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
+  // later rounds first within each group, mirroring the Vetoes tab ordering
+  const rank = m => (m.bracket === 'gf' ? 1000 : 0) + (m.round || 0) * 10 + (m.bracket === 'lb' ? 1 : 0);
+  const byRound = (a, b) => rank(a) - rank(b) || (a.index || 0) - (b.index || 0);
+
+  const known = m => m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE';
+  const mine = myTeamId ? all.filter(m => m.team1 === myTeamId || m.team2 === myTeamId).sort(byRound) : [];
+  const concluded = all.filter(m => m.status === 'done').sort((a, b) => rank(b) - rank(a));
+  const ongoing = all.filter(m => m.status !== 'done' && known(m)).sort(byRound);
+  const pending = all.filter(m => m.status !== 'done' && !known(m)).sort(byRound);
+
+  const row = (m) => {
+    const masked = streamerMode && !revealedMatches.has(m.id);
+    const st = matchStateLabel(m, masked);
+    // a slot fed by a completed-but-unrevealed match must stay hidden in streamer mode too
+    const nameFor = (tid, slot) => {
+      if (!tid || tid === 'BYE') {
+        const src = feeders[m.id + ':' + slot];
+        return '<span class="muted">' + (src ? esc(src.type + ' of ' + mLabel(src.m)) : 'TBD') + '</span>';
+      }
+      const feed = feeders[m.id + ':' + slot];
+      if (masked && feed && feed.m && feed.m.status === 'done' && !revealedMatches.has(feed.m.id)) {
+        return '<span class="muted">' + esc(feed.type + ' of ' + mLabel(feed.m)) + '</span>';
+      }
+      const win = !masked && m.winner === tid;
+      return `<span class="mt-team${win ? ' win' : ''}" data-teamid="${esc(tid)}">${esc(teamName(tid))}</span>`;
+    };
+    const ff = (tid) => (m.forfeit && tid === m.forfeit && m.score1 != null && (tid === m.team1 ? m.score1 : m.score2) < 0);
+    let result = '<span class="muted">—</span>';
+    if (!masked && (m.score1 != null || m.score2 != null)) {
+      const s1 = ff(m.team1) ? 'FF' : (m.score1 != null && m.score1 >= 0 ? m.score1 : 0);
+      const s2 = ff(m.team2) ? 'FF' : (m.score2 != null && m.score2 >= 0 ? m.score2 : 0);
+      result = `<span class="mono">${s1}:${s2}</span>${m.forfeit ? ' <span class="ff-mark">FF</span>' : ''}`;
+    } else if (masked && m.status === 'done') {
+      result = '<span class="muted">hidden</span>';
+    }
+    const revealBtn = (streamerMode && m.status === 'done')
+      ? `<button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? 'Hide' : 'Reveal'}</button>` : '';
+    return `<tr data-mrow="${m.id}">
+      <td class="mono small muted">${esc(mLabel(m))}</td>
+      <td>${nameFor(m.team1, 1)}</td>
+      <td>${nameFor(m.team2, 2)}</td>
+      <td><span class="mt-state ${st.cls}">${esc(st.txt)}</span></td>
+      <td>${result}</td>
+      <td class="mt-actions">${revealBtn}<button class="btn ghost small" data-mdet="${m.id}">Details</button></td>
+    </tr>`;
+  };
+
+  const table = (list) => `<table class="mt-table"><thead><tr>
+      <th>Round</th><th>Team 1</th><th>Team 2</th><th>Status</th><th>Result</th><th></th>
+    </tr></thead><tbody>${list.map(row).join('')}</tbody></table>`;
+
+  const section = (title, list, empty) => list.length
+    ? `<div class="panel section"><h2>${esc(title)} <span class="h2-strong">(${list.length})</span></h2>${table(list)}</div>`
+    : (empty ? `<div class="panel section"><h2>${esc(title)}</h2><div class="empty">${esc(empty)}</div></div>` : '');
+
+  let html = '';
+  if (mine.length) html += section('My matches', mine);
+  html += section('Ongoing & upcoming', ongoing, 'Nothing live right now.');
+  if (pending.length) html += section('Not yet decided', pending);
+  html += section('Concluded', concluded, 'No matches finished yet.');
+  el.innerHTML = html;
+
+  el.querySelectorAll('[data-mdet]').forEach(b => b.onclick = () => {
+    const m = T.matches.find(x => x.id === b.dataset.mdet);
+    if (m) showMatchDetails(m);
+  });
+  el.querySelectorAll('[data-reveal]').forEach(b => b.onclick = () => {
+    const id = b.dataset.reveal;
+    if (revealedMatches.has(id)) revealedMatches.delete(id); else revealedMatches.add(id);
+    saveRevealed();
+    drawTournament();
+  });
+  el.querySelectorAll('[data-teamid]').forEach(nameEl => {
+    nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
+  });
+}
+
+// Match details popup opened from the Matches tab: teams with their players, the score, and the
+// ban/pick history. Score reporting is offered here on exactly the same terms as on the bracket,
+// so a captain allowed to submit there can submit here too.
+function showMatchDetails(m) {
+  const masked = streamerMode && !revealedMatches.has(m.id);
+  const st = matchStateLabel(m, masked);
+  const teamCol = (tid, score) => {
+    const tm = T.teams && T.teams.find(x => x.id === tid);
+    const hideName = masked && (() => {
+      const feed = feeders[m.id + ':' + (tid === m.team1 ? 1 : 2)];
+      return feed && feed.m && feed.m.status === 'done' && !revealedMatches.has(feed.m.id);
+    })();
+    if (!tm || hideName) {
+      const feed = feeders[m.id + ':' + (tid === m.team1 ? 1 : 2)];
+      return `<div class="md-team"><div class="md-tname muted">${esc(feed ? feed.type + ' of ' + mLabel(feed.m) : 'TBD')}</div></div>`;
+    }
+    const mems = (tm.playerIds || []).map(pid => T.players.find(p => p.id === pid)).filter(Boolean)
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    const win = !masked && m.winner === tid;
+    const isFf = m.forfeit === tid && score != null && score < 0;
+    return `<div class="md-team${win ? ' win' : ''}">
+      <div class="md-tname" data-teamid="${esc(tid)}">${esc(tm.name)}${win ? ' <span class="md-wintag">WINNER</span>' : ''}${isFf ? ' <span class="ff-mark">FF</span>' : ''}</div>
+      <div class="md-players">${mems.length
+        ? mems.map(p => `<div class="md-p"><span>${p.id === tm.captainId ? '<span class="cap-tag">C</span> ' : ''}${esc(p.name)}</span><span class="mono muted">${p.rating != null ? p.rating : '\u2014'}</span></div>`).join('')
+        : '<div class="muted small">No players listed.</div>'}</div>
+    </div>`;
+  };
+  const s1 = (m.forfeit === m.team1 && m.score1 < 0) ? 'FF' : (m.score1 != null && m.score1 >= 0 ? m.score1 : 0);
+  const s2 = (m.forfeit === m.team2 && m.score2 < 0) ? 'FF' : (m.score2 != null && m.score2 >= 0 ? m.score2 : 0);
+  const scoreLine = masked
+    ? '<div class="md-score muted">hidden</div>'
+    : `<div class="md-score">${s1}<span class="md-colon">:</span>${s2}</div>`;
+
+  const canReport = !T.imported && (m.status === 'ready' || m.status === 'live') && canReportMatch(m);
+  const canCorrect = !T.imported && m.status === 'done' && viewerIsAdmin();
+  const chatOk = matchChatAllowed(m);
+
+  modal(`<h3>${esc(mLabel(m))} <span class="muted" style="font-weight:400">BO${m.bo}</span>
+      <span class="mt-state ${st.cls}" style="margin-left:8px">${esc(st.txt)}</span></h3>
+    <div class="md-grid">
+      ${teamCol(m.team1, m.score1)}
+      <div class="md-mid">${scoreLine}<div class="muted small">vs</div></div>
+      ${teamCol(m.team2, m.score2)}
+    </div>
+    <div id="mdVeto"></div>
+    <div class="md-foot">
+      ${chatOk ? '<a href="#" id="mdChat" class="veto-mini-link">\u{1F4AC} Match chat</a>' : ''}
+      ${(streamerMode && m.status === 'done') ? '<button class="btn ghost small" id="mdReveal">' + (revealedMatches.has(m.id) ? 'Hide result' : 'Reveal result') + '</button>' : ''}
+    </div>
+    <div class="actions">
+      ${(canReport || canCorrect) ? '<button class="btn ' + (canReport ? 'amber' : 'ghost') + '" id="mdReport">' + (canReport ? 'Report score' : 'Correct result') + '</button>' : ''}
+      <button class="btn ghost" id="mdClose">Close</button>
+    </div>`, root => {
+    // ban/pick history, hidden while masked so a caster doesn't spoil the maps
+    const vh = root.querySelector('#mdVeto');
+    if (m.veto && !masked) { vh.innerHTML = vetoHTML(m); wireVeto(vh, m); }
+    else if (m.veto && masked) vh.innerHTML = '<div class="muted small" style="margin-top:10px">Map veto hidden by streamer mode.</div>';
+    root.querySelectorAll('[data-teamid]').forEach(n => n.onclick = (e) => {
+      e.preventDefault(); closeModal(); showTeamPopup(n.dataset.teamid);
+    });
+    const c = root.querySelector('#mdChat');
+    if (c) c.onclick = (e) => { e.preventDefault(); closeModal(); openMatchChat(m); };
+    const rv = root.querySelector('#mdReveal');
+    if (rv) rv.onclick = () => {
+      if (revealedMatches.has(m.id)) revealedMatches.delete(m.id); else revealedMatches.add(m.id);
+      saveRevealed(); closeModal(); drawTournament();
+    };
+    const rep = root.querySelector('#mdReport');
+    if (rep) rep.onclick = () => { closeModal(); reportScore(m.id); };
+    root.querySelector('#mdClose').onclick = closeModal;
+  }, { wide: true });
+}

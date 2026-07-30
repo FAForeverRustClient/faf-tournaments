@@ -93,6 +93,9 @@ function loadDB() {
   if (!db.tourneyBans || typeof db.tourneyBans !== 'object') db.tourneyBans = {};  // fafId -> {name, reason, expires, at, by}
   if (!Array.isArray(db.articles)) db.articles = [];
   if (!db.profiles || typeof db.profiles !== 'object') db.profiles = {};   // per-FAF-account profile (e.g. discord handle)
+  // Tournament series: a lightweight grouping label. Editions are fully independent of one
+  // another (no qualification, no fixed cadence) — a series just links them for browsing.
+  if (!db.series || typeof db.series !== 'object') db.series = {};   // id -> {id,name,description,at,by}
   // migrate v1 records so old test tournaments don't crash the client
   let changed = false;
   for (const t of Object.values(db.tournaments)) {
@@ -192,6 +195,7 @@ function isImporter(req) {
 // who deleted that. Capped so db.json can't grow without bound.
 const AUDIT_MAX = 5000;
 function clientIp(req) {
+  if (!req || !req.headers) return '';        // system-initiated (e.g. scheduled publish)
   const xf = req.headers['x-forwarded-for'];
   if (xf) return String(xf).split(',')[0].trim();
   return (req.socket && req.socket.remoteAddress) || '';
@@ -258,6 +262,37 @@ function canHost(req, token) {
 // organizer link while logged in. Site admin always counts.
 // A tournament is "official" only when explicitly tagged so (site admin sets this).
 function isOfficial(t) { return t && t.category === 'official'; }
+// Sort key for a tournament by its event date, falling back to creation time.
+function tourneyMs(t) {
+  if (!t) return 0;
+  const v = t.eventDate || t.challongeDate || null;
+  const ms = v ? new Date(v).getTime() : NaN;
+  return isNaN(ms) ? (t.createdAt || 0) : ms;
+}
+// Scheduled publishing: a draft can carry publishAt (UTC ISO). There is no background timer in
+// this app, so we sweep lazily whenever tournaments are listed or opened — that covers every way
+// a tournament can become visible. Returns true if anything changed (caller saves).
+function sweepScheduledPublishes() {
+  const now = Date.now();
+  let changed = false;
+  for (const t of Object.values(db.tournaments || {})) {
+    if (t.published !== false || !t.publishAt) continue;
+    const at = new Date(t.publishAt).getTime();
+    if (!isNaN(at) && now >= at) {
+      t.published = true;
+      t.publishedAt = new Date(now).toISOString();
+      t.publishAt = null;
+      changed = true;
+      audit(null, 'tournament_published', {
+        tournamentId: t.id, tournamentName: t.name,
+        actor: { kind: 'system', fafId: null, name: 'Scheduled' },
+        detail: 'auto-published on schedule'
+      });
+    }
+  }
+  if (changed) saveDB();
+  return changed;
+}
 // Site admin: a FAF account linked as site admin. The ADMIN_PASSWORD (GADMIN) is no longer an
 // identity of its own — it is only a bootstrap that links the CURRENT logged-in account (see
 // the /api/siteadmin link endpoint). So every site-admin check is now session-based.
@@ -541,7 +576,9 @@ function teamOfCaptainToken(t, token) {
 function publicView(t) {
   return {
     id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', sponsors: t.sponsors || '', category: t.category || null,
-    published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
+    published: t.published !== false ? 1 : 0, publishAt: t.publishAt || null, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
+    seriesId: t.seriesId || null,
+    seriesName: (t.seriesId && db.series[t.seriesId]) ? db.series[t.seriesId].name : null,
     signupOpensAt: t.signupOpensAt || null,
     signupClosesAt: t.signupClosesAt || null,
     minTeams: t.minTeams || 0,
@@ -1681,7 +1718,89 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { tournaments: mine });
   }
 
+  // ---------- tournament series ----------
+  // A series is only a grouping label: editions are independent tournaments that share a name.
+  // Anyone can read; site admins and directors create and edit them.
+  if (parts.length === 2 && parts[1] === 'series' && method === 'GET') {
+    sweepScheduledPublishes();
+    const out = Object.values(db.series).map(s => {
+      const eds = Object.values(db.tournaments).filter(t => t.seriesId === s.id && !t.archived && t.published !== false);
+      const latest = eds.slice().sort((a, c) => (tourneyMs(c) - tourneyMs(a)))[0] || null;
+      return {
+        id: s.id, name: s.name, description: s.description || '',
+        editions: eds.length,
+        latestName: latest ? latest.name : null,
+        latestId: latest ? latest.id : null,
+        latestDate: latest ? (latest.eventDate || null) : null
+      };
+    }).sort((a, b) => b.editions - a.editions || String(a.name).localeCompare(String(b.name)));
+    return json(res, 200, { series: out });
+  }
+
+  if (parts.length === 3 && parts[1] === 'series' && method === 'GET') {
+    sweepScheduledPublishes();
+    const s = db.series[parts[2]];
+    if (!s) return json(res, 404, { error: 'Series not found' });
+    const canSeeDrafts = isSiteAdmin(req) || isDirector(req);
+    const sess = currentSession(req);
+    const myFid = sess && sess.fafId;
+    const eds = Object.values(db.tournaments)
+      .filter(t => t.seriesId === s.id && !t.archived)
+      .filter(t => t.published !== false || canSeeDrafts || (myFid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(myFid) >= 0))
+      .sort((a, c) => tourneyMs(c) - tourneyMs(a))
+      .map(t => ({
+        id: t.id, name: t.name, status: t.status, category: t.category || null,
+        published: t.published !== false ? 1 : 0,
+        competition: t.competition, bracketType: t.bracketType, teamSize: t.teamSize,
+        players: (t.players || []).length, teams: (t.teams || []).length,
+        eventDate: t.eventDate || null, abandoned: t.abandoned ? 1 : 0,
+        championTeamId: t.championTeamId || null,
+        champion: t.championTeamId ? ((t.teams || []).find(x => x.id === t.championTeamId) || {}).name || null : null
+      }));
+    return json(res, 200, {
+      series: { id: s.id, name: s.name, description: s.description || '' },
+      editions: eds,
+      canEdit: !!(isSiteAdmin(req) || isDirector(req))
+    });
+  }
+
+  if (parts.length === 2 && parts[1] === 'series' && method === 'POST') {
+    const b = await readBody(req);
+    if (!(isSiteAdmin(req) || isDirector(req))) return json(res, 403, { error: 'Site admin or director only' });
+    const act = String(b.action || 'create');
+    if (act === 'create') {
+      const name = cleanName(b.name, 80);
+      if (!name) return bad(res, 'Enter a series name');
+      if (Object.values(db.series).some(s => s.name.toLowerCase() === name.toLowerCase())) return bad(res, 'A series with that name already exists');
+      const id = uid(8);
+      db.series[id] = { id, name, description: cleanName(b.description, 500) || '', at: now(), by: actorOf(req, null).name };
+      saveDB();
+      audit(req, 'series_created', { detail: name });
+      return json(res, 200, { ok: true, id });
+    }
+    if (act === 'update') {
+      const s = db.series[String(b.id || '')];
+      if (!s) return bad(res, 'Series not found');
+      if (b.name !== undefined) { const n = cleanName(b.name, 80); if (!n) return bad(res, 'Enter a series name'); s.name = n; }
+      if (b.description !== undefined) s.description = cleanName(b.description, 500) || '';
+      saveDB();
+      audit(req, 'series_updated', { detail: s.name });
+      return json(res, 200, { ok: true });
+    }
+    if (act === 'delete') {
+      const s = db.series[String(b.id || '')];
+      if (!s) return bad(res, 'Series not found');
+      for (const t of Object.values(db.tournaments)) if (t.seriesId === s.id) t.seriesId = null;
+      delete db.series[s.id];
+      saveDB();
+      audit(req, 'series_deleted', { detail: s.name });
+      return json(res, 200, { ok: true });
+    }
+    return bad(res, 'Unknown action');
+  }
+
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
+    sweepScheduledPublishes();   // flip any drafts whose scheduled publish time has passed
     const sess = currentSession(req);
     const myFid = sess && sess.fafId;
     const list = Object.values(db.tournaments)
@@ -1692,6 +1811,7 @@ async function handleAPI(req, res, url) {
       .map(t => ({
         id: t.id, name: t.name, status: t.status, category: t.category || null,
         published: t.published !== false ? 1 : 0,
+        publishAt: t.publishAt || null,
         competition: t.competition, bracketType: t.bracketType,
         teamSize: t.teamSize, players: t.players.length,
         teams: t.teams.length, createdAt: t.createdAt,
@@ -2044,12 +2164,54 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    if (sub === 'set_series') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const sid = String(b.seriesId || '').trim();
+      if (!sid) {
+        t.seriesId = null;
+        saveDB();
+        tlog(t, req, b.admin, 'removed this tournament from its series');
+        return json(res, 200, { ok: true, seriesId: null });
+      }
+      const s = db.series[sid];
+      if (!s) return bad(res, 'Series not found');
+      t.seriesId = sid;
+      saveDB();
+      tlog(t, req, b.admin, 'added this tournament to the "' + s.name + '" series');
+      return json(res, 200, { ok: true, seriesId: sid });
+    }
+
     if (sub === 'publish') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      // publishAt: schedule instead of publishing now. Empty/absent clears any schedule and
+      // publishes immediately (the existing behaviour).
+      if (b.publishAt !== undefined && b.publishAt) {
+        const when = cleanDate(b.publishAt);
+        if (!when) return bad(res, 'Invalid publish date');
+        const ms = new Date(when).getTime();
+        if (isNaN(ms)) return bad(res, 'Invalid publish date');
+        if (ms <= Date.now()) {
+          t.published = true; t.publishAt = null;
+          saveDB();
+          audit(req, 'tournament_published', { tournamentId: t.id, tournamentName: t.name, token: b.admin });
+          return json(res, 200, { ok: true, published: 1 });
+        }
+        t.publishAt = when;
+        saveDB();
+        audit(req, 'tournament_publish_scheduled', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: 'scheduled for ' + when });
+        return json(res, 200, { ok: true, publishAt: when });
+      }
+      if (b.cancelSchedule) {
+        t.publishAt = null;
+        saveDB();
+        audit(req, 'tournament_publish_unscheduled', { tournamentId: t.id, tournamentName: t.name, token: b.admin });
+        return json(res, 200, { ok: true, publishAt: null });
+      }
       t.published = true;
+      t.publishAt = null;
       saveDB();
       audit(req, 'tournament_published', { tournamentId: t.id, tournamentName: t.name, token: b.admin });
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, published: 1 });
     }
 
     if (sub === 'signup') {
@@ -4046,7 +4208,7 @@ const MIME = {
 
 function serveStatic(req, res, url) {
   let p = url.pathname;
-  if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/editor' || p === '/hall' || p === '/faq' || p.startsWith('/t/')) p = '/index.html';
+  if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/editor' || p === '/hall' || p === '/faq' || p === '/series' || p.startsWith('/series/') || p.startsWith('/t/')) p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {

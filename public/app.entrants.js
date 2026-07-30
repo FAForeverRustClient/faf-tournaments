@@ -364,6 +364,8 @@ function localDatetimeValue(ms) {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
+let _faSort = 'rating';   // free-agent list sort: rating | name | new
+
 function drawOpenTeams(el) {
   const admin = viewerIsOrganizer();
   const myPid = T.viewer && T.viewer.signedUpPlayerId;
@@ -484,6 +486,7 @@ function drawOpenTeams(el) {
         <p class="muted small" style="margin-bottom:8px">Beyond the ${cap}-team cap. If a participant drops or misses check-in, the next checked-in waiting team moves up (signup order).</p>
         <div class="teamgrid">${waitlist.map(teamCard).join('')}</div></div>`;
     }
+    html += '<!--FREEAGENTS-->';
     if (forming.length) {
       html += `<div class="panel section"><h2>Forming <span class="h2-strong">(${forming.length})</span></h2>
         <p class="muted small" style="margin-bottom:8px">Not full yet — need ${size} players to enter.</p>
@@ -491,30 +494,44 @@ function drawOpenTeams(el) {
     }
   }
 
-  // ---- unteamed players ----
+  // ---- free agents (players not on a team) ----
+  // Kept prominent and explicitly sorted: these are the people captains are recruiting, so they
+  // get a real card grid with a sort control rather than a wrapped list of chips.
   const unteamed = T.players.filter(p => !p.teamId);
   // the viewer can invite if they captain a team that still has room (or is an organizer)
   const myCapTeam = (myTeam && myPlayer && myTeam.captainId === myPlayer.id && myTeam.playerIds.length < size) ? myTeam : null;
+  let freeAgentsHtml = '';
   if (unteamed.length) {
-    html += `<div class="panel section"><h2>Not on a team yet <span class="h2-strong">(${unteamed.length})</span></h2>
-      <div class="unteamed">${unteamed.slice().sort((a, b) => {
-        const ar = a.rating, br = b.rating;
-        if (ar == null && br == null) return 0;
-        if (ar == null) return 1; if (br == null) return -1; return br - ar;
-      }).map(p => {
-        let b = '';
-        if (p.fafId) b = ' <span class="idbadge verified">\u2713</span>';
+    const mode = _faSort || 'rating';
+    const sorted = unteamed.slice().sort((a, b) => {
+      if (mode === 'name') return String(a.name || '').localeCompare(String(b.name || ''));
+      if (mode === 'new') return (b.joinedAt || 0) - (a.joinedAt || 0);
+      const ar = a.rating, br = b.rating;
+      if (ar == null && br == null) return 0;
+      if (ar == null) return 1; if (br == null) return -1; return br - ar;
+    });
+    const rated = unteamed.filter(p => p.rating != null);
+    const avg = rated.length ? Math.round(rated.reduce((s2, p) => s2 + p.rating, 0) / rated.length) : null;
+    const sortBtn = (v, lbl) => `<button class="btn ghost small fa-sort${mode === v ? ' on' : ''}" data-fasort="${v}">${lbl}</button>`;
+    freeAgentsHtml = `<div class="panel section fa-panel"><div class="row" style="justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Free agents <span class="h2-strong">(${unteamed.length})</span></h2>
+        <div class="row" style="gap:6px">${sortBtn('rating', 'Rating')}${sortBtn('name', 'Name')}${sortBtn('new', 'Newest')}</div>
+      </div>
+      <p class="muted small" style="margin:6px 0 10px">Looking for a team${avg != null ? ' \u00b7 average rating ' + avg : ''}.${myCapTeam ? ' You captain a team with room \u2014 invite someone below.' : ''}</p>
+      <div class="fa-grid">${sorted.map(p => {
+        const verified = p.fafId ? ' <span class="idbadge verified">\u2713</span>' : '';
         const invitedByMine = myCapTeam && (myCapTeam.invites || []).some(iv => iv.playerId === p.id);
-        // Anyone captaining a team with room can invite (including an organizer who also captains).
         const inviteBtn = myCapTeam ? (invitedByMine
-            ? ' <button class="btn ghost small" data-cancel-invite="' + p.id + '">Cancel invite</button>'
-            : ' <button class="btn amber small" data-invite="' + p.id + '">Invite to my team</button>')
+            ? '<button class="btn ghost small" data-cancel-invite="' + p.id + '">Cancel invite</button>'
+            : '<button class="btn amber small" data-invite="' + p.id + '">Invite</button>')
           : '';
-        // Organizers get a direct "assign" affordance (put anyone on any team, no acceptance).
-        const assignBtn = admin ? ' <a href="#" class="assign-hint" data-assign="' + p.id + '">assign\u2192</a>' : '';
-        return `<span class="unteamed-chip">${esc(p.name)}${p.rating != null ? ' <span class="mono muted">' + p.rating + '</span>' : ''}${b}${inviteBtn}${assignBtn}</span>`;
+        const assignBtn = admin ? '<a href="#" class="assign-hint" data-assign="' + p.id + '">assign\u2192</a>' : '';
+        return `<div class="fa-card">
+          <div class="fa-top"><span class="fa-name">${esc(p.name)}${verified}</span><span class="fa-rating mono">${p.rating != null ? p.rating : '\u2014'}</span></div>
+          ${(inviteBtn || assignBtn) ? '<div class="fa-actions">' + inviteBtn + assignBtn + '</div>' : ''}
+        </div>`;
       }).join('')}</div>
-      ${admin ? '<p class="muted small" style="margin-top:8px">\u201cAssign\u201d puts a player straight onto a team. \u201cInvite\u201d asks them to join your own team.</p><button class="btn ghost small" id="otOrgCreate">+ New team from a free agent</button>' : (myCapTeam ? '<p class="muted small" style="margin-top:8px">You\u2019re captain of a team with room \u2014 invite players above, or they can request to join.</p>' : '')}</div>`;
+      ${admin ? '<p class="muted small" style="margin-top:10px">\u201cAssign\u201d puts a player straight onto a team. \u201cInvite\u201d asks them to join your own team.</p><button class="btn ghost small" id="otOrgCreate">+ New team from a free agent</button>' : ''}</div>`;
   }
 
   // ---- organizer: form teams / divisions ----
@@ -526,9 +543,11 @@ function drawOpenTeams(el) {
       <button class="btn amber" id="otFormTeams">Close signups &amp; lock teams</button></div>`;
   }
 
+  html = html.replace('<!--FREEAGENTS-->', freeAgentsHtml || '');
   el.innerHTML = html || '<div class="panel"><div class="empty">Nothing here yet.</div></div>';
 
   // ---- wire everything ----
+  el.querySelectorAll('[data-fasort]').forEach(b => b.onclick = () => { _faSort = b.dataset.fasort; drawTournament(); });
   el.querySelectorAll('[data-goto]').forEach(a => a.onclick = e => { e.preventDefault(); currentTab = a.dataset.goto; syncTabURL(); drawTournament(); });
   const otLogin = document.getElementById('otLogin'); if (otLogin) otLogin.onclick = requireLoginThen;
 

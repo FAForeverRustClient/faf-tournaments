@@ -377,6 +377,15 @@ async function drawAdmin(el) {
   { // Organizers: always visible in the Admin tab, even when the identity list is empty
     const sa = !!siteAdmin();
     const orgs = T.organizers || [];
+    html += `<div class="panel section"><h2>Series</h2>
+      <p class="muted small">Group this tournament with other editions of the same recurring event. Editions stay completely independent — this is only a link for browsing.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="tSeriesSel" style="flex:1;min-width:220px"><option value="">— not part of a series —</option></select>
+        <button class="btn ghost" id="tSeriesSave">Save</button>
+        <a href="/series" data-serieslink class="muted small">Browse series</a>
+      </div>
+      ${T.seriesName ? '<p class="muted small" style="margin-top:8px">Currently in <strong>' + esc(T.seriesName) + '</strong>.</p>' : ''}
+    </div>`;
     html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${orgs.length})</span></h2>
       <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
       <p class="muted small">Add an organizer below by FAF name or id. Any organizer can add co-organizers; only a site admin can remove one. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
@@ -695,6 +704,28 @@ async function drawAdmin(el) {
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+  // series selector: fill from the series list, then save on demand
+  const srSel = document.getElementById('tSeriesSel');
+  if (srSel) {
+    fetch('/api/series').then(r => r.json()).then(d => {
+      for (const s2 of (d.series || [])) {
+        const o = document.createElement('option');
+        o.value = s2.id; o.textContent = s2.name + ' (' + s2.editions + ')';
+        if (T.seriesId === s2.id) o.selected = true;
+        srSel.appendChild(o);
+      }
+    }).catch(() => {});
+    const svBtn = document.getElementById('tSeriesSave');
+    if (svBtn) svBtn.onclick = async () => {
+      try {
+        await api('/api/t/' + T.id + '/set_series', { seriesId: srSel.value, admin: adminToken() });
+        toast(srSel.value ? 'Series set' : 'Removed from series');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+  el.querySelectorAll('[data-serieslink]').forEach(a => a.onclick = (e) => { e.preventDefault(); nav(a.getAttribute('href')); });
+
   const orgAddBox = document.getElementById('orgAdd');
   if (orgAddBox) adminLookupBox(orgAddBox, (found, result) => {
     result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="orgAddGo">Make organizer</button>`;
@@ -1309,7 +1340,9 @@ function setTitle(name) {
 }
 
 function route() {
-  if (location.pathname === '/host') renderHost();
+  if (location.pathname === '/series') renderSeriesIndex();
+  else if (location.pathname.startsWith('/series/')) renderSeries(location.pathname.slice(8));
+  else if (location.pathname === '/host') renderHost();
   else if (location.pathname === '/siteadmin') renderSiteAdmin();
   else if (location.pathname === '/editor') renderEditor();
   else if (location.pathname === '/importer') renderImporter();
@@ -1415,3 +1448,226 @@ function handleLoginParam() {
 
 applyScale();
 refreshFafAuth().then(() => { handleLoginParam(); route(); });
+
+// ---------------------------------------------------------------------------
+// Stats tab — a public wrap-up shown once a tournament is finished. Everything
+// here is derived from data players can already see (bracket results, rosters,
+// maps played). Ban statistics stay on the organiser-only Vetoes panel.
+// ---------------------------------------------------------------------------
+function drawStats(el) {
+  const done = (T.matches || []).filter(m => m.status === 'done' && m.bracket !== 'ffa');
+  const teams = T.teams || [];
+  const players = T.players || [];
+
+  // games actually played: negative scores are the forfeit sentinel, not games. A walkover
+  // (no-score forfeit) awards the winner maxW without anyone playing, so it contributes nothing.
+  let games = 0, forfeits = 0, decidedByFf = 0;
+  for (const m of done) {
+    const walkover = !!m.forfeit && ((m.score1 != null && m.score1 < 0) || (m.score2 != null && m.score2 < 0));
+    if (m.forfeit) { forfeits++; if (walkover) decidedByFf++; }
+    if (walkover) continue;
+    const a = (m.score1 != null && m.score1 > 0) ? m.score1 : 0;
+    const b = (m.score2 != null && m.score2 > 0) ? m.score2 : 0;
+    games += a + b;
+  }
+
+  // maps actually played, from completed vetoes (picks + decider) and direct round maps
+  const playCount = {};
+  for (const m of done) {
+    const v = m.veto;
+    if (!v) continue;
+    for (const pk of (v.picks || [])) if (pk.map) playCount[pk.map] = (playCount[pk.map] || 0) + 1;
+    if (v.decider && v.decider.map) playCount[v.decider.map] = (playCount[v.decider.map] || 0) + 1;
+  }
+  const mapIds = Object.keys(playCount);
+  const topMaps = mapIds.slice().sort((a, b) => playCount[b] - playCount[a]).slice(0, 10);
+
+  // ratings
+  const rated = players.filter(p => p.rating != null);
+  const avgRating = rated.length ? Math.round(rated.reduce((s, p) => s + p.rating, 0) / rated.length) : null;
+  const topPlayer = rated.slice().sort((a, b) => b.rating - a.rating)[0] || null;
+  const fullTeams = teams.filter(t => (t.playerIds || []).length);
+  const teamTotals = fullTeams.map(t => ({ t, r: teamRating(t) })).sort((a, b) => b.r - a.r);
+
+  // longest series (most games in one match)
+  let longest = null, longestN = 0;
+  for (const m of done) {
+    const n = ((m.score1 > 0 ? m.score1 : 0) + (m.score2 > 0 ? m.score2 : 0));
+    if (n > longestN) { longestN = n; longest = m; }
+  }
+  const vetoesDone = done.filter(m => m.veto && m.veto.done).length;
+  const champ = T.championTeamId ? teamName(T.championTeamId) : null;
+  const solo = T.teamSize === 1 || T.formation === 'solo';
+
+  const card = (label, value, sub) => `<div class="st-card">
+      <div class="st-val">${value}</div>
+      <div class="st-lbl">${esc(label)}</div>
+      ${sub ? '<div class="st-sub muted small">' + sub + '</div>' : ''}
+    </div>`;
+
+  let html = '';
+  if (champ) {
+    html += `<div class="panel section st-champ"><div class="st-champ-lbl">Champion</div><h1 style="margin:4px 0 0">${esc(champ)}</h1></div>`;
+  }
+
+  html += '<div class="panel section"><h2>By the numbers</h2><div class="st-grid">';
+  html += card(solo ? 'Entrants' : 'Players', players.length);
+  if (!solo) html += card('Teams', fullTeams.length);
+  html += card('Matches played', done.length);
+  html += card('Games played', games, 'individual games across all series');
+  if (mapIds.length) html += card('Different maps played', mapIds.length);
+  if (vetoesDone) html += card('Vetoes completed', vetoesDone);
+  if (forfeits) html += card('Forfeits', forfeits, decidedByFf ? decidedByFf + ' with no games played' : '');
+  if (avgRating != null) html += card('Average rating', avgRating, rated.length + ' rated ' + (solo ? 'entrants' : 'players'));
+  html += '</div></div>';
+
+  // podium / final standings, if the bracket produced them
+  if (!solo && teamTotals.length) {
+    html += `<div class="panel section"><h2>Team ratings</h2><div class="st-list">` +
+      teamTotals.slice(0, 8).map((x, i) => `<div class="st-row">
+        <span class="st-rank">${i + 1}</span>
+        <span class="st-name">${esc(x.t.name)}</span>
+        <span class="st-num mono">${x.r}</span></div>`).join('') +
+      `</div><p class="muted small" style="margin-top:8px">Combined rating of each team's roster.</p></div>`;
+  }
+
+  if (topPlayer) {
+    html += `<div class="panel section"><h2>Highest rated ${solo ? 'entrant' : 'player'}</h2>
+      <div class="st-row"><span class="st-name">${esc(topPlayer.name)}</span><span class="st-num mono">${topPlayer.rating}</span></div></div>`;
+  }
+
+  if (topMaps.length) {
+    const max = playCount[topMaps[0]] || 1;
+    html += `<div class="panel section"><h2>Most played maps</h2><div class="st-list">` +
+      topMaps.map(id => `<div class="st-row">
+        <span class="st-name">${esc(mapName(id))}</span>
+        <span class="st-bar"><span class="st-fill" style="width:${Math.max(4, playCount[id] / max * 100)}%"></span></span>
+        <span class="st-num mono">${playCount[id]}</span></div>`).join('') +
+      `</div></div>`;
+  }
+
+  if (longest && longestN > 1) {
+    html += `<div class="panel section"><h2>Longest series</h2>
+      <p>${esc(mLabel(longest))} — <strong>${esc(teamName(longest.team1))}</strong> vs <strong>${esc(teamName(longest.team2))}</strong>
+      went ${longestN} games (${(longest.score1 > 0 ? longest.score1 : 0)}\u2013${(longest.score2 > 0 ? longest.score2 : 0)}).</p></div>`;
+  }
+
+  el.innerHTML = html || '<div class="panel"><div class="empty">No statistics available.</div></div>';
+}
+
+// ---------------------------------------------------------------------------
+// Tournament series — a grouping label only. Editions are independent events
+// that happen to share a name; there is no qualification between them.
+// ---------------------------------------------------------------------------
+async function renderSeriesIndex() {
+  setTitle('Series');
+  stopPoll();
+  drawTopbar('');
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="page"><h1 style="margin:0 0 14px">Tournament series</h1><div id="srBody"><div class="panel"><div class="empty">Loading…</div></div></div></div>';
+  let data;
+  try { const r = await fetch('/api/series'); data = await r.json(); if (!r.ok) throw new Error(data.error || 'Failed to load'); }
+  catch (e) { document.getElementById('srBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
+  const canEdit = !!(fafAuth.user && (fafAuth.user.siteAdmin || fafAuth.user.director));
+  const list = data.series || [];
+  let html = '';
+  if (canEdit) {
+    html += `<div class="panel section"><h2>New series</h2>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <input type="text" id="srName" placeholder="Series name (e.g. Monthly Blitz)" style="flex:1;min-width:220px">
+        <button class="btn primary" id="srCreate">Create</button>
+      </div>
+      <p class="muted small" style="margin-top:8px">A series just groups editions together for browsing. Organizers attach their tournament to a series from its Admin tab.</p></div>`;
+  }
+  html += '<div class="panel section"><h2>All series <span class="h2-strong">(' + list.length + ')</span></h2>';
+  if (!list.length) html += '<div class="empty">No series yet.</div>';
+  else html += '<div class="sr-list">' + list.map(s => `<a class="sr-item" href="/series/${esc(s.id)}" data-link>
+      <div><div class="sr-name">${esc(s.name)}</div>
+      ${s.description ? '<div class="muted small">' + esc(s.description) + '</div>' : ''}
+      ${s.latestName ? '<div class="muted small">Latest: ' + esc(s.latestName) + (s.latestDate ? ' \u00b7 ' + esc(fmtDate(s.latestDate)) : '') + '</div>' : ''}</div>
+      <span class="sr-count">${s.editions} edition${s.editions === 1 ? '' : 's'}</span>
+    </a>`).join('') + '</div>';
+  html += '</div>';
+  document.getElementById('srBody').innerHTML = html;
+  wireSeriesLinks();
+  const c = document.getElementById('srCreate');
+  if (c) c.onclick = async () => {
+    const name = (document.getElementById('srName').value || '').trim();
+    if (!name) return toast('Enter a series name', true);
+    try { await api('/api/series', { action: 'create', name }); toast('Series created'); renderSeriesIndex(); }
+    catch (e) { toast(e.message, true); }
+  };
+}
+
+async function renderSeries(id) {
+  stopPoll();
+  drawTopbar('');
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="page"><div id="srBody"><div class="panel"><div class="empty">Loading…</div></div></div></div>';
+  let data;
+  try { const r = await fetch('/api/series/' + encodeURIComponent(id)); data = await r.json(); if (!r.ok) throw new Error(data.error || 'Failed to load'); }
+  catch (e) { document.getElementById('srBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div><p><a href="/series" data-link>← All series</a></p></div>'; return; }
+  const s = data.series, eds = data.editions || [];
+  setTitle(s.name);
+  const done = eds.filter(e => e.status === 'finished' && !e.abandoned);
+  let html = `<p class="muted small" style="margin:0 0 6px"><a href="/series" data-link>← All series</a></p>
+    <h1 style="margin:0 0 4px">${esc(s.name)}</h1>
+    ${s.description ? '<p class="muted" style="margin:0 0 14px">' + esc(s.description) + '</p>' : '<div style="height:10px"></div>'}
+    <div class="panel section"><h2>Editions <span class="h2-strong">(${eds.length})</span></h2>`;
+  if (!eds.length) html += '<div class="empty">No tournaments in this series yet.</div>';
+  else html += '<div class="sr-eds">' + eds.map(e => {
+    const kind = e.competition === 'ffa' ? 'FFA' : (e.teamSize + 'v' + e.teamSize + ' ' + ({ single: 'SE', double: 'DE', swiss: 'Swiss' }[e.bracketType] || ''));
+    const state = e.abandoned ? 'abandoned' : e.status;
+    return `<a class="sr-ed" href="/t/${esc(e.id)}" data-link>
+      <div class="sr-ed-main">
+        <div class="sr-ed-name">${esc(e.name)}${e.published === 0 ? ' <span class="idbadge late">draft</span>' : ''}</div>
+        <div class="muted small">${esc(kind)}${e.eventDate ? ' \u00b7 ' + esc(fmtDate(e.eventDate)) : ''}${e.champion ? ' \u00b7 winner: ' + esc(e.champion) : ''}</div>
+      </div>
+      <span class="pill ${esc(state)}">${esc(statusLabel(e.status) || state)}</span>
+    </a>`;
+  }).join('') + '</div>';
+  html += '</div>';
+  if (done.length) {
+    const wins = {};
+    for (const e of done) if (e.champion) wins[e.champion] = (wins[e.champion] || 0) + 1;
+    const ranked = Object.keys(wins).sort((a, b) => wins[b] - wins[a]);
+    if (ranked.length) {
+      html += '<div class="panel section"><h2>Series winners</h2><div class="st-list">' +
+        ranked.map((n, i) => `<div class="st-row"><span class="st-rank">${i + 1}</span><span class="st-name">${esc(n)}</span><span class="st-num mono">${wins[n]}</span></div>`).join('') +
+        '</div></div>';
+    }
+  }
+  if (data.canEdit) {
+    html += `<div class="panel section"><h2>Manage</h2>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:200px"><label>Name</label><input type="text" id="srEdName" value="${esc(s.name)}"></div>
+      </div>
+      <label style="margin-top:10px">Description</label>
+      <textarea id="srEdDesc" rows="3">${esc(s.description || '')}</textarea>
+      <div class="actions"><button class="btn ghost" id="srDel">Delete series</button><button class="btn primary" id="srSave">Save</button></div>
+      <p class="muted small">Deleting a series does not delete its tournaments — they simply stop being grouped.</p></div>`;
+  }
+  document.getElementById('srBody').innerHTML = html;
+  wireSeriesLinks();
+  const sv = document.getElementById('srSave');
+  if (sv) sv.onclick = async () => {
+    try {
+      await api('/api/series', { action: 'update', id: s.id, name: document.getElementById('srEdName').value, description: document.getElementById('srEdDesc').value });
+      toast('Saved'); renderSeries(s.id);
+    } catch (e) { toast(e.message, true); }
+  };
+  const dl = document.getElementById('srDel');
+  if (dl) dl.onclick = async () => {
+    if (!confirm('Delete the series "' + s.name + '"? Its tournaments stay, they just lose the grouping.')) return;
+    try { await api('/api/series', { action: 'delete', id: s.id }); toast('Series deleted'); nav('/series'); }
+    catch (e) { toast(e.message, true); }
+  };
+}
+
+// intercept in-app links so series pages don't do a full page load
+function wireSeriesLinks() {
+  document.querySelectorAll('[data-link]').forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    nav(a.getAttribute('href'));
+  });
+}

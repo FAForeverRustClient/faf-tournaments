@@ -289,6 +289,33 @@ function splitDateTimeUTC(v) {
 function prefTZ() {
   return localStorage.getItem('displayTZ') || 'auto';
 }
+// 24-hour (default) or 12-hour clock, per browser
+function prefTimeFmt() { return localStorage.getItem('timeFmt') === '12' ? '12' : '24'; }
+// date style: 'text' = 7 Jul 2026 (default), 'dmy' = 07/07/2026, 'ymd' = 2026-07-07
+function prefDateFmt() {
+  const v = localStorage.getItem('dateFmt');
+  return (v === 'dmy' || v === 'ymd') ? v : 'text';
+}
+// render a Date in the chosen date style, in a given timezone
+function fmtDatePart(d, tz) {
+  const style = prefDateFmt();
+  const opts = { timeZone: tz };
+  if (style === 'ymd') {
+    const p = new Intl.DateTimeFormat('en-CA', Object.assign({ year: 'numeric', month: '2-digit', day: '2-digit' }, opts)).format(d);
+    return p;                                   // en-CA gives YYYY-MM-DD
+  }
+  if (style === 'dmy') {
+    return new Intl.DateTimeFormat('en-GB', Object.assign({ year: 'numeric', month: '2-digit', day: '2-digit' }, opts)).format(d);
+  }
+  return new Intl.DateTimeFormat('en-GB', Object.assign({ day: 'numeric', month: 'short', year: 'numeric' }, opts)).format(d);
+}
+// render the time part in the chosen clock
+function fmtTimePart(d, tz) {
+  const h12 = prefTimeFmt() === '12';
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, hour: h12 ? 'numeric' : '2-digit', minute: '2-digit', hour12: h12
+  }).format(d);
+}
 function resolvedTZ() {
   const p = prefTZ();
   if (p === 'auto') { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } }
@@ -314,10 +341,10 @@ function fmtDateTime(v, opts) {
   try {
     if (dateOnly && !opts.forceTime) {
       // no time component was set; show date only, no tz
-      return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+      return fmtDatePart(d, 'UTC');
     }
-    const dateStr = new Intl.DateTimeFormat('en-GB', { timeZone: tz, day: 'numeric', month: 'short', year: 'numeric' }).format(d);
-    const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+    const dateStr = fmtDatePart(d, tz);
+    const timeStr = fmtTimePart(d, tz);
     return dateStr + ', ' + timeStr + ' ' + tzAbbrev(d);
   } catch (e) {
     return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(d);
@@ -333,6 +360,7 @@ function fmtDate(v) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { const p = v.split('-'); d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
   else { d = new Date(v); }
   if (isNaN(d.getTime())) return '';
+  try { return fmtDatePart(d, 'UTC'); } catch (e) {}
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return d.getUTCDate() + ' ' + months[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
 }
@@ -346,6 +374,9 @@ function tourneyDateMs(t) {
   const d = /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(v + 'T00:00:00Z') : new Date(v);
   return isNaN(d.getTime()) ? 0 : d.getTime();
 }
+
+// navigate within the SPA (pushState + re-route), used by series pages and in-app links
+function nav(path) { history.pushState(null, '', path); route(); }
 
 function statusLabel(s) {
   return { signup: 'Signups open', draft: 'Drafting', drafted: 'Teams locked', running: 'In progress', finished: 'Finished' }[s] || s;
@@ -455,6 +486,18 @@ function openSettings() {
     <label>Time zone</label>
     <select id="tzSel" style="width:100%">${tzOpts}</select>
     <div class="muted small" style="margin-top:6px">Tournament times are stored in UTC and shown in this zone. Currently: <strong id="tzNow">${esc(resolvedTZ())} (${esc(tzAbbrev())})</strong></div>
+    <label style="margin-top:16px">Date format</label>
+    <select id="dfSel" style="width:100%">
+      <option value="text"${prefDateFmt() === 'text' ? ' selected' : ''}>7 Jul 2026</option>
+      <option value="dmy"${prefDateFmt() === 'dmy' ? ' selected' : ''}>07/07/2026 (DD/MM/YYYY)</option>
+      <option value="ymd"${prefDateFmt() === 'ymd' ? ' selected' : ''}>2026-07-07 (YYYY-MM-DD)</option>
+    </select>
+    <label style="margin-top:16px">Time format</label>
+    <select id="tfSel" style="width:100%">
+      <option value="24"${prefTimeFmt() === '24' ? ' selected' : ''}>24-hour (18:30)</option>
+      <option value="12"${prefTimeFmt() === '12' ? ' selected' : ''}>12-hour (6:30 pm)</option>
+    </select>
+    <div class="muted small" style="margin-top:6px">Preview: <strong id="fmtNow">${esc(fmtDateTime(new Date().toISOString()))}</strong></div>
     <label style="margin-top:16px">UI scale — <span id="scaleVal">${s}%</span></label>
     <div class="scale-row">
       <span class="mono small">70</span>
@@ -474,6 +517,15 @@ function openSettings() {
     root.querySelector('#tzSel').onchange = e => {
       localStorage.setItem('displayTZ', e.target.value);
       root.querySelector('#tzNow').textContent = resolvedTZ() + ' (' + tzAbbrev() + ')';
+      root.querySelector('#fmtNow').textContent = fmtDateTime(new Date().toISOString());
+    };
+    root.querySelector('#dfSel').onchange = e => {
+      localStorage.setItem('dateFmt', e.target.value);
+      root.querySelector('#fmtNow').textContent = fmtDateTime(new Date().toISOString());
+    };
+    root.querySelector('#tfSel').onchange = e => {
+      localStorage.setItem('timeFmt', e.target.value);
+      root.querySelector('#fmtNow').textContent = fmtDateTime(new Date().toISOString());
     };
     root.querySelector('#scaleReset').onclick = () => {
       localStorage.setItem('uiScale', '100');
@@ -491,6 +543,7 @@ function drawTopbar(modeText) {
   topbarRight.innerHTML =
     '<button class="btn ghost small" id="navStart" title="Home">Overview</button>' +
     '<button class="btn ghost small" id="navHall" title="Hall of Fame">Hall of Fame</button>' +
+    '<button class="btn ghost small" id="navSeries" title="Tournament series">Series</button>' +
     '<button class="btn ghost small" id="navFaq" title="FAQ / Rules">FAQ / Rules</button>' +
     '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +
     ((siteAdmin() || (fafAuth.user && fafAuth.user.importer)) ? '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' : '') +
@@ -514,6 +567,7 @@ function drawTopbar(modeText) {
   const goTo = p => { history.pushState(null, '', p); route(); };
   document.getElementById('navStart').onclick = () => goTo('/');
   document.getElementById('navHall').onclick = () => goTo('/hall');
+  { const ns = document.getElementById('navSeries'); if (ns) ns.onclick = () => goTo('/series'); }
   document.getElementById('navFaq').onclick = () => goTo('/faq');
   document.getElementById('lockBtn').onclick = () => {
     // Log in if logged out, log out if logged in. Opening the console is the "SITE ADMIN" link's job.

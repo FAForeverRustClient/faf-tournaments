@@ -20,13 +20,21 @@ async function renderHome() {
       <button class="btn faf" id="homeLgFaf" style="max-width:280px">Log in with FAF</button>
     </div>`;
 
-  const completed = list.filter(t => t.status === 'finished' || t.abandoned)
+  // Unpublished tournaments are only returned to people who may see them (their organizers and
+  // site admins), so anything with published===0 here belongs in the viewer's own drafts list.
+  const drafts = list.filter(t => t.published === 0)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const live = list.filter(t => t.published !== 0);
+
+  const completed = live.filter(t => t.status === 'finished' || t.abandoned)
     .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
   const groups = [
-    ['Upcoming / Open', list.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing upcoming right now.'],
-    ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0 && !t.abandoned), 'No tournaments running.'],
+    ['Upcoming / Open', live.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing upcoming right now.'],
+    ['Ongoing', live.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0 && !t.abandoned), 'No tournaments running.'],
     ['Completed', completed, 'No finished tournaments yet.']
   ];
+  // drafts get their own section, shown first and only when the viewer actually has one
+  if (drafts.length) groups.unshift(['My drafts', drafts, '']);
 
   // short "in 1 day, 17 hrs, 5 mnts" countdown for card badges
   const eta = (iso) => {
@@ -41,8 +49,9 @@ async function renderHome() {
   };
 
   app.innerHTML = '<div class="page page-wide">' + loginPanel + groups.map((g, i) => `
-    <div class="panel section">
+    <div class="panel section${g[0] === 'My drafts' ? ' draft-panel' : ''}">
       <h2>${esc(g[0])} <span class="h2-strong">(${g[1].length})</span></h2>
+      ${g[0] === 'My drafts' ? '<p class="muted small" style="margin:-4px 0 10px">Not published yet \u2014 only you (and site admins) can see these. Publish one from its Admin tab, or schedule a publish date there.</p>' : ''}
       <div id="tlist${i}">${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}</div>
     </div>`).join('') + '</div>';
 
@@ -737,6 +746,11 @@ function drawTournament() {
   if (!(T.viewer && (T.viewer.organizer || T.viewer.signedUpPlayerId || T.viewer.memberTeamId || T.viewer.streamer))) {
     const ci = tabs.indexOf('chat'); if (ci >= 0) tabs.splice(ci, 1);
   }
+  // Matches: a flat, observer/streamer-friendly list of every match. Only useful once the
+  // bracket exists, so it appears alongside it.
+  if ((T.matches || []).length) tabs.push('matches');
+  // Stats: a public wrap-up, only once the tournament is over.
+  if (T.status === 'finished') tabs.push('stats');
   if (vetoActive) tabs.push('vetoes');
   // Maps tab: always available (useful overview of maps and where they're played)
   tabs.push('maps');
@@ -786,7 +800,18 @@ function drawTournament() {
         <strong>Draft — not public yet.</strong>
         <p class="muted small" style="margin:6px 0 10px">Only people with the link below can see this. Publish it to list it on the home page and open it up.</p>
         <div class="copybox"><input type="text" readonly value="${location.origin}/t/${T.id}"><button class="btn small" data-copy="${location.origin}/t/${T.id}">Copy share link</button></div>
-        <div style="margin-top:10px"><button class="btn primary" id="pubBtn">Publish tournament</button></div>
+        ${T.publishAt ? `<div class="pub-sched"><span>\u23F1 Scheduled to publish automatically on <strong>${esc(fmtDateTime(T.publishAt))}</strong></span>
+          <button class="btn ghost small" id="pubCancel">Cancel schedule</button></div>` : ''}
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <button class="btn primary" id="pubBtn">Publish now</button>
+          <div>
+            <label class="muted small" style="display:block">Or schedule (UTC)</label>
+            <div style="display:flex;gap:6px">
+              <input type="date" id="pubDate"><input type="time" id="pubTime">
+              <button class="btn ghost" id="pubSchedBtn">Schedule</button>
+            </div>
+          </div>
+        </div>
       </div>` : ''}
     </div>
     <div id="tabBody" class="${currentTab === 'bracket' && T.competition !== 'ffa' && T.bracketType !== 'swiss' ? 'widepage' : 'page'}"></div>`;
@@ -804,7 +829,24 @@ function drawTournament() {
     try { await api('/api/t/' + T.id + '/publish', { admin: adminToken() }); toast('Published'); await refresh(); }
     catch (e) { toast(e.message, true); }
   };
+  const pubSched = document.getElementById('pubSchedBtn');
+  if (pubSched) pubSched.onclick = async () => {
+    const dEl = document.getElementById('pubDate'), tEl = document.getElementById('pubTime');
+    if (!dEl.value) return toast('Pick a date', true);
+    const iso = combineDateTimeUTC(dEl, tEl);
+    if (!iso) return toast('Invalid date/time', true);
+    try {
+      await api('/api/t/' + T.id + '/publish', { publishAt: iso, admin: adminToken() });
+      toast('Publish scheduled'); await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const pubCancel = document.getElementById('pubCancel');
+  if (pubCancel) pubCancel.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/publish', { cancelSchedule: 1, admin: adminToken() }); toast('Schedule cancelled'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
   app.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied')));
+  app.querySelectorAll('[data-serieslink]').forEach(a => a.onclick = (e) => { e.preventDefault(); nav(a.getAttribute('href')); });
 
   // "your turn" banner, above whatever tab is open
   const banner = turnBannerHTML();
@@ -827,6 +869,8 @@ function drawTournament() {
   else if (currentTab === 'players') drawPlayers(body);
   else if (currentTab === 'teams') drawTeams(body);
   else if (currentTab === 'bracket') drawBracket(body);
+  else if (currentTab === 'matches') drawMatchesTab(body);
+  else if (currentTab === 'stats') drawStats(body);
   else if (currentTab === 'vetoes') drawVetoes(body);
   else if (currentTab === 'maps') drawMaps(body);
   else if (currentTab === 'standings') drawStandings(body);
@@ -871,7 +915,19 @@ function gameInfoPanel() {
   </div>
     ${richCells.length ? '<div class="infogrid">' + richCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${c[1]}</div></div>`).join('') + '</div>' : ''}
     ${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}${gallery}</div>`
+    + seriesBlockHTML()
     + `<div class="panel section"><h2>Links</h2><div class="ic-body">${faqLinksHTML()}</div></div>`;
+}
+
+// "Part of the X series" block, shown near the bottom of the overview above the links.
+// Purely a browsing aid — editions are independent events.
+function seriesBlockHTML() {
+  if (!T.seriesId || !T.seriesName) return '';
+  return `<div class="panel section series-block">
+    <h2>Series</h2>
+    <p style="margin:0">This tournament is part of the <strong>${esc(T.seriesName)}</strong> series.
+    <a href="/series/${esc(T.seriesId)}" data-serieslink>See all editions →</a></p>
+  </div>`;
 }
 
 // Always-present FAQ / rules links under the briefing. Official tournaments also link the

@@ -33,6 +33,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Solo brackets: every signup is an entrant.
 - Seeding by rating or random, with a manual seed override before the bracket starts (reorder, nudge, randomize, reset). During team formation, the Teams tab lists teams by combined rating and shows each team's projected seed (its rank by rating) until real seeds are locked.
 - King/Prince divisions: split full teams into skill divisions by combined rating, each playing its own bracket (single/double elim only).
+- Free agents (players not yet on a team) get their own prominent panel with a card per player, sortable by rating, name or newest, showing the pool's average rating and invite/assign actions.
 - Withdrawing or removing a player detaches them cleanly from any team (captain reassigns to the next member; emptied teams are removed during signup), so teams never keep a "ghost" slot.
 
 ### Team rename
@@ -45,6 +46,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Publishing a pool also publishes every hidden map inside it (a published pool is shown to players, so its maps must be visible too).
 - Pools can be assigned to whole rounds or to specific matches, including before the bracket is generated (rounds are projected from the expected team count). Reassigning a pool re-initialises the veto on affected ready matches, so a fixed pool takes effect immediately.
 - Optional per-match veto engine: the two sides (Team A acts first) alternate bans and picks per the pool's order. A veto runs only when the assigned pool's best-of matches the match's best-of and both teams are known. A/B sides are decided per match by the captain's rating (random / lower-rated-is-A / lower-rated-is-B / manual). "All upfront" completes the whole ban/pick before game 1; "continuous" reveals steps as games are played. Vetoes can be enabled or disabled mid-bracket.
+- Every veto shows a numbered **ban / pick order** log - which team banned or picked which map, in the order it happened, ending with the decider. It is shown both while the veto is running and after it completes.
 - Maps are referenced by id everywhere and resolved to names at display time, so renaming a map updates it everywhere and deleting one cascades cleanly.
 
 ### Running a tournament
@@ -54,6 +56,26 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Clicking a team anywhere in the bracket opens a popup listing its members, ratings, captain, seed, and combined rating.
 - Player editing at any time (this is also the substitution mechanism).
 - Standings tab: placements for elimination formats, W/L/game-diff for Swiss, points leaderboard for FFA.
+
+### Matches tab
+- A flat, observer-friendly list of every match: **My matches** (if you are in one), Ongoing & upcoming, Not yet decided, and Concluded. Columns are round, both teams, status, and result.
+- Status follows the pipeline: Waiting -> Picks & bans -> Ready/Live -> Concluded.
+- Clicking a match opens details: both rosters with ratings and captain, the score, the winner, and the full ban/pick history, plus a match-chat link.
+- Score reporting is offered here on exactly the same terms as on the bracket, so a captain who may submit there may submit here.
+- Fully streamer-mode aware: results are masked, teams fed by an unrevealed match stay hidden, and each row (and the popup) has a Reveal/Hide button.
+- This is an alternative view. It replaces nothing - the bracket, Vetoes tab and chat are unchanged.
+
+### Statistics
+- When a tournament finishes, a public **Stats** tab appears: entrants/players, teams, matches played, games played, different maps played, vetoes completed, forfeits, average rating, team ratings, highest-rated player, most-played maps, and the longest series.
+- Games played counts only games that were actually played: a walkover forfeit (no games) contributes nothing, while a series that was played and then forfeited still counts its real games.
+- Map *ban* statistics remain on the organiser-only panel in the Vetoes tab; the public page shows maps played, which is already visible from the bracket.
+
+### Tournament series
+- A **series** groups editions of a recurring event (e.g. a monthly cup) purely for browsing. Editions are completely independent: no qualification, no fixed cadence, no shared state.
+- Site admins and tournament directors create, rename and delete series. Any organizer can attach or detach their own tournament from its Admin tab.
+- `/series` lists every series with its edition count; `/series/<id>` shows that series' editions newest first, with each edition's format, date, status and winner, plus a "series winners" tally.
+- A tournament that belongs to a series shows a "Part of the X series" block near the bottom of its overview, linking to the series page.
+- Deleting a series never deletes tournaments - they simply stop being grouped.
 
 ### Chat
 - Per-tournament chat with a Global room and a room per match (created only once both teams are known). Match chats for finished matches collapse into a "Completed matches" group, minimised by default.
@@ -70,9 +92,14 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - **Streamer mode** hides match results, scores, and who has advanced (a later slot shows "Winner of WB R1 M1" instead of the team), plus elimination styling and the standings table - for on-stream reveals. Each completed match has a "Reveal result" button to un-mask it one at a time; reveals persist across refreshes. Streamer mode only affects your own screen and never changes permissions.
 - **View as player** (shown only to organizers/admins) hides the organizer and admin controls on your screen so you can browse a tournament as a regular participant. It is a display filter only and does not change your actual permissions.
 
+### Drafts and scheduled publishing
+- Unpublished tournaments are listed in a **My drafts** section at the top of the home page, visible only to their organizers and site admins.
+- A draft can be published immediately or **scheduled**: enter a UTC date and time and it publishes itself. There is no background timer - the schedule is applied whenever tournaments are listed, which covers every way a tournament becomes visible. A pending schedule is shown on the draft banner and can be cancelled.
+
 ### Dates and time zones
 - Optional event date and time (entered in UTC) per tournament, editable any time.
 - Stored in UTC, displayed in each viewer's chosen time zone (remembered per browser). The Completed list is ordered most-recent-first.
+- Display settings (the gear icon) also choose the **date format** (`7 Jul 2026`, `07/07/2026`, or `2026-07-07`) and the **time format** (24-hour or 12-hour). These are per browser. Note that the placeholder inside a native date-picker field follows the browser's own locale and cannot be overridden by the site.
 - The overview's "latest update" news block is hidden once a tournament is finished.
 
 ### Importing from Challonge
@@ -125,7 +152,7 @@ docker-compose.yml
 The client is delivered as several ordinary (non-module) scripts loaded in order; together they run in one shared global scope, exactly as a single file would.
 
 ### Storage
-A single JSON file at `DATA_DIR/db.json`, keyed by `tournaments`, `sessions` (FAF login), `oauthPending`, `auditLog` (capped at 5000), `hostRequests`, `hostAllowed`, `siteAdmins`, `directors`, `editorAllowed`/`editorRequests`, `importerAllowed`/`importerRequests`, and `bans`. Per-user chat `@mention` pings are tracked per tournament. Map preview images are written as binary to `MAP_IMG_DIR` and served from `/map-images/<file>`; `db.json` stores only the filename.
+A single JSON file at `DATA_DIR/db.json`, keyed by `tournaments`, `sessions` (FAF login), `oauthPending`, `auditLog` (capped at 5000), `hostRequests`, `hostAllowed`, `siteAdmins`, `directors`, `editorAllowed`/`editorRequests`, `importerAllowed`/`importerRequests`, `bans`, and `series` (tournament series; each tournament may carry a `seriesId`). Per-user chat `@mention` pings are tracked per tournament. Map preview images are written as binary to `MAP_IMG_DIR` and served from `/map-images/<file>`; `db.json` stores only the filename.
 
 On load, `loadDB` runs small self-healing migrations: legacy "premade" tournaments are converted to the create/join/invite model, and teams with stale member ids (from an old withdrawal) are repaired. These only touch data during signup and never remove a team that has real players.
 
