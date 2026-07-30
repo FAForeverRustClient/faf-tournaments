@@ -1154,6 +1154,8 @@ async function handleAPI(req, res, url) {
       streams: (Array.isArray(b.streams) ? b.streams.map(x => ({ url: String((x && x.url) || '').trim().slice(0, 300), info: cleanName((x && x.info) || '', 120) || '' })).filter(x => /^https?:\/\/[^\s"'<>]+$/.test(x.url)).slice(0, 10) : []),
       category,
       published: false, archived: false, descImages: [],
+      // optional: attach to an existing series right away (unknown ids are simply ignored)
+      seriesId: (b.seriesId && db.series[String(b.seriesId)]) ? String(b.seriesId) : null,
       lobbyOptions: cleanName(b.lobbyOptions, 20000),
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
@@ -1760,40 +1762,51 @@ async function handleAPI(req, res, url) {
     return json(res, 200, {
       series: { id: s.id, name: s.name, description: s.description || '' },
       editions: eds,
-      canEdit: !!(isSiteAdmin(req) || isDirector(req))
+      canEdit: !!(isSiteAdmin(req) || isDirector(req) || (currentSession(req) && s.byFafId && s.byFafId === currentSession(req).fafId))
     });
   }
 
   if (parts.length === 2 && parts[1] === 'series' && method === 'POST') {
     const b = await readBody(req);
-    if (!(isSiteAdmin(req) || isDirector(req))) return json(res, 403, { error: 'Site admin or director only' });
+    // Anyone allowed to host a tournament may create a series (that already covers site admins,
+    // directors and the approved-host list). Renaming or deleting an existing series is limited
+    // to whoever created it, plus site admins and directors — so a host can't rename or delete
+    // somebody else's (e.g. an official) series.
+    if (!canHost(req, null)) return json(res, 403, { error: 'Tournament hosting permission required' });
     const act = String(b.action || 'create');
+    const sess = currentSession(req);
+    const canManage = (s2) => isSiteAdmin(req) || isDirector(req) || !!(sess && s2 && s2.byFafId && s2.byFafId === sess.fafId);
     if (act === 'create') {
       const name = cleanName(b.name, 80);
       if (!name) return bad(res, 'Enter a series name');
-      if (Object.values(db.series).some(s => s.name.toLowerCase() === name.toLowerCase())) return bad(res, 'A series with that name already exists');
+      if (Object.values(db.series).some(s2 => s2.name.toLowerCase() === name.toLowerCase())) return bad(res, 'A series with that name already exists');
       const id = uid(8);
-      db.series[id] = { id, name, description: cleanName(b.description, 500) || '', at: now(), by: actorOf(req, null).name };
+      db.series[id] = {
+        id, name, description: cleanName(b.description, 500) || '',
+        at: now(), by: actorOf(req, null).name, byFafId: (sess && sess.fafId) || null
+      };
       saveDB();
       audit(req, 'series_created', { detail: name });
       return json(res, 200, { ok: true, id });
     }
     if (act === 'update') {
-      const s = db.series[String(b.id || '')];
-      if (!s) return bad(res, 'Series not found');
-      if (b.name !== undefined) { const n = cleanName(b.name, 80); if (!n) return bad(res, 'Enter a series name'); s.name = n; }
-      if (b.description !== undefined) s.description = cleanName(b.description, 500) || '';
+      const s2 = db.series[String(b.id || '')];
+      if (!s2) return bad(res, 'Series not found');
+      if (!canManage(s2)) return json(res, 403, { error: 'Only the series creator, a director or a site admin can edit it' });
+      if (b.name !== undefined) { const n = cleanName(b.name, 80); if (!n) return bad(res, 'Enter a series name'); s2.name = n; }
+      if (b.description !== undefined) s2.description = cleanName(b.description, 500) || '';
       saveDB();
-      audit(req, 'series_updated', { detail: s.name });
+      audit(req, 'series_updated', { detail: s2.name });
       return json(res, 200, { ok: true });
     }
     if (act === 'delete') {
-      const s = db.series[String(b.id || '')];
-      if (!s) return bad(res, 'Series not found');
-      for (const t of Object.values(db.tournaments)) if (t.seriesId === s.id) t.seriesId = null;
-      delete db.series[s.id];
+      const s2 = db.series[String(b.id || '')];
+      if (!s2) return bad(res, 'Series not found');
+      if (!canManage(s2)) return json(res, 403, { error: 'Only the series creator, a director or a site admin can delete it' });
+      for (const t of Object.values(db.tournaments)) if (t.seriesId === s2.id) t.seriesId = null;
+      delete db.series[s2.id];
       saveDB();
-      audit(req, 'series_deleted', { detail: s.name });
+      audit(req, 'series_deleted', { detail: s2.name });
       return json(res, 200, { ok: true });
     }
     return bad(res, 'Unknown action');

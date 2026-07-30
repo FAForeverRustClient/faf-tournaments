@@ -174,6 +174,10 @@ async function renderHost() {
           <option value="community">Community</option>
         </select>
 
+        <label>Series <span class="muted small">(optional)</span></label>
+        <select id="cSeries"><option value="">\u2014 not part of a series \u2014</option></select>
+        <div class="muted small" style="margin-top:4px">Group this with other editions of a recurring event. You can also set or change this later on the Admin tab.</div>
+
         <div id="teamOpts">
           <label>Team size</label>
           <select id="cSize">${[1,2,3,4,5,6].map(n => '<option value="'+n+'"'+(n===2?' selected':'')+'>'+n+'v'+n+'</option>').join('')}</select>
@@ -344,6 +348,19 @@ async function renderHost() {
       </div>
     </div>`;
 
+  // fill the optional series dropdown (series are created on the /series page)
+  {
+    const sel = document.getElementById('cSeries');
+    if (sel) fetch('/api/series').then(r => r.json()).then(d => {
+      for (const s2 of (d.series || [])) {
+        const o = document.createElement('option');
+        o.value = s2.id;
+        o.textContent = s2.name + (s2.editions ? ' (' + s2.editions + ')' : '');
+        sel.appendChild(o);
+      }
+    }).catch(() => {});
+  }
+
   const comp = document.getElementById('cComp');
   const size = document.getElementById('cSize');
   const formation = document.getElementById('cFormation');
@@ -447,6 +464,18 @@ async function renderHost() {
     setv('cDesc', t.description || ''); setv('cLobby', t.lobbyOptions || ''); setv('cMods', t.mods || '');
     setv('cRewards', t.rewards || ''); setv('cSponsors', t.sponsors || '');
     if (document.getElementById('cCategory')) setv('cCategory', t.category || '');
+    // copying a tournament is how the next edition of a series usually gets made, so inherit it.
+    // The options may still be loading, so retry briefly rather than silently dropping it.
+    if (t.seriesId) {
+      const sel = document.getElementById('cSeries');
+      if (sel) {
+        const applySeries = (tries) => {
+          if (Array.from(sel.options).some(o => o.value === t.seriesId)) { sel.value = t.seriesId; return; }
+          if (tries > 0) setTimeout(() => applySeries(tries - 1), 150);
+        };
+        applySeries(10);
+      }
+    }
     setv('cRatingType', t.ratingType || 'none'); setv('cRatingDate', t.ratingDate ? new Date(t.ratingDate).toISOString().slice(0, 10) : '');
     setv('cSignupMode', t.signupMode || 'open'); setc('cPlayerReporting', t.playerReporting !== 0);
     setv('cMinRating', t.minRating != null ? t.minRating : ''); setv('cMaxRating', t.maxRating != null ? t.maxRating : '');
@@ -494,6 +523,7 @@ async function renderHost() {
         name,
         description: document.getElementById('cDesc').value,
         category,
+        seriesId: (document.getElementById('cSeries') || {}).value || '',
         lobbyOptions: document.getElementById('cLobby').value,
         mods: document.getElementById('cMods').value,
         competition: comp.value,

@@ -72,7 +72,8 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 
 ### Tournament series
 - A **series** groups editions of a recurring event (e.g. a monthly cup) purely for browsing. Editions are completely independent: no qualification, no fixed cadence, no shared state.
-- Site admins and tournament directors create, rename and delete series. Any organizer can attach or detach their own tournament from its Admin tab.
+- Anyone with tournament-hosting permission can create a series (that includes site admins and directors). Renaming or deleting a series is limited to whoever created it, plus directors and site admins, so one host cannot rename or delete another's series.
+- A series can be chosen when creating a tournament (an optional field on the host form), or set and changed later from the Admin tab. Copying an existing tournament to make the next edition inherits its series.
 - `/series` lists every series with its edition count; `/series/<id>` shows that series' editions newest first, with each edition's format, date, status and winner, plus a "series winners" tally.
 - A tournament that belongs to a series shows a "Part of the X series" block near the bottom of its overview, linking to the series page.
 - Deleting a series never deletes tournaments - they simply stop being grouped.

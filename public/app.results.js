@@ -1485,7 +1485,6 @@ function drawStats(el) {
   // ratings
   const rated = players.filter(p => p.rating != null);
   const avgRating = rated.length ? Math.round(rated.reduce((s, p) => s + p.rating, 0) / rated.length) : null;
-  const topPlayer = rated.slice().sort((a, b) => b.rating - a.rating)[0] || null;
   const fullTeams = teams.filter(t => (t.playerIds || []).length);
   const teamTotals = fullTeams.map(t => ({ t, r: teamRating(t) })).sort((a, b) => b.r - a.r);
 
@@ -1515,6 +1514,7 @@ function drawStats(el) {
   if (!solo) html += card('Teams', fullTeams.length);
   html += card('Matches played', done.length);
   html += card('Games played', games, 'individual games across all series');
+  if ((T.mapDb || []).length) html += card('Maps in the tournament', (T.mapDb || []).length);
   if (mapIds.length) html += card('Different maps played', mapIds.length);
   if (vetoesDone) html += card('Vetoes completed', vetoesDone);
   if (forfeits) html += card('Forfeits', forfeits, decidedByFf ? decidedByFf + ' with no games played' : '');
@@ -1531,18 +1531,38 @@ function drawStats(el) {
       `</div><p class="muted small" style="margin-top:8px">Combined rating of each team's roster.</p></div>`;
   }
 
-  if (topPlayer) {
-    html += `<div class="panel section"><h2>Highest rated ${solo ? 'entrant' : 'player'}</h2>
-      <div class="st-row"><span class="st-name">${esc(topPlayer.name)}</span><span class="st-num mono">${topPlayer.rating}</span></div></div>`;
-  }
+  // Map usage: every map that was available in this tournament, with how many times it was
+  // actually played. Unplayed maps are listed too — "which maps never came up" is as interesting
+  // as which ones did.
+  const dbMaps = (T.mapDb || []).slice();
+  if (dbMaps.length || mapIds.length) {
+    // include any played map that is no longer in the database, so counts always add up
+    const known = {};
+    for (const m2 of dbMaps) known[m2.id] = m2.name;
+    for (const id of mapIds) if (!known[id]) known[id] = mapName(id);
+    const allIds = Object.keys(known);
+    const playedIds = allIds.filter(id => playCount[id]);
+    const unplayed = allIds.length - playedIds.length;
+    const max = playedIds.length ? Math.max.apply(null, playedIds.map(id => playCount[id])) : 1;
 
-  if (topMaps.length) {
-    const max = playCount[topMaps[0]] || 1;
-    html += `<div class="panel section"><h2>Most played maps</h2><div class="st-list">` +
-      topMaps.map(id => `<div class="st-row">
-        <span class="st-name">${esc(mapName(id))}</span>
-        <span class="st-bar"><span class="st-fill" style="width:${Math.max(4, playCount[id] / max * 100)}%"></span></span>
-        <span class="st-num mono">${playCount[id]}</span></div>`).join('') +
+    // distribution: how many maps were played N times
+    const buckets = {};
+    for (const id of allIds) { const n = playCount[id] || 0; buckets[n] = (buckets[n] || 0) + 1; }
+    const bucketLine = Object.keys(buckets).map(Number).sort((a, b) => b - a).map(n =>
+      buckets[n] + ' map' + (buckets[n] === 1 ? '' : 's') + ' ' + (n === 0 ? 'never played' : 'played ' + n + '\u00d7')
+    ).join(' \u00b7 ');
+
+    const sorted = allIds.sort((a, b) => (playCount[b] || 0) - (playCount[a] || 0) || String(known[a]).localeCompare(String(known[b])));
+    html += `<div class="panel section"><h2>Map usage</h2>
+      <p class="muted small" style="margin:-4px 0 10px"><strong>${allIds.length}</strong> map${allIds.length === 1 ? '' : 's'} available \u00b7 <strong>${playedIds.length}</strong> played \u00b7 <strong>${unplayed}</strong> never played<br>${esc(bucketLine)}</p>
+      <div class="st-list">` +
+      sorted.map(id => {
+        const n = playCount[id] || 0;
+        return `<div class="st-row${n ? '' : ' st-unused'}">
+          <span class="st-name">${esc(known[id])}</span>
+          <span class="st-bar"><span class="st-fill" style="width:${n ? Math.max(4, n / max * 100) : 0}%"></span></span>
+          <span class="st-num mono">${n || '\u2014'}</span></div>`;
+      }).join('') +
       `</div></div>`;
   }
 
@@ -1568,7 +1588,8 @@ async function renderSeriesIndex() {
   let data;
   try { const r = await fetch('/api/series'); data = await r.json(); if (!r.ok) throw new Error(data.error || 'Failed to load'); }
   catch (e) { document.getElementById('srBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
-  const canEdit = !!(fafAuth.user && (fafAuth.user.siteAdmin || fafAuth.user.director));
+  // creating a series needs tournament-hosting permission (which already includes admins/directors)
+  const canEdit = !!(fafAuth.user && (fafAuth.user.allowed || fafAuth.user.siteAdmin || fafAuth.user.director));
   const list = data.series || [];
   let html = '';
   if (canEdit) {
@@ -1577,7 +1598,7 @@ async function renderSeriesIndex() {
         <input type="text" id="srName" placeholder="Series name (e.g. Monthly Blitz)" style="flex:1;min-width:220px">
         <button class="btn primary" id="srCreate">Create</button>
       </div>
-      <p class="muted small" style="margin-top:8px">A series just groups editions together for browsing. Organizers attach their tournament to a series from its Admin tab.</p></div>`;
+      <p class="muted small" style="margin-top:8px">A series just groups editions together for browsing. Anyone who can host a tournament can create one; organizers attach their tournament to a series from its Admin tab. Only the creator (or a director / site admin) can rename or delete a series.</p></div>`;
   }
   html += '<div class="panel section"><h2>All series <span class="h2-strong">(' + list.length + ')</span></h2>';
   if (!list.length) html += '<div class="empty">No series yet.</div>';
