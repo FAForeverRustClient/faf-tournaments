@@ -377,23 +377,33 @@ async function drawAdmin(el) {
   { // Organizers: always visible in the Admin tab, even when the identity list is empty
     const sa = !!siteAdmin();
     const orgs = T.organizers || [];
+    // Qualifiers are a niche feature, so the controls stay collapsed behind a checkbox unless
+    // this tournament already uses them.
+    const isParent = (T.qualifiers || []).length > 0 || _qlPanelOpen;
     html += `<div class="panel section"><h2>Qualifiers</h2>
-      <p class="muted small">Feed this tournament from other tournaments. When a qualifier finishes, the entrants who meet the rule are <strong>invited</strong> automatically \u2014 they still have to accept. Manual invites and normal signups keep working.</p>
-      ${(T.qualifiers || []).length ? '<div class="ql-list">' + T.qualifiers.map(q => `<div class="ql-row">
-          <div>
-            <div class="ql-name">${esc(q.name)}</div>
-            <div class="muted small">${q.rule ? (q.rule.type === 'points' ? q.rule.n + '+ points advance' : 'Top ' + q.rule.n + ' advance') : ''}
-              \u00b7 ${q.applied ? 'applied \u2014 ' + (q.qualified || []).length + ' qualified' : (q.status === 'finished' ? 'pending' : 'waiting for it to finish')}</div>
-            ${(q.qualified || []).length ? '<div class="muted small">Qualified: ' + esc(q.qualified.join(', ')) + '</div>' : ''}
-            ${(q.unreachable || []).length ? '<div class="warn small">No FAF account \u2014 invite manually: ' + esc(q.unreachable.join(', ')) + '</div>' : ''}
+      <label class="ql-toggle"><input type="checkbox" id="qlEnable"${isParent ? ' checked' : ''}> This tournament takes qualifiers from other tournaments</label>
+      <div id="qlBody" style="display:${isParent ? '' : 'none'}">
+        <p class="muted small" style="margin:8px 0 10px">When a linked qualifier finishes, the entrants who meet the rule are <strong>invited</strong> automatically \u2014 they still have to accept. Manual invites and normal signups keep working.</p>
+        ${(T.qualifiers || []).length ? '<div class="ql-list">' + T.qualifiers.map(q => `<div class="ql-row">
+            <div>
+              <div class="ql-name">${esc(q.name)}</div>
+              <div class="muted small">${q.rule ? (q.rule.type === 'points' ? q.rule.n + '+ points advance' : 'Top ' + q.rule.n + ' advance') : ''}
+                \u00b7 ${q.applied ? 'applied \u2014 ' + (q.qualified || []).length + ' qualified' : (q.status === 'finished' ? 'pending' : 'waiting for it to finish')}</div>
+              ${(q.qualified || []).length ? '<div class="muted small">Qualified: ' + esc(q.qualified.join(', ')) + '</div>' : ''}
+              ${(q.unreachable || []).length ? '<div class="warn small">No FAF account \u2014 invite manually: ' + esc(q.unreachable.join(', ')) + '</div>' : ''}
+            </div>
+            <button class="btn ghost small" data-qlrm="${esc(q.id)}">Remove</button>
+          </div>`).join('') + '</div>' : ''}
+        <div class="ql-add">
+          <div class="ql-pick">
+            <label>Qualifier tournament <span class="muted small">(only tournaments you organize)</span></label>
+            <input type="text" id="qlSearch" placeholder="Search your tournaments\u2026" autocomplete="off">
+            <div class="ql-opts" id="qlOpts" style="display:none"></div>
           </div>
-          <button class="btn ghost small" data-qlrm="${esc(q.id)}">Remove</button>
-        </div>`).join('') + '</div>' : '<div class="empty">No qualifiers linked.</div>'}
-      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
-        <div style="flex:1;min-width:200px"><label>Qualifier tournament</label><select id="qlSel"><option value="">Choose a tournament\u2026</option></select></div>
-        <div><label>Rule</label><select id="qlType"><option value="top">Top N advance</option><option value="points">N+ points advance</option></select></div>
-        <div style="width:90px"><label>N</label><input type="number" id="qlN" min="1" max="128" value="4"></div>
-        <button class="btn ghost" id="qlAdd">Add qualifier</button>
+          <div style="width:150px"><label>Rule</label><select id="qlType"><option value="top">Top N advance</option><option value="points">N+ points</option></select></div>
+          <div style="width:74px"><label>N</label><input type="number" id="qlN" min="1" max="128" value="4"></div>
+          <button class="btn ghost" id="qlAdd">Add</button>
+        </div>
       </div>
     </div>`;
     html += `<div class="panel section"><h2>Series</h2>
@@ -723,30 +733,57 @@ async function drawAdmin(el) {
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
-  // qualifier panel: populate the picker, wire add/remove
+  // qualifier panel: reveal toggle + searchable picker limited to tournaments the viewer organizes
   {
-    const qlSel = document.getElementById('qlSel');
-    if (qlSel) {
-      fetch('/api/tournaments').then(r => r.json()).then(list => {
-        const linked = new Set((T.qualifiers || []).map(q => q.tournamentId));
-        for (const t2 of (list || [])) {
-          if (t2.id === T.id || linked.has(t2.id)) continue;
-          const o = document.createElement('option');
-          o.value = t2.id;
-          o.textContent = t2.name + ' (' + (t2.status === 'finished' ? 'finished' : t2.status) + ')';
-          qlSel.appendChild(o);
+    const enable = document.getElementById('qlEnable');
+    const body = document.getElementById('qlBody');
+    if (enable && body) enable.onchange = () => {
+      _qlPanelOpen = enable.checked;
+      body.style.display = enable.checked ? '' : 'none';
+    };
+
+    const search = document.getElementById('qlSearch');
+    const opts = document.getElementById('qlOpts');
+    if (search && opts) {
+      let all = [], chosen = null;
+      const linked = new Set((T.qualifiers || []).map(q => q.tournamentId));
+      const render = (q) => {
+        const term = (q || '').toLowerCase();
+        const hits = all.filter(t2 => !term || t2.name.toLowerCase().includes(term)).slice(0, 12);
+        if (!hits.length) {
+          opts.innerHTML = '<div class="ql-opt muted">' + (all.length ? 'No match.' : 'You don\u2019t organize any other tournaments yet.') + '</div>';
+        } else {
+          opts.innerHTML = hits.map(t2 =>
+            `<div class="ql-opt" data-qlpick="${esc(t2.id)}">${esc(t2.name)} <span class="muted small">${esc(t2.status === 'finished' ? 'finished' : t2.status)}</span></div>`).join('');
+          opts.querySelectorAll('[data-qlpick]').forEach(d => d.onmousedown = (ev) => {
+            ev.preventDefault();
+            chosen = all.find(x => x.id === d.dataset.qlpick) || null;
+            search.value = chosen ? chosen.name : '';
+            opts.style.display = 'none';
+          });
         }
+        opts.style.display = '';
+      };
+      fetch('/api/my_tournaments').then(r => r.json()).then(d => {
+        all = (d.tournaments || []).filter(t2 => t2.id !== T.id && !linked.has(t2.id));
       }).catch(() => {});
+      search.addEventListener('focus', () => render(search.value));
+      search.addEventListener('input', () => { chosen = null; render(search.value); });
+      search.addEventListener('blur', () => setTimeout(() => { opts.style.display = 'none'; }, 150));
+
       const add = document.getElementById('qlAdd');
       if (add) add.onclick = async () => {
-        if (!qlSel.value) return toast('Choose a tournament', true);
+        // allow an exact typed name as well as a clicked suggestion
+        if (!chosen) chosen = all.find(x => x.name.toLowerCase() === (search.value || '').trim().toLowerCase()) || null;
+        if (!chosen) return toast('Pick one of your tournaments from the list', true);
         try {
           await api('/api/t/' + T.id + '/qualifier_add', {
-            tournamentId: qlSel.value,
+            tournamentId: chosen.id,
             ruleType: document.getElementById('qlType').value,
             n: document.getElementById('qlN').value,
             admin: adminToken()
           });
+          _qlPanelOpen = true;
           toast('Qualifier added'); await refresh();
         } catch (e) { toast(e.message, true); }
       };
@@ -1121,6 +1158,7 @@ function drawTlog(el) {
 // ---------- chat ----------
 // A lightweight polling chat that runs independently of the main tournament poll so
 // messages arrive quickly. One active room at a time; its own timer, torn down on close.
+let _qlPanelOpen = false;   // Qualifiers controls revealed on the Admin tab (per session)
 let _chatRoom = null;
 let _chatActiveRoom = null;
 let _chatCompletedOpen = false;   // completed-match chats collapsed by default

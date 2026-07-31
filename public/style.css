@@ -885,6 +885,16 @@ body.modal-open .turnbanner { animation: none !important; }
 .qualify-block { border-color: #FFB44755; }
 .qb-list { margin: 4px 0 0; padding-left: 18px; }
 .qb-list li { margin-bottom: 5px; }
+.ql-toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.ql-toggle input { width: auto; margin: 0; }
+.ql-add { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-top: 10px; }
+.ql-pick { position: relative; flex: 1; min-width: 220px; }
+.ql-pick input { width: 100%; }
+.ql-opts { position: absolute; left: 0; right: 0; top: calc(100% + 3px); max-height: 240px; overflow-y: auto; background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 5px; box-shadow: 0 8px 24px #000a; z-index: 30; }
+.ql-opt { padding: 7px 10px; font-size: 13px; cursor: pointer; }
+.ql-opt:hover { background: var(--amber-dim, #2a2113); color: var(--amber); }
+.ql-opt.muted { cursor: default; }
+.ql-opt.muted:hover { background: none; color: var(--muted); }
 .ql-list { display: flex; flex-direction: column; gap: 8px; }
 .ql-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 9px 11px; border: 1px solid var(--line-solid); border-radius: 5px; background: var(--panel2, #141d28); }
 .ql-name { font-weight: 600; }

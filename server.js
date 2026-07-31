@@ -1841,7 +1841,7 @@ async function handleAPI(req, res, url) {
     const mine = Object.values(db.tournaments).filter(t => !t.archived && (
       (Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(sess.fafId) >= 0) ||
       (isOfficial(t) && db.directors[sess.fafId])
-    )).sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0)).map(t => ({ id: t.id, name: t.name, category: t.category || null, mapCount: (t.mapDb || []).length, poolCount: (t.mapPools || []).length }));
+    )).sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0)).map(t => ({ id: t.id, name: t.name, category: t.category || null, status: t.status, eventDate: t.eventDate || null, mapCount: (t.mapDb || []).length, poolCount: (t.mapPools || []).length }));
     return json(res, 200, { tournaments: mine });
   }
 
