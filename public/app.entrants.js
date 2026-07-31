@@ -97,7 +97,9 @@ function drawPlayers(el) {
       <div id="ogResult" style="margin-top:8px"></div>
       ${(T.invites || []).length ? '<div style="margin-top:12px"><div class="ic-label">Invited (' + T.invites.length + ')</div><p class="muted small" style="margin:4px 0 6px">Pending and declined invites are cleared automatically when the tournament starts.</p>' + T.invites.map(i => {
         const chip = i.status === 'accepted' ? '<span class="invchip accepted">accepted</span>' : i.status === 'declined' ? '<span class="invchip declined">declined</span>' : '<span class="invchip pending">pending</span>';
-        return '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(i.name) + ' ' + chip + '</div></div><div class="sa-req-act">' + (i.status !== 'accepted' ? '<button class="btn ghost small" data-uninvite="' + esc(i.fafId) + '">Uninvite</button>' : '') + '</div></div>';
+        // invites created by qualification carry the tournament they came from
+        const via = i.viaName ? '<span class="inv-via" title="Invited automatically by qualifying">via ' + esc(i.viaName) + '</span>' : '';
+        return '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(i.name) + ' ' + chip + via + '</div></div><div class="sa-req-act">' + (i.status !== 'accepted' ? '<button class="btn ghost small" data-uninvite="' + esc(i.fafId) + '">Uninvite</button>' : '') + '</div></div>';
       }).join('') + '</div>' : ''}
       ${pendingReqs.length ? '<div style="margin-top:12px"><div class="ic-label">Signup requests (' + pendingReqs.length + ')</div>' + pendingReqs.map(pl => '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(pl.name) + (pl.rating != null ? ' <span class="muted mono small">' + pl.rating + '</span>' : '') + '</div></div><div class="sa-req-act"><button class="btn primary small" data-sapprove="' + pl.id + '">Accept</button><button class="btn ghost small" data-sdecline="' + pl.id + '">Decline</button></div></div>').join('') + '</div>' : ''}
     </div>`;

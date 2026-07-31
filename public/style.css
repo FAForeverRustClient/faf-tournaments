@@ -880,3 +880,12 @@ body.modal-open .turnbanner { animation: none !important; }
 .vlog-thumb.ban { opacity: .4; filter: grayscale(.7); }
 .vlog-noimg { width: 34px; height: 34px; border-radius: 3px; border: 1px dashed var(--line-solid); display: block; }
 .vlog-row.with-thumb { grid-template-columns: 22px 52px 34px minmax(90px, 150px) 1fr; }
+
+/* ---- parent / child qualification ---- */
+.qualify-block { border-color: #FFB44755; }
+.qb-list { margin: 4px 0 0; padding-left: 18px; }
+.qb-list li { margin-bottom: 5px; }
+.ql-list { display: flex; flex-direction: column; gap: 8px; }
+.ql-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 9px 11px; border: 1px solid var(--line-solid); border-radius: 5px; background: var(--panel2, #141d28); }
+.ql-name { font-weight: 600; }
+.inv-via { font-family: var(--mono); font-size: 10px; color: var(--amber); border: 1px solid #FFB44755; border-radius: 3px; padding: 1px 5px; margin-left: 6px; }

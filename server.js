@@ -23,8 +23,8 @@ const {
   buildSingle, buildDouble,
 } = require('./lib/match');
 // Swiss and FFA formats (import the shared match primitives internally).
-const { swissPairRound, swissAfterReport } = require('./lib/swiss');
-const { ffaCreateRound, ffaAfterReport } = require('./lib/ffa');
+const { swissPairRound, swissAfterReport, swissStandings } = require('./lib/swiss');
+const { ffaCreateRound, ffaAfterReport, ffaRank } = require('./lib/ffa');
 // Team formation and map lookups.
 const { buildDraft, finishDraftIfDone, finalizeOpenTeams, formTeamsGrouped } = require('./lib/teams');
 const { mapById, publicMapView } = require('./lib/maps');
@@ -262,6 +262,121 @@ function canHost(req, token) {
 // organizer link while logged in. Site admin always counts.
 // A tournament is "official" only when explicitly tagged so (site admin sets this).
 function isOfficial(t) { return t && t.category === 'official'; }
+// ---------- qualification (parent / child tournaments) ----------
+// A parent lists the qualifiers that feed it:
+//   t.qualifiers = [ { id, tournamentId, rule:{type:'top'|'points', n}, applied, qualified:[], unreachable:[] } ]
+// The link lives only on the parent; a child derives "feeds into X" by lookup, so the two sides
+// can never disagree. Qualifying does NOT sign anyone up - it sends a normal invite to accept.
+
+// Rank a FINISHED tournament's entrants best-first, so "top N" means something in every format.
+function tournamentRanking(t) {
+  if (!t) return [];
+  if (t.competition === 'ffa') {
+    try { const r = ffaRank(t, (t.teams || []).map(x => x.id)); return Array.isArray(r) ? r.slice() : []; }
+    catch (e) { return []; }
+  }
+  if (t.bracketType === 'swiss') {
+    try { return (swissStandings(t) || []).map(r => r.teamId).filter(Boolean); } catch (e) { return []; }
+  }
+  // Elimination: champion first, then by how late each team was knocked out. The stage key matches
+  // the bracket's own ordering, so surviving longer always ranks higher.
+  const stage = m => (m.bracket === 'gf' ? 1000 : 0) + ((m.round || 0) * 10) + (m.bracket === 'lb' ? 1 : 0);
+  const out = {};
+  for (const m of (t.matches || [])) {
+    if (m.status !== 'done' || !m.loser || m.loser === 'BYE') continue;
+    const k = stage(m);
+    if (out[m.loser] == null || k > out[m.loser]) out[m.loser] = k;   // their FINAL loss
+  }
+  const seedOf = id => { const tm = (t.teams || []).find(x => x.id === id); return (tm && tm.seed) || 9999; };
+  const losers = Object.keys(out).filter(id => id !== t.championTeamId)
+    .sort((a, b) => out[b] - out[a] || seedOf(a) - seedOf(b));
+  const ranked = [];
+  if (t.championTeamId) ranked.push(t.championTeamId);
+  for (const id of losers) if (ranked.indexOf(id) < 0) ranked.push(id);
+  return ranked;
+}
+
+function qualifyingTeamIds(child, rule) {
+  if (!child || child.status !== 'finished') return [];
+  const r = rule || {};
+  if (r.type === 'points') {
+    const min = Number(r.n) || 0;
+    if (child.bracketType === 'swiss') {
+      try { return (swissStandings(child) || []).filter(x => (x.wins || 0) >= min).map(x => x.teamId).filter(Boolean); }
+      catch (e) { return []; }
+    }
+    if (child.competition === 'ffa') {
+      const totals = child.ffaTotals || child.points || null;
+      const ranked = tournamentRanking(child);
+      if (!totals) return ranked;
+      return ranked.filter(id => (Number(totals[id]) || 0) >= min);
+    }
+    return [];
+  }
+  return tournamentRanking(child).slice(0, Math.max(1, Number(r.n) || 1));
+}
+
+// For a team tournament the TEAM qualifies, so every member is invited; solo = that player.
+function qualifiedFafIds(child, teamId) {
+  const tm = (child.teams || []).find(x => x.id === teamId);
+  const ids = [];
+  if (tm) for (const pid of (tm.playerIds || [])) {
+    const p = (child.players || []).find(x => x.id === pid);
+    if (p && p.fafId) ids.push({ fafId: p.fafId, name: p.name || ('FAF ' + p.fafId) });
+  }
+  return ids;
+}
+
+// Lazy sweep (same idiom as scheduled publishing): apply any link whose child has finished.
+function sweepQualifications() {
+  let changed = false;
+  for (const par of Object.values(db.tournaments || {})) {
+    if (!Array.isArray(par.qualifiers) || !par.qualifiers.length) continue;
+    for (const link of par.qualifiers) {
+      if (link.applied) continue;
+      const child = db.tournaments[link.tournamentId];
+      if (!child || child.status !== 'finished') continue;
+      const teamIds = qualifyingTeamIds(child, link.rule);
+      par.invites = par.invites || [];
+      const named = []; let invited = 0; const unreachable = [];
+      for (const tid of teamIds) {
+        const tm = (child.teams || []).find(x => x.id === tid);
+        named.push(tm ? tm.name : tid);
+        const who = qualifiedFafIds(child, tid);
+        // Invites are addressed to FAF accounts; a manually-added entrant has none.
+        if (!who.length) { unreachable.push(tm ? tm.name : tid); continue; }
+        for (const w of who) {
+          if (par.invites.some(i => i.fafId === w.fafId)) continue;
+          par.invites.push({ fafId: w.fafId, name: w.name, at: now(), via: child.id, viaName: child.name });
+          invited++;
+        }
+      }
+      link.applied = now(); link.qualified = named; link.unreachable = unreachable;
+      changed = true;
+      tpush(par, 'System', 'qualification from "' + child.name + '": ' + named.length + ' qualified' +
+        (named.length ? ' (' + named.join(', ') + ')' : '') + ', ' + invited + ' invite(s) sent' +
+        (unreachable.length ? '; no FAF account for ' + unreachable.join(', ') : ''));
+      audit(null, 'qualifiers_invited', {
+        tournamentId: par.id, tournamentName: par.name,
+        actor: { kind: 'system', fafId: null, name: 'Qualification' },
+        detail: named.length + ' from ' + child.name
+      });
+    }
+  }
+  if (changed) saveDB();
+  return changed;
+}
+
+// Which parent (if any) this tournament feeds - derived, never stored twice.
+function feedsIntoFor(t) {
+  for (const par of Object.values(db.tournaments || {})) {
+    if (!Array.isArray(par.qualifiers)) continue;
+    const link = par.qualifiers.find(q => q.tournamentId === t.id);
+    if (link) return { parentId: par.id, parentName: par.name, rule: link.rule || null, applied: link.applied || null };
+  }
+  return null;
+}
+
 // Sort key for a tournament by its event date, falling back to creation time.
 function tourneyMs(t) {
   if (!t) return 0;
@@ -578,6 +693,16 @@ function publicView(t) {
     id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', sponsors: t.sponsors || '', category: t.category || null,
     published: t.published !== false ? 1 : 0, publishAt: t.publishAt || null, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
     seriesId: t.seriesId || null,
+    qualifiers: (t.qualifiers || []).map(q => {
+      const c = db.tournaments[q.tournamentId];
+      return {
+        id: q.id, tournamentId: q.tournamentId,
+        name: c ? c.name : '(deleted tournament)', status: c ? c.status : null,
+        rule: q.rule || null, applied: q.applied || null,
+        qualified: q.qualified || [], unreachable: q.unreachable || []
+      };
+    }),
+    feedsInto: feedsIntoFor(t),
     seriesName: (t.seriesId && db.series[t.seriesId]) ? db.series[t.seriesId].name : null,
     signupOpensAt: t.signupOpensAt || null,
     signupClosesAt: t.signupClosesAt || null,
@@ -1814,6 +1939,7 @@ async function handleAPI(req, res, url) {
 
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
     sweepScheduledPublishes();   // flip any drafts whose scheduled publish time has passed
+    sweepQualifications();       // invite qualifiers from any child that has finished
     const sess = currentSession(req);
     const myFid = sess && sess.fafId;
     const list = Object.values(db.tournaments)
@@ -1962,6 +2088,7 @@ async function handleAPI(req, res, url) {
 
     if (method === 'GET' && !sub) {
       const tok = url.searchParams.get('token');
+      sweepQualifications();   // opening a parent applies any qualifier whose child just finished
       const view = publicView(t);
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
@@ -2012,6 +2139,7 @@ async function handleAPI(req, res, url) {
       view.chatMutedMe = (sess && chatMuted(t, sess.fafId)) ? 1 : 0;
       view.invites = organizer ? (t.invites || []).map(i => ({
         fafId: i.fafId, name: i.name, at: i.at,
+        via: i.via || null, viaName: i.viaName || null,   // set when the invite came from a qualifier
         status: (t.players || []).some(pl => pl.fafId === i.fafId) ? 'accepted' : (i.declined ? 'declined' : 'pending')
       })) : undefined;
       view.viewer = {
@@ -2174,6 +2302,39 @@ async function handleAPI(req, res, url) {
       t.archived = false; t.archivedAt = null;
       saveDB();
       audit(req, 'tournament_restored', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: 'restored by site admin' });
+      return json(res, 200, { ok: true });
+    }
+
+    // add a qualifier feeding THIS tournament: { tournamentId, ruleType:'top'|'points', n }
+    if (sub === 'qualifier_add') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const cid = String(b.tournamentId || '').trim();
+      const child = db.tournaments[cid];
+      if (!child) return bad(res, 'Tournament not found');
+      if (cid === t.id) return bad(res, 'A tournament cannot qualify into itself');
+      if (Array.isArray(child.qualifiers) && child.qualifiers.some(q => q.tournamentId === t.id)) {
+        return bad(res, 'That tournament already draws its qualifiers from this one');
+      }
+      t.qualifiers = t.qualifiers || [];
+      if (t.qualifiers.some(q => q.tournamentId === cid)) return bad(res, 'That qualifier is already linked');
+      const type = b.ruleType === 'points' ? 'points' : 'top';
+      const n = Math.max(1, parseInt(b.n, 10) || 1);
+      const link = { id: uid(8), tournamentId: cid, rule: { type, n }, applied: null, qualified: [], unreachable: [] };
+      t.qualifiers.push(link);
+      saveDB();
+      tlog(t, req, b.admin, 'added "' + child.name + '" as a qualifier (' + (type === 'points' ? n + '+ points' : 'top ' + n) + ')');
+      sweepQualifications();   // the child may already be finished
+      return json(res, 200, { ok: true, id: link.id });
+    }
+
+    if (sub === 'qualifier_remove') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const i = (t.qualifiers || []).findIndex(q => q.id === String(b.id || ''));
+      if (i < 0) return bad(res, 'Qualifier link not found');
+      const gone = t.qualifiers.splice(i, 1)[0];
+      const child = db.tournaments[gone.tournamentId];
+      saveDB();
+      tlog(t, req, b.admin, 'removed the qualifier link to "' + (child ? child.name : gone.tournamentId) + '" (invites already sent are kept)');
       return json(res, 200, { ok: true });
     }
 

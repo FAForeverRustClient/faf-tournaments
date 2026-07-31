@@ -945,8 +945,37 @@ function gameInfoPanel() {
   </div>
     ${richCells.length ? '<div class="infogrid">' + richCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${c[1]}</div></div>`).join('') + '</div>' : ''}
     ${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}${gallery}</div>`
+    + qualifyBlockHTML()
     + seriesBlockHTML()
     + `<div class="panel section"><h2>Links</h2><div class="ic-body">${faqLinksHTML()}</div></div>`;
+}
+
+// "Top N advance to X" block: on a qualifier it shows what players are competing for; on a
+// parent it shows where its field comes from and who has qualified so far.
+function qualifyBlockHTML() {
+  const fi = T.feedsInto;
+  const quals = T.qualifiers || [];
+  if (!fi && !quals.length) return '';
+  let h = '<div class="panel section qualify-block"><h2>Qualification</h2>';
+  if (fi) {
+    const rule = fi.rule
+      ? (fi.rule.type === 'points' ? 'Everyone on <strong>' + fi.rule.n + ' points or more</strong>' : 'The <strong>top ' + fi.rule.n + '</strong>')
+      : 'Qualifying entrants';
+    h += `<p style="margin:0 0 6px">${rule} here ${fi.applied ? 'were' : 'will be'} invited to
+      <a href="/t/${esc(fi.parentId)}" data-serieslink><strong>${esc(fi.parentName)}</strong></a>.
+      ${fi.applied ? '' : '<span class="muted">Invites go out once this tournament finishes.</span>'}</p>`;
+  }
+  if (quals.length) {
+    h += '<p style="margin:' + (fi ? '10px 0 6px' : '0 0 6px') + '">This tournament draws qualifiers from:</p><ul class="qb-list">';
+    for (const q of quals) {
+      const rule = q.rule ? (q.rule.type === 'points' ? q.rule.n + '+ points' : 'top ' + q.rule.n) : '';
+      h += `<li><a href="/t/${esc(q.tournamentId)}" data-serieslink>${esc(q.name)}</a> <span class="muted">(${esc(rule)}${q.applied ? ' \u00b7 ' + (q.qualified || []).length + ' qualified' : ' \u00b7 pending'})</span>`;
+      if ((q.qualified || []).length) h += '<div class="muted small">' + esc(q.qualified.join(', ')) + '</div>';
+      h += '</li>';
+    }
+    h += '</ul>';
+  }
+  return h + '</div>';
 }
 
 // "Part of the X series" block, shown near the bottom of the overview above the links.

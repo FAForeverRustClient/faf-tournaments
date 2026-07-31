@@ -377,6 +377,25 @@ async function drawAdmin(el) {
   { // Organizers: always visible in the Admin tab, even when the identity list is empty
     const sa = !!siteAdmin();
     const orgs = T.organizers || [];
+    html += `<div class="panel section"><h2>Qualifiers</h2>
+      <p class="muted small">Feed this tournament from other tournaments. When a qualifier finishes, the entrants who meet the rule are <strong>invited</strong> automatically \u2014 they still have to accept. Manual invites and normal signups keep working.</p>
+      ${(T.qualifiers || []).length ? '<div class="ql-list">' + T.qualifiers.map(q => `<div class="ql-row">
+          <div>
+            <div class="ql-name">${esc(q.name)}</div>
+            <div class="muted small">${q.rule ? (q.rule.type === 'points' ? q.rule.n + '+ points advance' : 'Top ' + q.rule.n + ' advance') : ''}
+              \u00b7 ${q.applied ? 'applied \u2014 ' + (q.qualified || []).length + ' qualified' : (q.status === 'finished' ? 'pending' : 'waiting for it to finish')}</div>
+            ${(q.qualified || []).length ? '<div class="muted small">Qualified: ' + esc(q.qualified.join(', ')) + '</div>' : ''}
+            ${(q.unreachable || []).length ? '<div class="warn small">No FAF account \u2014 invite manually: ' + esc(q.unreachable.join(', ')) + '</div>' : ''}
+          </div>
+          <button class="btn ghost small" data-qlrm="${esc(q.id)}">Remove</button>
+        </div>`).join('') + '</div>' : '<div class="empty">No qualifiers linked.</div>'}
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
+        <div style="flex:1;min-width:200px"><label>Qualifier tournament</label><select id="qlSel"><option value="">Choose a tournament\u2026</option></select></div>
+        <div><label>Rule</label><select id="qlType"><option value="top">Top N advance</option><option value="points">N+ points advance</option></select></div>
+        <div style="width:90px"><label>N</label><input type="number" id="qlN" min="1" max="128" value="4"></div>
+        <button class="btn ghost" id="qlAdd">Add qualifier</button>
+      </div>
+    </div>`;
     html += `<div class="panel section"><h2>Series</h2>
       <p class="muted small">Group this tournament with other editions of the same recurring event. Editions stay completely independent — this is only a link for browsing.</p>
       <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
@@ -704,6 +723,41 @@ async function drawAdmin(el) {
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+  // qualifier panel: populate the picker, wire add/remove
+  {
+    const qlSel = document.getElementById('qlSel');
+    if (qlSel) {
+      fetch('/api/tournaments').then(r => r.json()).then(list => {
+        const linked = new Set((T.qualifiers || []).map(q => q.tournamentId));
+        for (const t2 of (list || [])) {
+          if (t2.id === T.id || linked.has(t2.id)) continue;
+          const o = document.createElement('option');
+          o.value = t2.id;
+          o.textContent = t2.name + ' (' + (t2.status === 'finished' ? 'finished' : t2.status) + ')';
+          qlSel.appendChild(o);
+        }
+      }).catch(() => {});
+      const add = document.getElementById('qlAdd');
+      if (add) add.onclick = async () => {
+        if (!qlSel.value) return toast('Choose a tournament', true);
+        try {
+          await api('/api/t/' + T.id + '/qualifier_add', {
+            tournamentId: qlSel.value,
+            ruleType: document.getElementById('qlType').value,
+            n: document.getElementById('qlN').value,
+            admin: adminToken()
+          });
+          toast('Qualifier added'); await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+    }
+    el.querySelectorAll('[data-qlrm]').forEach(b => b.onclick = async () => {
+      if (!confirm('Remove this qualifier link? Invites already sent are kept.')) return;
+      try { await api('/api/t/' + T.id + '/qualifier_remove', { id: b.dataset.qlrm, admin: adminToken() }); toast('Removed'); await refresh(); }
+      catch (e) { toast(e.message, true); }
+    });
+  }
+
   // series selector: fill from the series list, then save on demand
   const srSel = document.getElementById('tSeriesSel');
   if (srSel) {

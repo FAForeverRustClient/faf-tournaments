@@ -70,6 +70,15 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Games played counts only games that were actually played: a walkover forfeit (no games) contributes nothing, while a series that was played and then forfeited still counts its real games.
 - Map *ban* statistics remain on the organiser-only panel in the Vetoes tab; the public page shows maps played, which is already visible from the bracket.
 
+### Parent / child tournaments (qualification)
+- A tournament can draw its field from one or more **qualifiers**. On the parent's Admin tab, add a qualifier and a rule: *top N advance* (any format) or *N+ points advance* (Swiss / FFA).
+- When a qualifier finishes, the entrants who meet the rule are **invited automatically** - they are not signed up. Accepting is up to them, and the invite appears in the parent's Invited list tagged with the qualifier it came from. Manual invites and normal signups are unaffected.
+- For a team tournament the **team** qualifies and every member is invited; for a solo bracket the player is invited. An entrant with no linked FAF account cannot be invited automatically and is listed so the organizer can chase them.
+- Rankings come from the finished tournament: final placement for elimination brackets (ordered by how late a team was knocked out), Swiss standings, or the FFA leaderboard.
+- Both sides show it: a qualifier displays "the top N here will be invited to X", and the parent lists where its field comes from and who has qualified.
+- Seeding in the parent is by rating as usual, with the normal manual seed override.
+- The link is stored only on the parent, so the two sides can never disagree. Removing a link keeps invites already sent. Self-links and circular links are rejected.
+
 ### Tournament series
 - A **series** groups editions of a recurring event (e.g. a monthly cup) purely for browsing. Editions are completely independent: no qualification, no fixed cadence, no shared state.
 - Anyone with tournament-hosting permission can create a series (that includes site admins and directors). Renaming or deleting a series is limited to whoever created it, plus directors and site admins, so one host cannot rename or delete another's series.
