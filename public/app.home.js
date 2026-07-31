@@ -818,9 +818,9 @@ function drawTournament() {
           <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}</div>
         </div>
         <div class="headrow-right">
-          ${viewerHasRights() ? `<button class="btn ghost small streamer-toggle ${playerViewMode ? 'on' : ''}" id="playerViewToggle" title="Hide organizer & admin controls on your screen and browse as a regular player. Doesn't change your actual permissions.">${playerViewMode ? '\u25C9 Viewing as player' : '\u25CB View as player'}</button>` : ''}
-          <button class="btn ghost small streamer-toggle ${showPlayerNames ? 'on' : ''}" id="namesToggle" title="Show each team's players in the bracket instead of the team name. Only affects your own screen.">${showPlayerNames ? '\u25C9 Showing players' : '\u25CB Show players'}</button>
-          <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals. Only affects your own screen.">${streamerMode ? '\u25C9 Streamer mode: ON' : '\u25CB Streamer mode'}</button>
+          ${viewerHasRights() ? `<button class="btn ghost small streamer-toggle ${playerViewMode ? 'on' : ''}" id="playerViewToggle" title="Hide organizer &amp; admin controls and browse as a regular player.${hotkeyFor('playerview') ? ' Shortcut: ' + hotkeyFor('playerview') + '.' : ''} Doesn't change your actual permissions.">${playerViewMode ? '\u25C9 Viewing as player' : '\u25CB View as player'}</button>` : ''}
+          <button class="btn ghost small streamer-toggle ${showPlayerNames ? 'on' : ''}" id="namesToggle" title="Show each team's players in the bracket instead of the team name.${hotkeyFor('players') ? ' Shortcut: ' + hotkeyFor('players') + '.' : ''} Only affects your own screen.">${showPlayerNames ? '\u25C9 Showing players' : '\u25CB Show players'}</button>
+          <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals.${hotkeyFor('streamer') ? ' Shortcut: ' + hotkeyFor('streamer') + '.' : ''} Only affects your own screen.">${streamerMode ? '\u25C9 Streamer mode: ON' : '\u25CB Streamer mode'}</button>
           <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
         </div>
       </div>

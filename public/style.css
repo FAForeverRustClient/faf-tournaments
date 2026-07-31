@@ -911,3 +911,12 @@ body.modal-open .turnbanner { animation: none !important; }
 .prize-row { display: flex; gap: 8px; align-items: center; }
 .prize-row select { width: 130px; }
 .prize-row input { width: 150px; }
+
+/* keyboard shortcut help */
+.hk-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.hk-row { display: flex; align-items: center; gap: 12px; font-size: 14px; }
+.hk-row kbd, .hk-key { font-family: var(--mono); font-size: 12px; min-width: 42px; text-align: center; padding: 4px 8px; border: 1px solid var(--line-solid); border-bottom-width: 2px; border-radius: 4px; background: var(--panel2, #141d28); color: var(--amber); cursor: pointer; }
+.hk-key:hover { border-color: var(--amber); }
+.hk-key.arming { border-color: var(--amber); background: var(--amber-dim, #2a2113); }
+.hk-row span { flex: 1; }
+.hk-clear { opacity: .7; }

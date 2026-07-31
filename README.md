@@ -99,6 +99,11 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - In-progress vetoes are listed first (newest round first), then completed ones (highlighted, with the decided maps).
 - On a **finished** tournament, a Veto statistics panel shows "most banned" and "most played" maps. It is visible only to organizers of that tournament, tournament directors (on official tournaments), and site admins.
 
+### Keyboard shortcuts
+- Single keys, no modifiers: **F** shows players instead of team names in the bracket, **S** toggles streamer mode, **V** toggles view-as-player (organizers only).
+- All three are rebindable in Display settings: click the key, press the one you want, or clear it to switch that shortcut off. Two actions can't share a key - binding one takes it from the other.
+- Shortcuts are ignored while you're typing in any field and while a dialog is open, and they only affect your own screen.
+
 ### Streamer mode and view-as-player (personal, per-browser toggles)
 - **Streamer mode** hides match results, scores, and who has advanced (a later slot shows "Winner of WB R1 M1" instead of the team), plus elimination styling and the standings table - for on-stream reveals. Each completed match has a "Reveal result" button to un-mask it one at a time; reveals persist across refreshes. Streamer mode only affects your own screen and never changes permissions.
 - **View as player** (shown only to organizers/admins) hides the organizer and admin controls on your screen so you can browse a tournament as a regular participant. It is a display filter only and does not change your actual permissions.

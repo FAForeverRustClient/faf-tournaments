@@ -520,6 +520,18 @@ function openSettings() {
       <option value="12"${prefTimeFmt() === '12' ? ' selected' : ''}>12-hour (6:30 pm)</option>
     </select>
     <div class="muted small" style="margin-top:6px">Preview: <strong id="fmtNow">${esc(fmtDateTime(new Date().toISOString()))}</strong></div>
+    <label style="margin-top:18px">Keyboard shortcuts</label>
+    <div class="muted small" style="margin-bottom:6px">Click a key, then press the one you want. These only change your own screen, and are ignored while you're typing.</div>
+    <div class="hk-list" id="hkSettings">
+      ${HOTKEY_ACTIONS.map(a => {
+        const cur = hotkeyMap()[a.id];
+        return `<div class="hk-row">
+          <button class="hk-key" data-hkset="${a.id}">${cur ? esc(cur.toUpperCase()) : 'off'}</button>
+          <span>${esc(a.label)}${a.note ? ' <span class="muted small">(' + esc(a.note) + ')</span>' : ''}</span>
+          <button class="btn ghost small hk-clear" data-hkclear="${a.id}" title="Disable this shortcut">clear</button>
+        </div>`;
+      }).join('')}
+    </div>
     <label style="margin-top:16px">UI scale — <span id="scaleVal">${s}%</span></label>
     <div class="scale-row">
       <span class="mono small">70</span>
@@ -549,6 +561,40 @@ function openSettings() {
       localStorage.setItem('timeFmt', e.target.value);
       root.querySelector('#fmtNow').textContent = fmtDateTime(new Date().toISOString());
     };
+    // rebinding: arm a button, then capture the next single key
+    let arming = null;
+    const paintKeys = () => {
+      const map = hotkeyMap();
+      root.querySelectorAll('[data-hkset]').forEach(btn => {
+        const id = btn.dataset.hkset;
+        btn.textContent = arming === id ? 'press\u2026' : (map[id] ? map[id].toUpperCase() : 'off');
+        btn.classList.toggle('arming', arming === id);
+      });
+    };
+    root.querySelectorAll('[data-hkset]').forEach(btn => btn.onclick = () => {
+      arming = arming === btn.dataset.hkset ? null : btn.dataset.hkset;
+      paintKeys();
+    });
+    root.querySelectorAll('[data-hkclear]').forEach(btn => btn.onclick = () => {
+      setHotkey(btn.dataset.hkclear, '');
+      arming = null; paintKeys();
+    });
+    // capture happens on the modal itself so it can't leak to the global handler
+    root.addEventListener('keydown', (ev) => {
+      if (!arming) return;
+      ev.preventDefault(); ev.stopPropagation();
+      if (ev.key === 'Escape') { arming = null; paintKeys(); return; }
+      const k = (ev.key || '').toLowerCase();
+      // a single printable character only - no modifiers, no F-keys, no Space
+      if (k.length !== 1 || !/[a-z0-9]/.test(k) || ev.ctrlKey || ev.metaKey || ev.altKey) {
+        toast('Pick a single letter or number', true); return;
+      }
+      // don't let two actions share a key: clear the other one first
+      const map = hotkeyMap();
+      for (const a of HOTKEY_ACTIONS) if (a.id !== arming && map[a.id] === k) setHotkey(a.id, '');
+      setHotkey(arming, k);
+      arming = null; paintKeys();
+    }, true);
     root.querySelector('#scaleReset').onclick = () => {
       localStorage.setItem('uiScale', '100');
       range.value = 100;
@@ -1579,3 +1625,70 @@ function siteAdminFlow() {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts for the personal view toggles. Single keys with no modifiers
+// (so they never fight the browser), rebindable from Display settings, and inert
+// while the user is typing — otherwise they would fire from the chat box.
+// ---------------------------------------------------------------------------
+const HOTKEY_ACTIONS = [
+  { id: 'players',    label: 'Show players / team names', def: 'f', note: '' },
+  { id: 'streamer',   label: 'Streamer mode',             def: 's', note: '' },
+  { id: 'playerview', label: 'View as player',            def: 'v', note: 'needs organizer rights' }
+];
+
+// stored bindings merged over the defaults; '' means that shortcut is switched off
+function hotkeyMap() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('faf_hotkeys') || '{}') || {}; } catch (e) { saved = {}; }
+  const out = {};
+  for (const a of HOTKEY_ACTIONS) out[a.id] = (saved[a.id] === '' ? '' : (saved[a.id] || a.def));
+  return out;
+}
+function setHotkey(id, key) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('faf_hotkeys') || '{}') || {}; } catch (e) { saved = {}; }
+  saved[id] = key;                       // '' disables it
+  try { localStorage.setItem('faf_hotkeys', JSON.stringify(saved)); } catch (e) {}
+}
+// what a given action is currently bound to, for tooltips
+function hotkeyFor(id) { const k = hotkeyMap()[id]; return k ? k.toUpperCase() : null; }
+
+function typingInField(el) {
+  if (!el) return false;
+  const tag = (el.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;          // leave browser/OS combos alone
+  if (typingInField(e.target)) return;                      // never steal keys from a text field
+  const modalOpen = !!document.getElementById('modalRoot').innerHTML;
+  if (e.key === 'Escape' && modalOpen) { e.preventDefault(); closeModal(); return; }
+  if (modalOpen) return;                                    // don't act behind an open dialog
+
+  // these toggles only mean anything inside a tournament
+  if (!(typeof T !== 'undefined' && T && T.id && location.pathname.startsWith('/t/'))) return;
+
+  const keys = hotkeyMap();
+  const k = (e.key || '').toLowerCase();
+  if (!k) return;
+
+  if (keys.players && k === keys.players) {
+    e.preventDefault();
+    setShowPlayerNames(!showPlayerNames);
+    toast(showPlayerNames ? 'Showing players' : 'Showing team names');
+    drawTournament();
+  } else if (keys.streamer && k === keys.streamer) {
+    e.preventDefault();
+    setStreamerMode(!streamerMode);
+    toast(streamerMode ? 'Streamer mode on' : 'Streamer mode off');
+    drawTournament();
+  } else if (keys.playerview && k === keys.playerview) {
+    if (!viewerHasRights()) return;                         // nothing to hide for a normal player
+    e.preventDefault();
+    setPlayerViewMode(!playerViewMode);
+    toast(playerViewMode ? 'Viewing as player' : 'Organizer view restored');
+    drawTournament();
+  }
+});
