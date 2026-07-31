@@ -23,6 +23,13 @@ function setPlayerViewMode(on) {
   playerViewMode = !!on;
   try { localStorage.setItem('faf_player_view', playerViewMode ? '1' : '0'); } catch (e) {}
 }
+// Bracket labels: show each team's players instead of the team name. Personal, per browser.
+let showPlayerNames = (() => { try { return localStorage.getItem('faf_show_players') === '1'; } catch (e) { return false; } })();
+function setShowPlayerNames(on) {
+  showPlayerNames = !!on;
+  try { localStorage.setItem('faf_show_players', showPlayerNames ? '1' : '0'); } catch (e) {}
+}
+
 // In streamer mode, individual matches can be temporarily "revealed" (show score + who advanced)
 // so the caster can look at a result on demand. Persisted per-tournament so a refresh keeps them.
 let revealedMatches = new Set();
@@ -377,6 +384,16 @@ function tourneyDateMs(t) {
 
 // navigate within the SPA (pushState + re-route), used by series pages and in-app links
 function nav(path) { history.pushState(null, '', path); route(); }
+
+// Render a headline prize: symbol in front for USD/EUR, suffix for RUB, thousands separated.
+const PRIZE_SYMBOLS = { USD: '$', EUR: '€', RUB: '₽' };
+function formatPrize(p) {
+  if (!p || !p.currency || p.amount == null) return '';
+  const n = Number(p.amount);
+  const num = isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: 2 }) : String(p.amount);
+  const sym = PRIZE_SYMBOLS[p.currency] || '';
+  return p.currency === 'RUB' ? (num + ' ' + sym) : (sym + num);
+}
 
 function statusLabel(s) {
   return { signup: 'Signups open', draft: 'Drafting', drafted: 'Teams locked', running: 'In progress', finished: 'Finished' }[s] || s;

@@ -577,6 +577,16 @@ async function drawAdmin(el) {
     </div>
     ${mdToolbarHTML()}
     <textarea id="aiRewards" maxlength="2000" rows="5" placeholder="e.g. 1st place: exclusive avatar + 500 credits...">${esc(T.rewards || '')}</textarea>
+    <label style="margin-top:10px">Overall cash prize <span class="muted small">(shown as its own box at the top of Rewards)</span></label>
+    <div class="prize-row">
+      <select id="aiPrizeCur">
+        <option value=""${!(T.prize && T.prize.currency) ? ' selected' : ''}>\u2014 none \u2014</option>
+        <option value="USD"${(T.prize && T.prize.currency) === 'USD' ? ' selected' : ''}>USD $</option>
+        <option value="EUR"${(T.prize && T.prize.currency) === 'EUR' ? ' selected' : ''}>EUR \u20ac</option>
+        <option value="RUB"${(T.prize && T.prize.currency) === 'RUB' ? ' selected' : ''}>RUB \u20bd</option>
+      </select>
+      <input type="number" id="aiPrizeAmt" min="0" step="1" inputmode="numeric" placeholder="Amount" value="${(T.prize && T.prize.amount != null) ? T.prize.amount : ''}">
+    </div>
     <input type="file" id="aiRwImgFile" accept="image/*" style="display:none">
     <div style="margin-top:14px"><button class="btn" id="aiRwSave">Save rewards</button></div>
   </div>`;
@@ -939,7 +949,12 @@ async function drawAdmin(el) {
   const rwSave = document.getElementById('aiRwSave');
   if (rwSave) rwSave.onclick = async () => {
     try {
-      await api('/api/t/' + T.id + '/edit_info', { rewards: aiRwTa.value, admin: adminToken() });
+      await api('/api/t/' + T.id + '/edit_info', {
+        rewards: aiRwTa.value,
+        prizeCurrency: (document.getElementById('aiPrizeCur') || {}).value || '',
+        prizeAmount: (document.getElementById('aiPrizeAmt') || {}).value || '',
+        admin: adminToken()
+      });
       toast('Rewards saved');
       await refresh();
     } catch (e) { toast(e.message, true); }

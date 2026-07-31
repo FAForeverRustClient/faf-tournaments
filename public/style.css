@@ -899,3 +899,15 @@ body.modal-open .turnbanner { animation: none !important; }
 .ql-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 9px 11px; border: 1px solid var(--line-solid); border-radius: 5px; background: var(--panel2, #141d28); }
 .ql-name { font-weight: 600; }
 .inv-via { font-family: var(--mono); font-size: 10px; color: var(--amber); border: 1px solid #FFB44755; border-radius: 3px; padding: 1px 5px; margin-left: 6px; }
+
+/* keep the score visible no matter how long the team/player label is */
+.brow .bscore { flex: 0 0 auto; }
+/* match chat + veto link share one compact row */
+.mlinks { display: flex; align-items: center; gap: 12px; flex-wrap: nowrap; padding: 6px 10px 0; overflow: hidden; }
+.mlinks .veto-mini-link { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* headline cash prize cell at the top of Rewards */
+.prize-cell { margin-bottom: 10px; }
+.prize-amount { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--amber); }
+.prize-row { display: flex; gap: 8px; align-items: center; }
+.prize-row select { width: 130px; }
+.prize-row input { width: 150px; }

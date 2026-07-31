@@ -264,6 +264,19 @@ function showTeamPopup(teamId) {
 // been advanced into its next match. Byes also CASCADE — a phantom match routes BYE into the slot
 // it feeds, so whole early losers-bracket rounds can be phantom too. The bracket hides these, and
 // every other view must use the same rule or the counts disagree with what people can see.
+// What to print for a team in the bracket: its name, or its players when the viewer has switched
+// to player labels. Always a single line — the row truncates with an ellipsis rather than growing.
+function bracketLabel(tid) {
+  if (!showPlayerNames) return teamName(tid);
+  const tm = T.teams && T.teams.find(x => x.id === tid);
+  if (!tm) return teamName(tid);
+  const names = (tm.playerIds || []).map(pid => {
+    const p = T.players.find(x => x.id === pid);
+    return p ? p.name : null;
+  }).filter(Boolean);
+  return names.length ? names.join(', ') : teamName(tid);
+}
+
 function isPhantomMatch(m) {
   return !m || m.team1 === 'BYE' || m.team2 === 'BYE';
 }
@@ -287,7 +300,7 @@ function matchBox(m) {
         nm = feed.type + ' of ' + mLabel(feed.m);
         tid = null;   // render as a TBD-style slot, not a clickable team
       } else {
-        nm = teamName(tid);
+        nm = bracketLabel(tid);
       }
     } else {
       const src = feeders[m.id + ':' + slot];
@@ -308,8 +321,13 @@ function matchBox(m) {
   box.dataset.mid = m.id;
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${(!masked && m.forfeit) ? ' · <span class="ff-mark">FORFEIT</span>' : ''}${(!masked && m.status === 'live') ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
-    (masked ? '' : vetoIndicator(m)) +
-    ((m.team1 && m.team2 && matchChatAllowed(m)) ? '<div class="match-chat-line"><a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a></div>' : '') +
+    // chat first, then the veto link, on one row to keep the box compact
+    (() => {
+      const chat = (m.team1 && m.team2 && matchChatAllowed(m))
+        ? '<a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a>' : '';
+      const veto = masked ? '' : vetoLinkHTML(m);
+      return (chat || veto) ? '<div class="mlinks">' + chat + veto + '</div>' : '';
+    })() +
     ((!masked && m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
       ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(esc).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(esc).join(', ') : '') + '</div>' : '') +
     ((streamerMode && m.status === 'done')
@@ -338,8 +356,14 @@ function matchBox(m) {
 function vetoIndicator(m) {
   if (!m.veto) return '';
   const v = m.veto;
-  const label = v.done ? 'See vetoed maps →' : 'Map veto in progress →';
-  return `<div class="veto-mini"><a href="#" data-veto-link="${m.id}" class="veto-mini-link">${label}</a></div>`;
+  return `<div class="veto-mini">${vetoLinkHTML(m)}</div>`;
+}
+
+// just the link, for rows that place it alongside other links
+function vetoLinkHTML(m) {
+  if (!m.veto) return '';
+  const label = m.veto.done ? 'Vetoed maps →' : 'Veto in progress →';
+  return `<a href="#" data-veto-link="${m.id}" class="veto-mini-link">${label}</a>`;
 }
 
 // Popup showing a single match's veto (status or final maps), plus a link to that match's chat.

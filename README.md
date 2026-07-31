@@ -53,6 +53,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Launch queue shows what is next; running scores (e.g. 1-0 in a Bo3) display live.
 - Captains report their own matches; the organizer can correct results.
 - Organizer score reporting supports an explicit winner and replay IDs together: you can record a match as, say, 1-1 with one team marked the winner (green) and keep the replay IDs - useful when a series was tied and decided by a forfeit. A pure forfeit (no games played) marks the losing side "FF" and awards the win; either way the correct team advances and the match is tagged FORFEIT.
+- A personal **Show players** toggle swaps every bracket label from the team name to that team's players. Labels stay on one line and truncate with an ellipsis, and the score is never pushed out of view.
 - Clicking a team anywhere in the bracket opens a popup listing its members, ratings, captain, seed, and combined rating.
 - Player editing at any time (this is also the substitution mechanism).
 - Standings tab: placements for elimination formats, W/L/game-diff for Swiss, points leaderboard for FFA.
@@ -81,7 +82,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 
 ### Tournament series
 - A **series** groups editions of a recurring event (e.g. a monthly cup) purely for browsing. Editions are completely independent: no qualification, no fixed cadence, no shared state.
-- Anyone with tournament-hosting permission can create a series (that includes site admins and directors). Renaming or deleting a series is limited to whoever created it, plus directors and site admins, so one host cannot rename or delete another's series.
+- Anyone with tournament-hosting permission can create a series. Renaming or deleting one is limited to its creator, anyone who organizes a tournament in that series, directors, and site admins.
 - A series can be chosen when creating a tournament (an optional field on the host form), or set and changed later from the Admin tab. Copying an existing tournament to make the next edition inherits its series.
 - `/series` lists every series with its edition count; `/series/<id>` shows that series' editions newest first, with each edition's format, date, status and winner, plus a "series winners" tally.
 - A tournament that belongs to a series shows a "Part of the X series" block near the bottom of its overview, linking to the series page.
@@ -107,6 +108,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - A draft can be published immediately or **scheduled**: enter a UTC date and time and it publishes itself. There is no background timer - the schedule is applied whenever tournaments are listed, which covers every way a tournament becomes visible. A pending schedule is shown on the draft banner and can be cancelled.
 
 ### Dates and time zones
+- An optional **overall cash prize** (currency plus a number, USD/EUR/RUB) is stored separately from the free-text Rewards and shown as its own box at the top of them, so it reads at a glance and can be reused in listings. The amount accepts digits only.
 - Optional event date and time (entered in UTC) per tournament, editable any time.
 - Stored in UTC, displayed in each viewer's chosen time zone (remembered per browser). The Completed list is ordered most-recent-first.
 - Display settings (the gear icon) also choose the **date format** (`7 Jul 2026`, `07/07/2026`, or `2026-07-07`) and the **time format** (24-hour or 12-hour). These are per browser. Note that the placeholder inside a native date-picker field follows the browser's own locale and cannot be overridden by the site.

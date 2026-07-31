@@ -262,6 +262,15 @@ function canHost(req, token) {
 // organizer link while logged in. Site admin always counts.
 // A tournament is "official" only when explicitly tagged so (site admin sets this).
 function isOfficial(t) { return t && t.category === 'official'; }
+// Headline prize: a currency plus a plain number, kept separate from the free-text rewards so it
+// can be shown on its own and reused elsewhere (calendars, listings).
+const PRIZE_CURRENCIES = ['USD', 'EUR', 'RUB'];
+function cleanPrize(cur, amt) {
+  const c = PRIZE_CURRENCIES.indexOf(String(cur || '').toUpperCase()) >= 0 ? String(cur).toUpperCase() : null;
+  const n = (amt === '' || amt === null || amt === undefined) ? null : Number(amt);
+  if (!c || n === null || !isFinite(n) || n < 0) return { currency: null, amount: null };
+  return { currency: c, amount: Math.round(n * 100) / 100 };
+}
 // ---------- qualification (parent / child tournaments) ----------
 // A parent lists the qualifiers that feed it:
 //   t.qualifiers = [ { id, tournamentId, rule:{type:'top'|'points', n}, applied, qualified:[], unreachable:[] } ]
@@ -365,6 +374,21 @@ function sweepQualifications() {
   }
   if (changed) saveDB();
   return changed;
+}
+
+// Who may rename/delete a series: site admins, directors, whoever created it, and anyone who
+// organizes one of the tournaments in it (they're running an edition, so they own the grouping).
+function canManageSeries(req, ser) {
+  if (!ser) return false;
+  if (isSiteAdmin(req) || isDirector(req)) return true;
+  const sess = currentSession(req);
+  if (!sess) return false;
+  if (ser.byFafId && ser.byFafId === sess.fafId) return true;
+  for (const t of Object.values(db.tournaments || {})) {
+    if (t.seriesId !== ser.id) continue;
+    if (Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(sess.fafId) >= 0) return true;
+  }
+  return false;
 }
 
 // Which parent (if any) this tournament feeds - derived, never stored twice.
@@ -690,7 +714,7 @@ function teamOfCaptainToken(t, token) {
 
 function publicView(t) {
   return {
-    id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', sponsors: t.sponsors || '', category: t.category || null,
+    id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', prize: t.prize || { currency: null, amount: null }, sponsors: t.sponsors || '', category: t.category || null,
     published: t.published !== false ? 1 : 0, publishAt: t.publishAt || null, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
     seriesId: t.seriesId || null,
     qualifiers: (t.qualifiers || []).map(q => {
@@ -1276,6 +1300,7 @@ async function handleAPI(req, res, url) {
       id: uid(5), adminToken: uid(12), lateToken: uid(12), streamerToken: uid(12),
       name, description: cleanName(b.description, 20000),
       rewards: cleanName(b.rewards, 2000), sponsors: cleanName(b.sponsors, 2000),
+      prize: cleanPrize(b.prizeCurrency, b.prizeAmount),
       streams: (Array.isArray(b.streams) ? b.streams.map(x => ({ url: String((x && x.url) || '').trim().slice(0, 300), info: cleanName((x && x.info) || '', 120) || '' })).filter(x => /^https?:\/\/[^\s"'<>]+$/.test(x.url)).slice(0, 10) : []),
       category,
       published: false, archived: false, descImages: [],
@@ -1887,7 +1912,7 @@ async function handleAPI(req, res, url) {
     return json(res, 200, {
       series: { id: s.id, name: s.name, description: s.description || '' },
       editions: eds,
-      canEdit: !!(isSiteAdmin(req) || isDirector(req) || (currentSession(req) && s.byFafId && s.byFafId === currentSession(req).fafId))
+      canEdit: canManageSeries(req, s)
     });
   }
 
@@ -1900,7 +1925,7 @@ async function handleAPI(req, res, url) {
     if (!canHost(req, null)) return json(res, 403, { error: 'Tournament hosting permission required' });
     const act = String(b.action || 'create');
     const sess = currentSession(req);
-    const canManage = (s2) => isSiteAdmin(req) || isDirector(req) || !!(sess && s2 && s2.byFafId && s2.byFafId === sess.fafId);
+    const canManage = (s2) => canManageSeries(req, s2);
     if (act === 'create') {
       const name = cleanName(b.name, 80);
       if (!name) return bad(res, 'Enter a series name');
@@ -1917,7 +1942,7 @@ async function handleAPI(req, res, url) {
     if (act === 'update') {
       const s2 = db.series[String(b.id || '')];
       if (!s2) return bad(res, 'Series not found');
-      if (!canManage(s2)) return json(res, 403, { error: 'Only the series creator, a director or a site admin can edit it' });
+      if (!canManage(s2)) return json(res, 403, { error: 'Only an organizer of a tournament in this series (or its creator, a director, or a site admin) can edit it' });
       if (b.name !== undefined) { const n = cleanName(b.name, 80); if (!n) return bad(res, 'Enter a series name'); s2.name = n; }
       if (b.description !== undefined) s2.description = cleanName(b.description, 500) || '';
       saveDB();
@@ -1927,7 +1952,7 @@ async function handleAPI(req, res, url) {
     if (act === 'delete') {
       const s2 = db.series[String(b.id || '')];
       if (!s2) return bad(res, 'Series not found');
-      if (!canManage(s2)) return json(res, 403, { error: 'Only the series creator, a director or a site admin can delete it' });
+      if (!canManage(s2)) return json(res, 403, { error: 'Only an organizer of a tournament in this series (or its creator, a director, or a site admin) can delete it' });
       for (const t of Object.values(db.tournaments)) if (t.seriesId === s2.id) t.seriesId = null;
       delete db.series[s2.id];
       saveDB();
@@ -3475,10 +3500,16 @@ async function handleAPI(req, res, url) {
 
     if (sub === 'edit_info') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
-      const touched = ['description', 'rewards', 'sponsors', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'ratingCap', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
+      const touched = ['description', 'rewards', 'prizeCurrency', 'prizeAmount', 'sponsors', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'ratingCap', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
       if (touched.length) tlog(t, req, b.admin, 'updated settings: ' + touched.join(', '));
       if (b.description !== undefined) t.description = cleanName(b.description, 20000);
       if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
+      if (b.prizeCurrency !== undefined || b.prizeAmount !== undefined) {
+        t.prize = cleanPrize(
+          b.prizeCurrency !== undefined ? b.prizeCurrency : (t.prize && t.prize.currency),
+          b.prizeAmount !== undefined ? b.prizeAmount : (t.prize && t.prize.amount)
+        );
+      }
       if (b.sponsors !== undefined) t.sponsors = cleanName(b.sponsors, 2000);
       if (Array.isArray(b.streams)) {
         t.streams = b.streams.map(x => ({

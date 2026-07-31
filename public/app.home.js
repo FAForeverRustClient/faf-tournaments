@@ -151,6 +151,12 @@ async function renderHost() {
         <label>Mods</label>
         ${mdToolbarHTML()}
         <textarea id="cMods" maxlength="500" rows="2" placeholder="e.g. M28 / Random events"></textarea>
+        <label>Overall cash prize <span class="muted small">(optional)</span></label>
+        <div class="prize-row">
+          <select id="cPrizeCur"><option value="">\u2014</option><option value="USD">USD $</option><option value="EUR">EUR \u20ac</option><option value="RUB">RUB \u20bd</option></select>
+          <input type="number" id="cPrizeAmt" min="0" step="1" inputmode="numeric" placeholder="Amount">
+        </div>
+        <div class="muted small" style="margin-top:4px">Just the number \u2014 describe the full prize breakdown in Rewards below.</div>
         <label>Rewards <span class="muted small">(optional)</span></label>
         ${mdToolbarHTML()}
         <textarea id="cRewards" maxlength="2000" rows="3" placeholder="1st: avatar + 500 credits..."></textarea>
@@ -463,6 +469,7 @@ async function renderHost() {
     setv('cName', t.name || '');
     setv('cDesc', t.description || ''); setv('cLobby', t.lobbyOptions || ''); setv('cMods', t.mods || '');
     setv('cRewards', t.rewards || ''); setv('cSponsors', t.sponsors || '');
+    if (t.prize) { setv('cPrizeCur', t.prize.currency || ''); setv('cPrizeAmt', t.prize.amount != null ? t.prize.amount : ''); }
     if (document.getElementById('cCategory')) setv('cCategory', t.category || '');
     // copying a tournament is how the next edition of a series usually gets made, so inherit it.
     // The options may still be loading, so retry briefly rather than silently dropping it.
@@ -547,6 +554,8 @@ async function renderHost() {
         playerReporting: document.getElementById('cPlayerReporting').checked ? 1 : 0,
         admin: siteAdmin() || undefined,
         rewards: document.getElementById('cRewards').value,
+        prizeCurrency: document.getElementById('cPrizeCur').value,
+        prizeAmount: document.getElementById('cPrizeAmt').value,
         sponsors: document.getElementById('cSponsors').value,
         streams: Array.from(document.querySelectorAll('#cStreamRows .stream-row')).map(r => ({ url: r.querySelector('.stUrl').value.trim(), info: r.querySelector('.stInfo').value.trim() })).filter(x => x.url),
         veto: { enabled: document.getElementById('cVeto').checked, mode: document.getElementById('cVetoMode').value, abMode: document.getElementById('cVetoAb').value },
@@ -810,6 +819,7 @@ function drawTournament() {
         </div>
         <div class="headrow-right">
           ${viewerHasRights() ? `<button class="btn ghost small streamer-toggle ${playerViewMode ? 'on' : ''}" id="playerViewToggle" title="Hide organizer & admin controls on your screen and browse as a regular player. Doesn't change your actual permissions.">${playerViewMode ? '\u25C9 Viewing as player' : '\u25CB View as player'}</button>` : ''}
+          <button class="btn ghost small streamer-toggle ${showPlayerNames ? 'on' : ''}" id="namesToggle" title="Show each team's players in the bracket instead of the team name. Only affects your own screen.">${showPlayerNames ? '\u25C9 Showing players' : '\u25CB Show players'}</button>
           <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals. Only affects your own screen.">${streamerMode ? '\u25C9 Streamer mode: ON' : '\u25CB Streamer mode'}</button>
           <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
         </div>
@@ -848,6 +858,8 @@ function drawTournament() {
 
   if (typeof stopChatPoll === 'function' && currentTab !== 'chat') stopChatPoll();
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { if (typeof stopChatPoll === 'function') stopChatPoll(); currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
+  const nmBtn = app.querySelector('#namesToggle');
+  if (nmBtn) nmBtn.onclick = () => { setShowPlayerNames(!showPlayerNames); drawTournament(); };
   const stBtn = app.querySelector('#streamerToggle');
   if (stBtn) stBtn.onclick = () => { setStreamerMode(!streamerMode); drawTournament(); };
   const pvBtn = app.querySelector('#playerViewToggle');
@@ -927,7 +939,8 @@ function gameInfoPanel() {
     else if (T.maxRating != null) parts.push('Player rating up to ' + T.maxRating);
     if (T.maxTeamRating != null) parts.push('Max combined team rating ' + T.maxTeamRating);
     if (T.ratingCap != null) parts.push('Ratings above ' + T.ratingCap + ' count as ' + T.ratingCap + ' (capped)');
-    topCells.push(['Rating requirements', parts.join('\n') + '\n(organizer invites/adds are exempt from min/max)']);
+    // the exemption note is an organizer detail; players just see the requirement
+    topCells.push(['Rating requirements', parts.join('\n') + (viewerIsOrganizer() ? '\n(organizer invites/adds are exempt from min/max)' : '')]);
   }
   // Lobby options and mods can be long and support formatting — their own row, rendered rich.
   const richCells = [];
@@ -1149,9 +1162,17 @@ function drawOverview(el) {
     html += `<div class="champ"><div class="champ-label">Champion</div><h1>${esc(teamName(T.championTeamId))}</h1></div>`;
   }
 
-  if (T.rewards || T.sponsors) {
-    const rw = T.rewards ? `<div class="panel section" style="flex:1;min-width:280px"><h2>Rewards</h2>
-      <div class="ic-body reward-body">${renderArticleBody(T.rewards)}</div></div>` : '';
+  const prize = T.prize && T.prize.currency && T.prize.amount != null ? T.prize : null;
+  if (T.rewards || T.sponsors || prize) {
+    // The headline cash prize gets its own boxed cell at the top of Rewards (like Format does in
+    // Game setup) so it reads at a glance and can be lifted for calendars and listings.
+    const prizeCell = prize ? `<div class="infocell prize-cell">
+        <div class="ic-label">Overall cash prize</div>
+        <div class="ic-body prize-amount">${esc(formatPrize(prize))}</div>
+      </div>` : '';
+    const rw = (T.rewards || prize) ? `<div class="panel section" style="flex:1;min-width:280px"><h2>Rewards</h2>
+      ${prizeCell}
+      ${T.rewards ? '<div class="ic-body reward-body">' + renderArticleBody(T.rewards) + '</div>' : ''}</div>` : '';
     const sp = T.sponsors ? `<div class="panel section" style="flex:1;min-width:280px"><h2>Sponsors</h2>
       <div class="ic-body reward-body">${renderArticleBody(T.sponsors)}</div></div>` : '';
     html += `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch">${rw}${sp}</div>`;
