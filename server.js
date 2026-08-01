@@ -2091,6 +2091,9 @@ async function handleAPI(req, res, url) {
         // map-veto step
         if (capTeam && Array.isArray(t.matches)) {
           for (const m of t.matches) {
+            // A match with a result can't be vetoed any more, even if older stored data still
+            // has done:false on its veto (it was settled by a forfeit or an organizer score).
+            if (m.status === 'done') continue;
             const v = m.veto; if (!v || v.done || !v.teamA || !v.teamB) continue;
             const step = v.sequence[v.stepIndex]; if (!step) continue;
             const turn = step.team === 'A' ? v.teamA : v.teamB;
@@ -4102,6 +4105,9 @@ async function handleAPI(req, res, url) {
       if (!m) return bad(res, 'Match not found');
       if (!m.veto) return bad(res, 'No veto in progress for this match');
       if (m.veto.done) return bad(res, 'The veto is already complete for this match');
+      // Defence in depth: a match with a result can't be vetoed, even if stored data predates
+      // vetoes being auto-closed at finalize time.
+      if (m.status === 'done') return bad(res, 'This match already has a result \u2014 its veto is closed');
       if (!m.veto.teamA || !m.veto.teamB) return bad(res, 'The organizer has not set Team A / Team B for this match yet');
       const cur = vetoCurrentStep(m);
       if (!cur) return bad(res, 'No veto step pending');
