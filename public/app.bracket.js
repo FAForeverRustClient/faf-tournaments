@@ -277,6 +277,14 @@ function bracketLabel(tid) {
   return names.length ? names.join(', ') : teamName(tid);
 }
 
+// Vetoes tab scope for someone actually playing: their own matches (default) or everything.
+// Lives on the tab itself rather than the header toggles, since it only means anything there.
+let _vetoShowAll = (() => { try { return localStorage.getItem('faf_veto_all') === '1'; } catch (e) { return false; } })();
+function setVetoShowAll(on) {
+  _vetoShowAll = !!on;
+  try { localStorage.setItem('faf_veto_all', _vetoShowAll ? '1' : '0'); } catch (e) {}
+}
+
 function isPhantomMatch(m) {
   return !m || m.team1 === 'BYE' || m.team2 === 'BYE';
 }
@@ -967,16 +975,35 @@ function assignPool(pool) {
 }
 
 // Dedicated Vetoes page — each match with a veto gets its own card with the full ban/pick UI.
+function wireVetoScope(el) {
+  el.querySelectorAll('[data-vscope]').forEach(b => b.onclick = () => {
+    setVetoShowAll(b.dataset.vscope === 'all');
+    drawTournament();
+  });
+}
+
 function drawVetoes(el) {
   const isOrg = viewerIsOrganizer() || (T.viewer && T.viewer.streamer);
   const myTeamId = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
-  let vetoMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
-  // Players only see vetoes for matches their own team is in. Organizers (and streamers) see all.
-  if (!isOrg) vetoMatches = vetoMatches.filter(m => myTeamId && (m.team1 === myTeamId || m.team2 === myTeamId));
+  const allMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
+  const mineMatches = myTeamId ? allMatches.filter(m => m.team1 === myTeamId || m.team2 === myTeamId) : [];
+  // Someone actually playing defaults to just their own matches so the page isn't a wall of other
+  // people's vetoes; they can switch to all. Organizers, streamers and observers always see all.
+  const competing = !isOrg && !!myTeamId;
+  const scoped = competing && !_vetoShowAll;
+  let vetoMatches = scoped ? mineMatches : allMatches;
+
+  const scopeBar = competing ? `<div class="veto-scope">
+      <span class="muted small">Showing</span>
+      <button class="btn ghost small${scoped ? ' on' : ''}" data-vscope="mine">My matches (${mineMatches.length})</button>
+      <button class="btn ghost small${scoped ? '' : ' on'}" data-vscope="all">All vetoes (${allMatches.length})</button>
+    </div>` : '';
+
   if (!vetoMatches.length) {
-    el.innerHTML = '<div class="panel"><div class="empty">' + (isOrg
-      ? 'No map vetoes are active right now. They appear here as matches become ready.'
-      : (myTeamId ? 'None of your matches have an active map veto right now.' : 'Map vetoes for your matches will appear here once your team is in a match with a veto.')) + '</div></div>';
+    el.innerHTML = scopeBar + '<div class="panel"><div class="empty">' + (scoped
+      ? 'None of your matches have an active map veto right now.' + (allMatches.length ? ' There ' + (allMatches.length === 1 ? 'is 1 other veto' : 'are ' + allMatches.length + ' other vetoes') + ' \u2014 switch to \u201cAll vetoes\u201d to see them.' : '')
+      : 'No map vetoes are active right now. They appear here as matches become ready.') + '</div></div>';
+    wireVetoScope(el);
     return;
   }
   // newest first: later rounds are the most relevant. Grand final > later rounds > earlier.
@@ -1052,7 +1079,8 @@ function drawVetoes(el) {
     html += '<div class="veto-section-label"' + (pending.length ? ' style="margin-top:20px"' : '') + '>Completed \u2014 maps decided</div>';
     html += done.map(card).join('');
   }
-  el.innerHTML = html;
+  el.innerHTML = scopeBar + html;
+  wireVetoScope(el);
 
   // render the veto UI into each card body and wire it
   for (const m of vetoMatches) {

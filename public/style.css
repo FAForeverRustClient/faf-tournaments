@@ -929,3 +929,7 @@ body.modal-open .turnbanner { animation: none !important; }
 .veto-card-teams { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .veto-card-head { flex-wrap: nowrap; gap: 12px; }
 .veto-card-head h2 { white-space: nowrap; }
+
+/* Vetoes tab: my-matches / all scope switch (competitors only) */
+.veto-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
+.veto-scope .btn.on { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
