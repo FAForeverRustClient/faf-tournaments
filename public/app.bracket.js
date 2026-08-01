@@ -362,7 +362,9 @@ function vetoIndicator(m) {
 // just the link, for rows that place it alongside other links
 function vetoLinkHTML(m) {
   if (!m.veto) return '';
-  const label = m.veto.done ? 'Vetoed maps →' : 'Veto in progress →';
+  const label = (m.status === 'done' && !vetoRanToCompletion(m.veto))
+    ? 'Veto (not completed) →'
+    : (m.veto.done ? 'Vetoed maps →' : 'Veto in progress →');
   return `<a href="#" data-veto-link="${m.id}" class="veto-mini-link">${label}</a>`;
 }
 
@@ -372,7 +374,7 @@ function showVetoPopup(m) {
   if (!m || !m.veto) return;
   const nameHtml = (tid) => {
     const real = T.teams && T.teams.some(t => t.id === tid);
-    return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(teamName(tid))}</span>`;
+    return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
   };
   const chatLink = matchChatAllowed(m) ? '<a href="#" id="vpChat" class="veto-mini-link">\u{1F4AC} Open match chat</a>' : '';
   modal(`<h3>${esc(mLabel(m))} <span class="muted" style="font-weight:400">${nameHtml(m.team1)} vs ${nameHtml(m.team2)}</span></h3>
@@ -981,8 +983,11 @@ function drawVetoes(el) {
   const rank = m => (m.bracket === 'gf' ? 1000 : 0) + (m.round || 0) * 10 + (m.bracket === 'lb' ? 1 : 0);
   const byNewest = (a, b) => rank(b) - rank(a) || (a.index || 0) - (b.index || 0);
   // pending (need action) first, then completed — each newest-first
-  const pending = vetoMatches.filter(m => !m.veto.done).sort(byNewest);
-  const done = vetoMatches.filter(m => m.veto.done).sort(byNewest);
+  // A veto is settled once it completes OR once the match has a result - a forfeit or an
+  // organizer correction can decide a match mid-veto, and that veto can never be acted on again.
+  const settled = m => m.veto.done || m.status === 'done';
+  const pending = vetoMatches.filter(m => !settled(m)).sort(byNewest);
+  const done = vetoMatches.filter(settled).sort(byNewest);
 
   let html = '';
   const card = (m) => {
@@ -990,9 +995,12 @@ function drawVetoes(el) {
     const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat</a>` : '';
     const nameHtml = (tid) => {
       const real = T.teams && T.teams.some(t => t.id === tid);
-      return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(teamName(tid))}</span>`;
+      return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
     };
-    const doneTag = m.veto.done ? '<span class="veto-done-tag">RESULT</span>' : '';
+    const unfinished = (m.status === 'done') && (m.veto.abandoned || !vetoRanToCompletion(m.veto));
+    const doneTag = unfinished
+      ? '<span class="veto-done-tag closed">CLOSED</span>'
+      : (m.veto.done ? '<span class="veto-done-tag">RESULT</span>' : '');
     return `<div class="panel section veto-card${m.veto.done ? ' veto-done' : ''}" data-vmatch="${m.id}">
       <div class="veto-card-head"><h2>${doneTag}${esc(label)}</h2><span class="veto-card-teams">${nameHtml(m.team1)} <span class="muted">vs</span> ${nameHtml(m.team2)}</span></div>
       <div class="veto-card-body"></div>
@@ -1090,6 +1098,13 @@ function vetoOrderedLog(v) {
 }
 
 // Ordered "who did what" list for a veto — the step number, the team, and the map.
+// Did the captains actually work through the whole sequence, or was the veto cut short?
+function vetoRanToCompletion(v) {
+  if (!v || !Array.isArray(v.sequence)) return false;
+  if (v.abandoned) return false;
+  return (v.stepIndex || 0) >= v.sequence.length || !!v.decider;
+}
+
 function vetoLogHTML(v) {
   const log = vetoOrderedLog(v);
   if (!log.length) return '';
@@ -1105,7 +1120,7 @@ function vetoLogHTML(v) {
       <span class="vlog-n">${e.n}</span>
       <span class="vlog-act ${e.action}">${e.action === 'ban' ? 'BAN' : 'PICK'}</span>
       ${thumb(e.map, e.action === 'ban')}
-      <span class="vlog-team">${esc(teamName(e.by))}</span>
+      <span class="vlog-team" title="${esc(teamName(e.by))}">${esc(bracketLabel(e.by))}</span>
       <span class="vlog-map">${esc(mapName(e.map))}${e.action === 'pick' && e.game ? ' <span class="muted">(Game ' + e.game + ')</span>' : ''}</span>
     </div>`).join('');
   const dec = v.decider
@@ -1119,8 +1134,8 @@ function vetoHTML(m) {
   const v = m.veto;
   const myTeamId = (T.viewer && T.viewer.teamId) || null;
   const isOrg = viewerIsOrganizer();
-  const nameA = v.teamA ? teamName(v.teamA) : 'A';
-  const nameB = v.teamB ? teamName(v.teamB) : 'B';
+  const nameA = v.teamA ? bracketLabel(v.teamA) : 'A';
+  const nameB = v.teamB ? bracketLabel(v.teamB) : 'B';
   const banned = v.banned || [];
   const picks = (v.picks || []).slice().sort((a, b) => a.game - b.game);
 
@@ -2024,7 +2039,7 @@ function drawMatchesTab(el) {
         return '<span class="muted">' + esc(feed.type + ' of ' + mLabel(feed.m)) + '</span>';
       }
       const win = !masked && m.winner === tid;
-      return `<span class="mt-team${win ? ' win' : ''}" data-teamid="${esc(tid)}">${esc(teamName(tid))}</span>`;
+      return `<span class="mt-team${win ? ' win' : ''}" data-teamid="${esc(tid)}" title="${esc(teamName(tid))}">${esc(bracketLabel(tid))}</span>`;
     };
     const ff = (tid) => (m.forfeit && tid === m.forfeit && m.score1 != null && (tid === m.team1 ? m.score1 : m.score2) < 0);
     let result = '<span class="muted">—</span>';
@@ -2098,7 +2113,7 @@ function showMatchDetails(m) {
     const win = !masked && m.winner === tid;
     const isFf = m.forfeit === tid && score != null && score < 0;
     return `<div class="md-team${win ? ' win' : ''}">
-      <div class="md-tname" data-teamid="${esc(tid)}">${esc(tm.name)}${win ? ' <span class="md-wintag">WINNER</span>' : ''}${isFf ? ' <span class="ff-mark">FF</span>' : ''}</div>
+      <div class="md-tname" data-teamid="${esc(tid)}" title="${esc(tm.name)}">${esc(bracketLabel(tid))}${win ? ' <span class="md-wintag">WINNER</span>' : ''}${isFf ? ' <span class="ff-mark">FF</span>' : ''}</div>
       <div class="md-players">${mems.length
         ? mems.map(p => `<div class="md-p"><span>${p.id === tm.captainId ? '<span class="cap-tag">C</span> ' : ''}${esc(p.name)}</span><span class="mono muted">${p.rating != null ? p.rating : '\u2014'}</span></div>`).join('')
         : '<div class="muted small">No players listed.</div>'}</div>

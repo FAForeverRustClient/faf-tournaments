@@ -46,6 +46,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Publishing a pool also publishes every hidden map inside it (a published pool is shown to players, so its maps must be visible too).
 - Pools can be assigned to whole rounds or to specific matches, including before the bracket is generated (rounds are projected from the expected team count). Reassigning a pool re-initialises the veto on affected ready matches, so a fixed pool takes effect immediately.
 - Optional per-match veto engine: the two sides (Team A acts first) alternate bans and picks per the pool's order. A veto runs only when the assigned pool's best-of matches the match's best-of and both teams are known. A/B sides are decided per match by the captain's rating (random / lower-rated-is-A / lower-rated-is-B / manual). "All upfront" completes the whole ban/pick before game 1; "continuous" reveals steps as games are played. Vetoes can be enabled or disabled mid-bracket.
+- A veto is closed automatically when its match gets a result. A match settled mid-veto (a forfeit, or an organizer correction) leaves a veto that can never be acted on again, so it is marked **CLOSED** and moved out of the in-progress list rather than sitting there forever. Undoing the result reopens it.
 - Every veto shows a numbered **ban / pick order** log - which team banned or picked which map, in the order it happened, ending with the decider. It is shown both while the veto is running and after it completes.
 - Maps are referenced by id everywhere and resolved to names at display time, so renaming a map updates it everywhere and deleting one cascades cleanly.
 
@@ -53,7 +54,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Launch queue shows what is next; running scores (e.g. 1-0 in a Bo3) display live.
 - Captains report their own matches; the organizer can correct results.
 - Organizer score reporting supports an explicit winner and replay IDs together: you can record a match as, say, 1-1 with one team marked the winner (green) and keep the replay IDs - useful when a series was tied and decided by a forfeit. A pure forfeit (no games played) marks the losing side "FF" and awards the win; either way the correct team advances and the match is tagged FORFEIT.
-- A personal **Show players** toggle swaps every bracket label from the team name to that team's players. Labels stay on one line and truncate with an ellipsis, and the score is never pushed out of view.
+- A personal **Show players** toggle swaps team names for that team's players everywhere they appear: the bracket, the Matches tab, the Vetoes tab (including the ban/pick log and A/B legend) and the match-details popup. Labels stay on one line and truncate with an ellipsis, with the full team name on hover. Labels stay on one line and truncate with an ellipsis, and the score is never pushed out of view.
 - Clicking a team anywhere in the bracket opens a popup listing its members, ratings, captain, seed, and combined rating.
 - Player editing at any time (this is also the substitution mechanism).
 - Standings tab: placements for elimination formats, W/L/game-diff for Swiss, points leaderboard for FFA.

@@ -920,3 +920,11 @@ body.modal-open .turnbanner { animation: none !important; }
 .hk-key.arming { border-color: var(--amber); background: var(--amber-dim, #2a2113); }
 .hk-row span { flex: 1; }
 .hk-clear { opacity: .7; }
+
+/* Long player-name labels must never clip or push the score/status out of view. */
+.mt-table td { max-width: 0; }                 /* let the cells share width and truncate */
+.mt-table td:nth-child(2), .mt-table td:nth-child(3) { width: 34%; }
+.mt-team { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.mt-table td:nth-child(1), .mt-table td:nth-child(4), .mt-table td:nth-child(5), .mt-actions { white-space: nowrap; width: 1%; }
+.veto-card-teams { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.veto-card-head { flex-wrap: nowrap; }
