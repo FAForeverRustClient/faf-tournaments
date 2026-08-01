@@ -1132,6 +1132,9 @@ function vetoLogHTML(v) {
 function vetoHTML(m) {
   if (!m.veto) return '';
   const v = m.veto;
+  // Treat a veto on a finished match as closed even if older stored data says otherwise - the
+  // result is in, so nobody can ban or pick any more.
+  const closedByResult = m.status === 'done' && !v.done;
   const myTeamId = (T.viewer && T.viewer.teamId) || null;
   const isOrg = viewerIsOrganizer();
   const nameA = v.teamA ? bracketLabel(v.teamA) : 'A';
@@ -1143,7 +1146,7 @@ function vetoHTML(m) {
   const games = picks.slice();
   if (v.decider) games.push(v.decider);
 
-  let h = '<div class="vetobox' + (v.done ? ' done' : '') + '">';
+  let h = '<div class="vetobox' + ((v.done || closedByResult) ? ' done' : '') + '">';
 
   const abSet = !!(v.teamA && v.teamB);
 
@@ -1178,10 +1181,19 @@ function vetoHTML(m) {
     return h;
   }
 
+  // Settled by a result rather than by the captains: show what was decided so far, but no turn
+  // prompt and no action buttons.
+  if (closedByResult) {
+    h += '<div class="veto-head">Veto closed \u2014 the match was decided before it finished.</div>';
+    h += vetoLogHTML(v);
+    h += '</div>';
+    return h;
+  }
+
   // in progress: show whose turn + what action
   const step = v.sequence[v.stepIndex];
   const turnTeam = step ? (step.team === 'A' ? v.teamA : v.teamB) : null;
-  const turnName = turnTeam ? teamName(turnTeam) : '';
+  const turnName = turnTeam ? bracketLabel(turnTeam) : '';
   const actionWord = step ? (step.action === 'ban' ? 'ban' : 'pick') : '';
   const canActNow = (myTeamId && turnTeam === myTeamId) || isOrg;
   const stepsLeft = v.sequence.length - v.stepIndex;
@@ -2053,12 +2065,12 @@ function drawMatchesTab(el) {
     const revealBtn = (streamerMode && m.status === 'done')
       ? `<button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? 'Hide' : 'Reveal'}</button>` : '';
     return `<tr data-mrow="${m.id}">
-      <td class="mono small muted">${esc(mLabel(m))}</td>
-      <td>${nameFor(m.team1, 1)}</td>
-      <td>${nameFor(m.team2, 2)}</td>
-      <td><span class="mt-state ${st.cls}">${esc(st.txt)}</span></td>
-      <td>${result}</td>
-      <td class="mt-actions">${revealBtn}<button class="btn ghost small" data-mdet="${m.id}">Details</button></td>
+      <td class="mono small muted mt-fixed">${esc(mLabel(m))}</td>
+      <td class="mt-teamcell">${nameFor(m.team1, 1)}</td>
+      <td class="mt-teamcell">${nameFor(m.team2, 2)}</td>
+      <td class="mt-fixed"><span class="mt-state ${st.cls}">${esc(st.txt)}</span></td>
+      <td class="mt-fixed">${result}</td>
+      <td class="mt-actions mt-fixed">${revealBtn}<button class="btn ghost small" data-mdet="${m.id}">Details</button></td>
     </tr>`;
   };
 

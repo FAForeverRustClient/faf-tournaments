@@ -816,7 +816,7 @@ tr.pickrow.on td:nth-child(2) { color: var(--green); font-weight: 600; }
 .mt-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
 .mt-table tr:last-child td { border-bottom: none; }
 .mt-table tbody tr:hover { background: #ffffff06; }
-.mt-team { cursor: pointer; }
+.mt-team { cursor: pointer; }   /* truncation is handled by .mt-teamcell on the td */
 .mt-team:hover { color: var(--amber); text-decoration: underline; }
 .mt-team.win { color: #3fb950; font-weight: 600; }
 .mt-state { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; border-radius: 3px; padding: 2px 7px; white-space: nowrap; }
@@ -921,10 +921,11 @@ body.modal-open .turnbanner { animation: none !important; }
 .hk-row span { flex: 1; }
 .hk-clear { opacity: .7; }
 
-/* Long player-name labels must never clip or push the score/status out of view. */
-.mt-table td { max-width: 0; }                 /* let the cells share width and truncate */
-.mt-table td:nth-child(2), .mt-table td:nth-child(3) { width: 34%; }
-.mt-team { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
-.mt-table td:nth-child(1), .mt-table td:nth-child(4), .mt-table td:nth-child(5), .mt-actions { white-space: nowrap; width: 1%; }
-.veto-card-teams { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.veto-card-head { flex-wrap: nowrap; }
+/* Long player-name labels must never clip or push the score/status out of view.
+   IMPORTANT: only the two team cells may shrink. Constraining every cell (max-width:0) collapses
+   the fixed columns and makes their text overlap the neighbours. */
+.mt-teamcell { max-width: 0; width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-fixed { white-space: nowrap; width: 1%; }
+.veto-card-teams { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.veto-card-head { flex-wrap: nowrap; gap: 12px; }
+.veto-card-head h2 { white-space: nowrap; }

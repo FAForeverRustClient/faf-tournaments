@@ -731,7 +731,7 @@ function myTurnInfo() {
   }
   // 1b. organizer: vetoes are blocked until A/B is set (manual mode)
   if (viewerIsOrganizer() && T.veto && T.veto.enabled && T.veto.abMode === 'manual' && T.matches) {
-    const waiting = T.matches.filter(m => m.veto && !m.veto.done && (!m.veto.teamA || !m.veto.teamB)).length;
+    const waiting = T.matches.filter(m => m.veto && !m.veto.done && m.status !== 'done' && (!m.veto.teamA || !m.veto.teamB)).length;
     if (waiting > 0) {
       return {
         text: waiting + ' match' + (waiting === 1 ? '' : 'es') + ' need Team A / Team B set before the captains can veto.',
@@ -744,6 +744,9 @@ function myTurnInfo() {
     for (const m of T.matches) {
       const v = m.veto;
       if (!v || v.done) continue;
+      // The match already has a result (forfeit, or an organizer entered the score), so this
+      // veto is dead even if older stored data still has done:false on it.
+      if (m.status === 'done') continue;
       if (!v.teamA || !v.teamB) continue; // organizer hasn't set A/B yet
       const step = v.sequence[v.stepIndex];
       if (!step) continue;
