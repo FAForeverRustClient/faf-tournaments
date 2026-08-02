@@ -730,6 +730,14 @@ function myTurnInfo() {
       return { text: "It's your pick — choose a player for your team.", tab: 'teams', cta: 'Go to the draft' };
     }
   }
+  // 1. anyone: you were @mentioned in a chat
+  if ((T.myMentionCount || 0) > 0) {
+    const n = T.myMentionCount;
+    return {
+      text: n === 1 ? 'Someone mentioned you in chat.' : 'You were mentioned in ' + n + ' chats.',
+      tab: 'chat', cta: 'Open chat'
+    };
+  }
   // 1a. organizer: someone has flagged a chat for attention
   if (viewerIsOrganizer() && (T.chatPingCount || 0) > 0) {
     const n = T.chatPingCount;
@@ -843,9 +851,14 @@ function drawTournament() {
       <div class="tabs">
         ${tabs.map(tb => {
           let badge = (tb === 'news' && tb !== currentTab) ? newsUnreadCount() : 0;
+          if (tb === 'chat' && tb !== currentTab && (T.myUnreadCount || 0) > 0) badge = { quiet: T.myUnreadCount };
           if (tb === 'chat' && tb !== currentTab && (T.myMentionCount || 0) > 0) badge = T.myMentionCount;
           if (tb === 'chat' && viewerIsOrganizer() && (T.chatPingCount || 0) > 0) badge = '\uD83D\uDD14' + T.chatPingCount;
-          return `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}${badge ? '<span class="tab-badge">' + badge + '</span>' : ''}</button>`;
+          const badgeHtml = !badge ? ''
+            : (typeof badge === 'object'
+                ? '<span class="tab-badge quiet">' + (badge.quiet > 9 ? '9+' : badge.quiet) + '</span>'
+                : '<span class="tab-badge">' + badge + '</span>');
+          return `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}${badgeHtml}</button>`;
         }).join('')}
       </div>
       ${admin && !T.published ? `<div class="panel" style="border-color:var(--amber);margin-top:12px">

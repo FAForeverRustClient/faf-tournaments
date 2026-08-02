@@ -401,6 +401,14 @@ function maybeRemindDiscord() {
   });
 }
 
+// Small, quiet unread marker for a chat room. Deliberately much less loud than the red @mention
+// badge: a mention needs you personally, unread just means "something was said".
+function unreadDot(room) {
+  const n = (T.unreadByRoom && T.unreadByRoom[room]) || 0;
+  if (!n) return '';
+  return '<span class="unread-dot" title="' + n + ' unread message' + (n === 1 ? '' : 's') + '">' + (n > 9 ? '9+' : n) + '</span>';
+}
+
 // navigate within the SPA (pushState + re-route), used by series pages and in-app links
 function nav(path) { history.pushState(null, '', path); route(); }
 
@@ -855,12 +863,8 @@ function adminLookupBox(container, onPick, opts) {
   const go = async () => {
     const v = name.value.trim();
     if (!v) return;
-    // a bare number is a FAF id — use it as-is, no name resolution required
-    if (/^\d+$/.test(v)) {
-      result.innerHTML = '';
-      onPick({ fafId: v, name: 'FAF ' + v }, result);
-      return;
-    }
+    // A bare number is a FAF id, but still ask the server so we get the real login back and
+    // don't end up storing (and displaying) "FAF 123456".
     result.textContent = 'Looking up…';
     try {
       const payload = { name: v };

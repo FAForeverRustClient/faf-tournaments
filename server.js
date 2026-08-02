@@ -262,6 +262,25 @@ function canHost(req, token) {
 // organizer link while logged in. Site admin always counts.
 // A tournament is "official" only when explicitly tagged so (site admin sets this).
 function isOfficial(t) { return t && t.category === 'official'; }
+// Chats close a couple of days after the event so nobody can dig up an old tournament and ping
+// its organizers or players. Reading stays open; only posting stops.
+const CHAT_LOCK_MS = 2 * 24 * 60 * 60 * 1000;
+function chatLockAt(t) {
+  // No finish stamp yet means we can't know when the clock started - never lock on a guess,
+  // otherwise 0 + 2 days lands in 1970 and closes the chat the instant a tournament ends.
+  if (!t || t.status !== 'finished' || !t.finishedAt) return null;
+  return t.finishedAt + CHAT_LOCK_MS;
+}
+function chatLocked(t) {
+  const at = chatLockAt(t);
+  return !!(at && Date.now() >= at);
+}
+// Stamp when a tournament finished. Finishing happens deep in the bracket engine, so this is
+// applied wherever we notice it instead of threading a callback through every format.
+function noteFinished(t) {
+  if (t && t.status === 'finished' && !t.finishedAt) { t.finishedAt = now(); return true; }
+  return false;
+}
 // Midnight UTC on the tournament's event date - check-in can't happen before this. Null when no
 // event date is set, in which case check-in is open whenever the organizer allows it.
 function checkInOpensAt(t) {
@@ -423,6 +442,9 @@ function tourneyMs(t) {
 function sweepScheduledPublishes() {
   const now = Date.now();
   let changed = false;
+  // stamp finish times we haven't recorded yet (also backfills tournaments finished before this
+  // existed - they simply start their two days from now)
+  for (const t of Object.values(db.tournaments || {})) if (noteFinished(t)) changed = true;
   for (const t of Object.values(db.tournaments || {})) {
     if (t.published !== false || !t.publishAt) continue;
     const at = new Date(t.publishAt).getTime();
@@ -687,11 +709,16 @@ function chatRoomsFor(t, req, token) {
   const store = t.chat || {};
   const rsess = currentSession(req);
   const myPings = (rsess && t.userPings && t.userPings[rsess.fafId]) || {};
+  const mySeen = (rsess && t.chatSeen && t.chatSeen[rsess.fafId]) || {};
   const push = (id, label, done) => {
     const msgs = (store[id] || []);
+    const seen = mySeen[id] || 0;
+    // messages since this viewer last opened the room, ignoring their own
+    const unread = rsess ? msgs.filter(mm => mm.at > seen && mm.fafId !== rsess.fafId).length : 0;
     rooms.push({
       id, label, count: msgs.length,
       last: msgs.length ? msgs[msgs.length - 1].at : 0,
+      unread: unread,
       ping: (t.chatPings && t.chatPings[id]) ? 1 : 0,   // organizer attention flag
       mention: myPings[id] ? 1 : 0,                     // this viewer was @mentioned here
       done: done ? 1 : 0                                // match finished (for grouping)
@@ -758,6 +785,8 @@ function publicView(t) {
     ratingCap: t.ratingCap != null ? t.ratingCap : null,
     checkInDeadline: t.checkInDeadline || null,
     checkInOpensAt: checkInOpensAt(t),
+    chatLockAt: chatLockAt(t),
+    chatLocked: chatLocked(t) ? 1 : 0,
     lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
     competition: t.competition, formation: t.formation,
     teamSize: t.teamSize, draftOrder: t.draftOrder,
@@ -1088,6 +1117,40 @@ async function fafLookupPlayer(login, token) {
   try { row = (JSON.parse(r.text).data || [])[0]; } catch (e) { return { error: 'FAF lookup failed' }; }
   if (!row) return null;
   return { fafId: String(row.id), name: (row.attributes && row.attributes.login) || login };
+}
+
+// Reverse lookup: FAF id -> login. Used when someone is added by raw id so we can store a real
+// name instead of showing "FAF 123456" forever.
+async function fafLookupById(fafId, token) {
+  const id = String(fafId || '').replace(/\D/g, '');
+  if (!id) return null;
+  const headers = { 'Accept': 'application/vnd.api+json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const r = await httpsRequest({ host: 'api.faforever.com', path: '/data/player/' + id, method: 'GET', headers });
+    if (r.status !== 200) return null;
+    const row = JSON.parse(r.text).data;
+    const login = row && row.attributes && row.attributes.login;
+    return login ? { fafId: id, name: login } : null;
+  } catch (e) { return null; }
+}
+
+// Best-effort display name for a FAF id from data we already hold (no network): a linked profile,
+// any tournament they've played in, or a live session.
+function knownNameFor(fafId) {
+  const fid = String(fafId || '');
+  if (!fid) return null;
+  const prof = db.profiles && db.profiles[fid];
+  if (prof && prof.name) return prof.name;
+  for (const t of Object.values(db.tournaments || {})) {
+    const p = (t.players || []).find(x => x.fafId === fid);
+    if (p && p.name) return p.name;
+    if (t.organizerNames && t.organizerNames[fid] && !/^FAF \d+$/.test(t.organizerNames[fid])) return t.organizerNames[fid];
+  }
+  for (const sess of Object.values(db.sessions || {})) {
+    if (sess && sess.fafId === fid && sess.fafName) return sess.fafName;
+  }
+  return null;
 }
 
 // Rating for a player per this tournament's settings (null for 'none' — organizer supplies it).
@@ -1501,6 +1564,14 @@ async function handleAPI(req, res, url) {
     if (!okAdmin) return json(res, 403, { error: 'Organizer, director, or site admin only' });
     const login = cleanName(b.name, 40);
     if (!login) return bad(res, 'Enter a FAF name');
+    // A bare number is a FAF id: resolve it to the real login so callers store a name, not "FAF 123".
+    if (/^\d+$/.test(login)) {
+      const tk = await fafValidToken(currentSession(req));
+      const byId = await fafLookupById(login, tk);
+      if (byId) return json(res, 200, { ok: true, fafId: byId.fafId, name: byId.name });
+      const known = knownNameFor(login);
+      return json(res, 200, { ok: true, fafId: login, name: known || ('FAF ' + login) });
+    }
     const token = await fafValidToken(currentSession(req));
     if (!token) return json(res, 409, { error: 'This lookup needs your FAF login. Log out and back in, then retry.', needsRelogin: 1 });
     const found = await fafLookupPlayer(login, token);
@@ -1946,7 +2017,7 @@ async function handleAPI(req, res, url) {
       if (Object.values(db.series).some(s2 => s2.name.toLowerCase() === name.toLowerCase())) return bad(res, 'A series with that name already exists');
       const id = uid(8);
       db.series[id] = {
-        id, name, description: cleanName(b.description, 500) || '',
+        id, name, description: cleanName(b.description, 4000) || '',
         at: now(), by: actorOf(req, null).name, byFafId: (sess && sess.fafId) || null
       };
       saveDB();
@@ -1958,7 +2029,7 @@ async function handleAPI(req, res, url) {
       if (!s2) return bad(res, 'Series not found');
       if (!canManage(s2)) return json(res, 403, { error: 'Only an organizer of a tournament in this series (or its creator, a director, or a site admin) can edit it' });
       if (b.name !== undefined) { const n = cleanName(b.name, 80); if (!n) return bad(res, 'Enter a series name'); s2.name = n; }
-      if (b.description !== undefined) s2.description = cleanName(b.description, 500) || '';
+      if (b.description !== undefined) s2.description = cleanName(b.description, 4000) || '';
       saveDB();
       audit(req, 'series_updated', { detail: s2.name });
       return json(res, 200, { ok: true });
@@ -2131,6 +2202,7 @@ async function handleAPI(req, res, url) {
     if (method === 'GET' && !sub) {
       const tok = url.searchParams.get('token');
       sweepQualifications();   // opening a parent applies any qualifier whose child just finished
+      if (noteFinished(t)) saveDB();   // record when it ended (starts the chat-lock clock)
       const view = publicView(t);
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
@@ -2160,6 +2232,17 @@ async function handleAPI(req, res, url) {
       // how many chat rooms have an unread @mention for this viewer (for the CHAT tab badge)
       view.myMentionCount = (sess && sess.fafId && t.userPings && t.userPings[sess.fafId])
         ? Object.keys(t.userPings[sess.fafId]).length : 0;
+      // Unread per room for this viewer, so every place that links a chat can show a marker
+      // without fetching the room list. Total is derived for the CHAT tab.
+      view.unreadByRoom = {};
+      view.myUnreadCount = 0;
+      if (sess && sess.fafId) {
+        for (const r of chatRoomsFor(t, req, tok)) {
+          if (!r.unread) continue;
+          view.unreadByRoom[r.id] = r.unread;
+          view.myUnreadCount += r.unread;
+        }
+      }
       // Discord handles are contact info: visible to organizers and fellow signed-up players,
       // never to the anonymous public. Copy the player objects so the db is never mutated.
       const canSeeContacts = organizer || !!signedUpId;
@@ -2255,6 +2338,17 @@ async function handleAPI(req, res, url) {
       if (t.chatPings && t.chatPings[room] && (isAdmin(t, tok, req) || isOrganizer(t, req))) {
         delete t.chatPings[room];
         saveDB();
+      }
+      // remember how far this reader has got, so we can show an unread marker elsewhere
+      const seenSess = currentSession(req);
+      if (seenSess && seenSess.fafId) {
+        const last = all.length ? all[all.length - 1].at : 0;
+        t.chatSeen = t.chatSeen || {};
+        t.chatSeen[seenSess.fafId] = t.chatSeen[seenSess.fafId] || {};
+        if ((t.chatSeen[seenSess.fafId][room] || 0) < last) {
+          t.chatSeen[seenSess.fafId][room] = last;
+          saveDB();
+        }
       }
       // the reader acknowledges any @mention ping addressed to them in this room
       const rsess = currentSession(req);
@@ -3435,6 +3529,8 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'chat_post') {
+      // reading an old tournament's chat is fine; posting into it is not
+      if (chatLocked(t)) return bad(res, 'This tournament\u2019s chat is closed \u2014 it locks two days after the event ends.');
       const room = String(b.room || '');
       if (!chatAccess(t, req, room, b.token)) return json(res, 403, { error: 'No access to this chat' });
       const sess = currentSession(req);

@@ -86,6 +86,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - A **series** groups editions of a recurring event (e.g. a monthly cup) purely for browsing. Editions are completely independent: no qualification, no fixed cadence, no shared state.
 - Anyone with tournament-hosting permission can create a series. Renaming or deleting one is limited to its creator, anyone who organizes a tournament in that series, directors, and site admins.
 - A series can be chosen when creating a tournament (an optional field on the host form), or set and changed later from the Admin tab. Copying an existing tournament to make the next edition inherits its series.
+- A series description supports the same formatting as other rich-text fields (headings, bold, lists, links) and is rendered on the series page.
 - `/series` lists every series with its edition count; `/series/<id>` shows that series' editions newest first, with each edition's format, date, status and winner, plus a "series winners" tally.
 - A tournament that belongs to a series shows a "Part of the X series" block near the bottom of its overview, linking to the series page.
 - Deleting a series never deletes tournaments - they simply stop being grouped.
@@ -94,7 +95,10 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Per-tournament chat with a Global room and a room per match (created only once both teams are known). Match chats for finished matches collapse into a "Completed matches" group, minimised by default.
 - `@name` mention autocomplete (Discord-style): type `@`, a filtered dropdown of players and team names appears, and the mention is highlighted in the message. A mentioned FAF player who is signed up gets a red badge on that room and on the CHAT tab until they read it.
 - `!organizer` (or the ping button) flags a room for the organizers; `!roll` posts a 1-100 roll. A flagged room also raises a banner on the organizer's Overview, like a veto turn does.
-- Before the bracket starts, the Chat tab carries a notice that organizers may not be around yet, with their Discord handles.
+- Before the bracket starts, the Chat tab carries a notice that organizers may not be around yet, with their Discord handles. It disappears once the tournament starts.
+- Chats **lock two days after a tournament ends**: the history stays readable, but nobody can post into an old event to ping its organizers or players.
+- A quiet unread marker appears wherever a chat is linked (the CHAT tab, match-chat links, and the room list) when there are messages you haven't seen. It is deliberately softer than the red @mention badge - a mention needs you personally, unread just means something was said.
+- Being @mentioned also raises a banner on your Overview linking to the chat.
 - Organizers are listed one per row with their Discord handle where they have set one.
 - Match chats are also linked from the Bracket and Vetoes tabs.
 
@@ -133,6 +137,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 
 Access is by FAF identity when FAF login is on. The roles:
 
+- Adding someone by raw FAF id (directors, organizers, roles) resolves the id to their real FAF login, so lists show a name rather than "FAF 123456".
 - **Site admin** - a FAF-linked identity with full control of the server, including deletion. Site admins are managed in the `/siteadmin` console (add/remove by FAF name or id, with a last-admin guard). The `ADMIN_PASSWORD` is not itself an admin login; it is used once to *link* the currently logged-in FAF account as a site admin (log in with FAF, then submit the password on `/siteadmin`). Because that link always re-adds, the password holder can never be locked out.
 - **Tournament director** - has organizer rights on all official tournaments, plus a director console (bans, logs, archived tournaments, articles). Managed by site admins.
 - **Organizer** - whoever creates a tournament. Any organizer can add co-organizers to their own tournament (by FAF name or id); only a site admin can remove one. With FAF login on, organizers are recognised by their FAF identity. (The old "organizer link" has been removed; add organizers via the Organizers panel instead.)

@@ -340,7 +340,7 @@ function matchBox(m) {
     // chat first, then the veto link, on one row to keep the box compact
     (() => {
       const chat = (m.team1 && m.team2 && matchChatAllowed(m))
-        ? '<a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a>' : '';
+        ? '<a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a>' + unreadDot('match:' + m.id) : '';
       const veto = masked ? '' : vetoLinkHTML(m);
       return (chat || veto) ? '<div class="mlinks">' + chat + veto + '</div>' : '';
     })() +
@@ -1027,7 +1027,7 @@ function drawVetoes(el) {
   let html = '';
   const card = (m) => {
     const label = mLabel(m);
-    const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat</a>` : '';
+    const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat</a>` + unreadDot('match:' + m.id) : '';
     const nameHtml = (tid) => {
       const real = T.teams && T.teams.some(t => t.id === tid);
       return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
@@ -2186,7 +2186,7 @@ function showMatchDetails(m) {
     </div>
     <div id="mdVeto"></div>
     <div class="md-foot">
-      ${chatOk ? '<a href="#" id="mdChat" class="veto-mini-link">\u{1F4AC} Match chat</a>' : ''}
+      ${chatOk ? '<a href="#" id="mdChat" class="veto-mini-link">\u{1F4AC} Match chat</a>' + unreadDot('match:' + m.id) : ''}
       ${(streamerMode && m.status === 'done') ? '<button class="btn ghost small" id="mdReveal">' + (revealedMatches.has(m.id) ? 'Hide result' : 'Reveal result') + '</button>' : ''}
     </div>
     <div class="actions">

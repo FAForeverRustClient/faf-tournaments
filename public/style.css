@@ -943,3 +943,9 @@ body.modal-open .turnbanner { animation: none !important; }
 .org-discord { font-family: var(--mono); font-size: 11px; color: var(--blue); background: #4c8fd41f; border: 1px solid #4c8fd444; border-radius: 3px; padding: 1px 6px; }
 /* chat notice shown before the tournament starts */
 .chat-prestart { border-color: #FFB44755; }
+
+/* Quiet unread marker. Intentionally much softer than the red @mention badge - a mention needs
+   you personally, unread just means something was said. */
+.unread-dot { display: inline-block; min-width: 14px; height: 14px; line-height: 14px; text-align: center; padding: 0 4px; margin-left: 5px; border-radius: 7px; font-size: 10px; font-weight: 700; color: var(--blue); background: #4c8fd426; border: 1px solid #4c8fd455; vertical-align: 1px; }
+.tab-badge.quiet { background: #4c8fd426; border: 1px solid #4c8fd455; color: var(--blue); }
+.series-desc { margin: 0 0 14px; }

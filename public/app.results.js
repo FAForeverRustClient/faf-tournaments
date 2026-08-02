@@ -1401,6 +1401,7 @@ async function drawChatTab(el) {
   const roomBtn = (r) => {
     const badges = [];
     if (r.mention) badges.push('<span class="chat-mention-badge">1</span>');       // you were @mentioned
+    else if (r.unread) badges.push('<span class="unread-dot">' + (r.unread > 9 ? '9+' : r.unread) + '</span>');
     if (r.ping && viewerIsOrganizer()) badges.push('\uD83D\uDD14');                  // organizer attention
     const cnt = r.count ? ' <span class="muted small">(' + r.count + ')</span>' : '';
     return `<button class="chat-room ${r.mention ? 'mentioned' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${badges.length ? '<span class="chat-room-badges">' + badges.join(' ') + '</span> ' : ''}${esc(r.label)}${cnt}</button>`;
@@ -1770,7 +1771,7 @@ async function renderSeries(id) {
   const done = eds.filter(e => e.status === 'finished' && !e.abandoned);
   let html = `<p class="muted small" style="margin:0 0 6px"><a href="/series" data-link>← All series</a></p>
     <h1 style="margin:0 0 4px">${esc(s.name)}</h1>
-    ${s.description ? '<p class="muted" style="margin:0 0 14px">' + esc(s.description) + '</p>' : '<div style="height:10px"></div>'}
+    ${s.description ? '<div class="ic-body series-desc">' + renderArticleBody(s.description) + '</div>' : '<div style="height:10px"></div>'}
     <div class="panel section"><h2>Editions <span class="h2-strong">(${eds.length})</span></h2>`;
   if (!eds.length) html += '<div class="empty">No tournaments in this series yet.</div>';
   else html += '<div class="sr-eds">' + eds.map(e => {
@@ -1801,7 +1802,8 @@ async function renderSeries(id) {
         <div style="flex:1;min-width:200px"><label>Name</label><input type="text" id="srEdName" value="${esc(s.name)}"></div>
       </div>
       <label style="margin-top:10px">Description</label>
-      <textarea id="srEdDesc" rows="3">${esc(s.description || '')}</textarea>
+      ${mdToolbarHTML()}
+      <textarea id="srEdDesc" rows="10">${esc(s.description || '')}</textarea>
       <div class="actions"><button class="btn ghost" id="srDel">Delete series</button><button class="btn primary" id="srSave">Save</button></div>
       <p class="muted small">Deleting a series does not delete its tournaments — they simply stop being grouped.</p></div>`;
   }
