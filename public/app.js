@@ -645,13 +645,19 @@ function drawTopbar(modeText) {
     (me()
       ? '<button class="btn ghost small" id="cmdrBtn" title="Your profile - set your Discord handle, log out">' + esc(me()) + (isFafVerified() ? ' \u2713' : '') + ((fafAuth.enabled && isFafVerified() && !(fafAuth.user && fafAuth.user.discord)) ? ' <span class="dcpill">\uD83D\uDCAC add Discord</span>' : '') + '</button>'
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
-    (siteAdmin()
-      ? '<button class="btn ghost small" id="saLink" title="Open the site admin console">SITE ADMIN</button>'
-      : (fafAuth.user && fafAuth.user.director
-        ? '<button class="btn ghost small" id="saLink" title="Open the tournament-director console">DIRECTOR</button>'
-        : (fafAuth.user && fafAuth.user.editor
-        ? '<button class="btn ghost small" id="edLink" title="Open the articles editor">EDITOR</button>'
-        : (mode ? '<span>' + esc(mode) + '</span>' : '')))) +
+    // Roles are additive, not a precedence chain: someone who is both a director and an editor
+    // must keep BOTH entry points. (Chaining these once hid the EDITOR button the moment an
+    // editor was made a director, which looked exactly like losing FAQ access.)
+    (() => {
+      const u = fafAuth.user || {};
+      const btns = [];
+      if (siteAdmin()) btns.push('<button class="btn ghost small" id="saLink" title="Open the site admin console">SITE ADMIN</button>');
+      else if (u.director) btns.push('<button class="btn ghost small" id="saLink" title="Open the tournament-director console">DIRECTOR</button>');
+      // Directors can edit articles too, but via the console; only show EDITOR to actual editors.
+      if (!siteAdmin() && u.editor) btns.push('<button class="btn ghost small" id="edLink" title="Open the articles editor">EDITOR</button>');
+      if (!btns.length && mode) btns.push('<span>' + esc(mode) + '</span>');
+      return btns.join('');
+    })() +
     '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Open site admin console' : 'Link this account as site admin') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
@@ -814,6 +820,7 @@ async function renderSiteAdmin() {
   if (validTabs.indexOf(saTab) < 0) saTab = validTabs[0];
   app.innerHTML = `<div class="page">
     <h1 style="margin:0 0 14px">Site admin${director ? ' <span class="muted" style="font-size:14px;font-weight:400">(tournament director)</span>' : ''}</h1>
+    ${director ? '<p class="muted small" style="margin:-8px 0 12px">As a tournament director you can edit the FAQ / Rules articles here under <strong>Articles</strong>.</p>' : ''}
     <div class="tabs" style="margin-bottom:14px">
       ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
       ${director ? '' : `<button class="tab ${saTab === 'siteadmins' ? 'active' : ''}" data-satab="siteadmins">Site Admins${(saData && (saData.siteAdmins || []).length) ? ' (' + saData.siteAdmins.length + ')' : ''}</button>`}
@@ -1499,6 +1506,22 @@ async function renderEditor() {
       const r = await fetch('/api/siteadmin/data', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: siteAdmin() })
+      });
+      saData = await r.json();
+      if (!r.ok) throw new Error(saData.error || 'Failed to load');
+      return drawSaArticles(body);
+    } catch (e) {
+      body.innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>';
+      return;
+    }
+  }
+
+  // Tournament directors may edit articles too (the server allows it, and the director console
+  // has an Articles tab). Honour /editor for them instead of showing a "request access" screen.
+  if (fafAuth.user && fafAuth.user.director) {
+    try {
+      const r = await fetch('/api/siteadmin/data', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
       });
       saData = await r.json();
       if (!r.ok) throw new Error(saData.error || 'Failed to load');
