@@ -23,9 +23,9 @@ function reportScoreAdmin(m) {
       <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="rs2" min="0" max="${maxW}" value="${(m.score2 != null && m.score2 >= 0) ? m.score2 : 0}"></div>
     </div>
     <label style="margin-top:10px">Replay IDs <span class="muted small">(optional, comma-separated \u2014 one per game, kept for the archive)</span></label>
-    <input type="text" id="rReplays" value="${esc((m.replayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534001, 21534050">
+    <input type="text" id="rReplays" inputmode="numeric" value="${esc((m.replayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534001, 21534050">
     <label style="margin-top:10px">Draw replay IDs <span class="muted small">(optional \u2014 games that ended drawn and were replayed)</span></label>
-    <input type="text" id="rDrawReplays" value="${esc((m.drawReplayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534010">
+    <input type="text" id="rDrawReplays" inputmode="numeric" value="${esc((m.drawReplayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534010">
     <div class="ff-block">
       <label>Winner <span class="muted small">(only needed if the score doesn't decide it \u2014 e.g. 1\u20131 and someone forfeited)</span></label>
       <div class="row" style="gap:8px">
@@ -40,6 +40,23 @@ function reportScoreAdmin(m) {
       <button class="btn primary" id="rGo">Save score</button>
     </div>`, root => {
     root.querySelector('#rCancel').onclick = closeModal;
+    // Replay IDs are FAF replay numbers. Keep digits and separators only, so pasting a URL or a
+    // messy list drops the junk here instead of being silently stripped on save.
+    ['#rReplays', '#rDrawReplays'].forEach(sel => {
+      const inp2 = root.querySelector(sel);
+      if (!inp2) return;
+      const clean = () => {
+        const before = inp2.value;
+        const after = before.replace(/[^0-9,\s]/g, '').replace(/\s*,\s*/g, ', ');
+        if (after !== before) {
+          const atEnd = inp2.selectionStart === before.length;
+          inp2.value = after;
+          if (atEnd) inp2.setSelectionRange(after.length, after.length);
+        }
+      };
+      inp2.addEventListener('input', clean);
+      inp2.addEventListener('paste', () => setTimeout(clean, 0));
+    });
     // winner picker: highlight the chosen team; '' means decide by score
     let chosenWinner = m.winner || '';
     const paintWin = () => root.querySelectorAll('.win-pick').forEach(b => b.classList.toggle('on', b.dataset.win === chosenWinner));
@@ -1361,12 +1378,25 @@ async function drawChatTab(el) {
   try { data = await chatRooms(); } catch (e) { el.innerHTML = '<div class="panel section"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
   const rooms = data.rooms || [];
   if (!rooms.length) { el.innerHTML = '<div class="panel section"><div class="empty">No chats available to you yet.</div></div>'; return; }
-  const orgLine = (T.organizersPublic && T.organizersPublic.length)
+  // organizers listed one per row, with their Discord handle where they've set one
+  const orgs = (T.organizersPublic || []).map(o => (typeof o === 'string' ? { name: o, discord: '' } : o));
+  const orgLine = orgs.length
     ? `<div class="org-callout">
-      <div class="org-callout-title">Organizer${T.organizersPublic.length === 1 ? '' : 's'}</div>
-      <div class="org-callout-names">${T.organizersPublic.map(n => '<span class="org-name">' + esc(n) + '</span>').join(' ')}</div>
+      <div class="org-callout-title">Organizer${orgs.length === 1 ? '' : 's'}</div>
+      <div class="org-callout-list">${orgs.map(o => `<div class="org-row">
+        <span class="org-name">${esc(o.name)}</span>
+        ${o.discord ? '<span class="org-discord" title="Discord handle">' + esc(o.discord) + '</span>' : '<span class="muted small">no Discord listed</span>'}
+      </div>`).join('')}</div>
       <div class="org-callout-hint">Type <code>!organizer</code> or press \uD83D\uDD14 to ping them in that chat.</div>
     </div>`
+    : '';
+
+  // Before the bracket starts, organizers often aren't watching chat - say so up front.
+  const preStartNote = (T.status === 'signup')
+    ? `<div class="panel section chat-prestart">
+        <strong>Organizers may not be around before the tournament starts.</strong>
+        <p class="muted small" style="margin:6px 0 0">Chat here is mostly between players until the event begins. If you need something answered sooner, message an organizer on Discord${orgs.some(o => o.discord) ? ' (' + orgs.filter(o => o.discord).map(o => esc(o.discord)).join(', ') + ')' : ''}.</p>
+      </div>`
     : '';
   const roomBtn = (r) => {
     const badges = [];
@@ -1386,7 +1416,7 @@ async function drawChatTab(el) {
            </button>
            <div class="chat-completed" id="chatCompletedWrap" style="display:${_chatCompletedOpen ? '' : 'none'}">${completed.map(roomBtn).join('')}</div>`
         : '');
-  el.innerHTML = `<div class="chat-layout">
+  el.innerHTML = preStartNote + `<div class="chat-layout">
     <div class="chat-rooms panel section">
       <h2>Chats</h2>
       ${orgLine}

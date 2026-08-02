@@ -382,6 +382,25 @@ function tourneyDateMs(t) {
   return isNaN(d.getTime()) ? 0 : d.getTime();
 }
 
+// After signing up, nudge people who haven't set a Discord handle - organizers use it to reach
+// them. Dismissible, and only shown once per browser so it never becomes nagging.
+function maybeRemindDiscord() {
+  if (!fafAuth.enabled || !fafAuth.user) return;
+  if (fafAuth.user.discord) return;
+  try { if (localStorage.getItem('faf_discord_nag') === '1') return; } catch (e) {}
+  modal(`<h3>Add your Discord handle?</h3>
+    <p>You're signed up. Organizers often need to reach players about lobbies, delays or substitutions \u2014 and right now they have no way to contact you.</p>
+    <p class="muted small">You can add it any time from the account menu in the top right. It's optional, and only organizers and fellow players in your tournaments can see it.</p>
+    <div class="actions">
+      <button class="btn ghost" id="dnLater">Not now</button>
+      <button class="btn primary" id="dnGo">Add it now</button>
+    </div>`, root => {
+    const stop = () => { try { localStorage.setItem('faf_discord_nag', '1'); } catch (e) {} };
+    root.querySelector('#dnLater').onclick = () => { stop(); closeModal(); };
+    root.querySelector('#dnGo').onclick = () => { stop(); closeModal(); if (typeof loginFlow === 'function') loginFlow(); };
+  });
+}
+
 // navigate within the SPA (pushState + re-route), used by series pages and in-app links
 function nav(path) { history.pushState(null, '', path); route(); }
 

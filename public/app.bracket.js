@@ -285,6 +285,14 @@ function setVetoShowAll(on) {
   try { localStorage.setItem('faf_veto_all', _vetoShowAll ? '1' : '0'); } catch (e) {}
 }
 
+// A replay id links to the FAF replay vault, but only the number is shown. Ids are digits-only
+// server-side; anything odd in older data is rendered as plain text rather than a broken link.
+function replayLink(id) {
+  const n = String(id || '').replace(/\D/g, '');
+  if (!n) return esc(String(id || ''));
+  return '<a href="https://replay.faforever.com/' + n + '" target="_blank" rel="noopener" class="replay-link">' + esc(n) + '</a>';
+}
+
 function isPhantomMatch(m) {
   return !m || m.team1 === 'BYE' || m.team2 === 'BYE';
 }
@@ -337,7 +345,7 @@ function matchBox(m) {
       return (chat || veto) ? '<div class="mlinks">' + chat + veto + '</div>' : '';
     })() +
     ((!masked && m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
-      ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(esc).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(esc).join(', ') : '') + '</div>' : '') +
+      ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(replayLink).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(replayLink).join(', ') : '') + '</div>' : '') +
     ((streamerMode && m.status === 'done')
       ? `<div class="bfoot"><button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? '\u25C9 Hide result' : '\u25CB Reveal result'}</button></div>` : '') +
     ((!masked && (canReport || canCorrect || m.pendingReport))

@@ -262,6 +262,15 @@ function canHost(req, token) {
 // organizer link while logged in. Site admin always counts.
 // A tournament is "official" only when explicitly tagged so (site admin sets this).
 function isOfficial(t) { return t && t.category === 'official'; }
+// Midnight UTC on the tournament's event date - check-in can't happen before this. Null when no
+// event date is set, in which case check-in is open whenever the organizer allows it.
+function checkInOpensAt(t) {
+  if (!t || !t.eventDate) return null;
+  const d = String(t.eventDate).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const ms = Date.parse(d + 'T00:00:00Z');
+  return isNaN(ms) ? null : ms;
+}
 // Headline prize: a currency plus a plain number, kept separate from the free-text rewards so it
 // can be shown on its own and reused elsewhere (calendars, listings).
 const PRIZE_CURRENCIES = ['USD', 'EUR', 'RUB'];
@@ -734,16 +743,21 @@ function publicView(t) {
     descImages: (t.descImages || []).slice(),
     news: (t.news || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0)),
     streams: (t.streams || []).slice(),
+    // Name plus Discord handle (from the organizer's profile) so players can reach them when the
+    // organizer isn't around in chat. Objects, but a plain name string is still derivable.
     organizersPublic: (t.organizerFafIds || []).filter(fid => !(t.organizerHidden && t.organizerHidden[fid])).map(fid => {
       const names = t.organizerNames || {};
       const viaPlayer = (t.players || []).find(pp => pp.fafId === fid);
-      return names[fid] || (t.organizerFafIds[0] === fid && t.createdByName) || (viaPlayer && viaPlayer.name) || 'Organizer';
+      const nm = names[fid] || (t.organizerFafIds[0] === fid && t.createdByName) || (viaPlayer && viaPlayer.name) || 'Organizer';
+      const prof = (db.profiles && db.profiles[fid]) || {};
+      return { name: nm, discord: prof.discord || '' };
     }),
     minRating: t.minRating != null ? t.minRating : null,
     maxRating: t.maxRating != null ? t.maxRating : null,
     maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null,
     ratingCap: t.ratingCap != null ? t.ratingCap : null,
     checkInDeadline: t.checkInDeadline || null,
+    checkInOpensAt: checkInOpensAt(t),
     lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
     competition: t.competition, formation: t.formation,
     teamSize: t.teamSize, draftOrder: t.draftOrder,
@@ -2692,6 +2706,14 @@ async function handleAPI(req, res, url) {
       }
       if (!team) return bad(res, 'Team not found');
       if (team.playerIds.length < t.teamSize) return bad(res, 'Only a full team can check in');
+      // Check-in is for the day of the event. Trying earlier is the common confusion, so say
+      // exactly when it opens rather than just refusing. Organizers can always check a team in.
+      if (!canOrganize(t, req, b)) {
+        const gate = checkInOpensAt(t);
+        if (gate && Date.now() < gate) {
+          return bad(res, 'Check-in opens on the day of the tournament (' + new Date(gate).toISOString().slice(0, 10) + ' UTC). Come back then \u2014 your signup is safe until it opens.');
+        }
+      }
       team.checkedIn = (b.value === undefined) ? true : !!b.value;
       team.checkedInAt = team.checkedIn ? now() : null;
       tlog(t, req, b.admin, (team.checkedIn ? 'checked in' : 'un-checked') + ' team "' + team.name + '"');
@@ -4195,11 +4217,11 @@ async function handleAPI(req, res, url) {
       const newGames = (s1 + s2) - (cur1 + cur2);
       if (newGames < 1) return bad(res, 'Nothing new to report \u2014 the confirmed score is already ' + cur1 + '\u2013' + cur2);
       // replay IDs: exactly one per newly reported game
-      let ids = Array.isArray(b.replayIds) ? b.replayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean) : [];
+      let ids = Array.isArray(b.replayIds) ? b.replayIds.map(x => String(x).trim().replace(/\D/g, '').slice(0, 24)).filter(Boolean) : [];
       if (ids.length !== newGames) return bad(res, 'Provide exactly ' + newGames + ' replay ID' + (newGames === 1 ? '' : 's') + ' \u2014 one for each newly reported game');
       // Optional: games that ended in a draw were replayed and produce no score, but their
       // replay IDs are still worth keeping (casters, archive). Any Bo, including Bo1.
-      const drawIds = Array.isArray(b.drawReplayIds) ? b.drawReplayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 10) : [];
+      const drawIds = Array.isArray(b.drawReplayIds) ? b.drawReplayIds.map(x => String(x).trim().replace(/\D/g, '').slice(0, 24)).filter(Boolean).slice(0, 10) : [];
       m.pendingReport = { score1: s1, score2: s2, replayIds: ids, drawReplayIds: drawIds, byTeam: myTeam.id, byName: actorOf(req, b).name || myTeam.name, at: now() };
       tlog(t, req, b.token, 'submitted ' + s1 + '\u2013' + s2 + ' for ' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ' (awaiting confirmation)');
       saveDB();
@@ -4366,11 +4388,11 @@ async function handleAPI(req, res, url) {
       // Optional: organizer can record/correct the replay IDs (kept for the archive).
       // Sending the key replaces the stored set; an empty list clears it.
       if (Array.isArray(b.replayIds)) {
-        m.replayIds = b.replayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
+        m.replayIds = b.replayIds.map(x => String(x).trim().replace(/\D/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
         if (!m.replayIds.length) delete m.replayIds;
       }
       if (Array.isArray(b.drawReplayIds)) {
-        m.drawReplayIds = b.drawReplayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
+        m.drawReplayIds = b.drawReplayIds.map(x => String(x).trim().replace(/\D/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
         if (!m.drawReplayIds.length) delete m.drawReplayIds;
       }
       // Optional explicit winner (organizer only). Lets a match be finalized with a winner even

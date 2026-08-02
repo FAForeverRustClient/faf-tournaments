@@ -659,6 +659,7 @@ function maybePromptLateSignup() {
         await api('/api/t/' + late.id + '/signup', body);
         closeModal();
         toast('Signed up as a late entry');
+        maybeRemindDiscord();
         await refresh();
       } catch (e) { toast(e.message, true); }
     };
@@ -728,6 +729,14 @@ function myTurnInfo() {
     if (turnTeam && myTeam && turnTeam === myTeam) {
       return { text: "It's your pick — choose a player for your team.", tab: 'teams', cta: 'Go to the draft' };
     }
+  }
+  // 1a. organizer: someone has flagged a chat for attention
+  if (viewerIsOrganizer() && (T.chatPingCount || 0) > 0) {
+    const n = T.chatPingCount;
+    return {
+      text: n === 1 ? 'A player is asking for an organizer in chat.' : n + ' chats are asking for an organizer.',
+      tab: 'chat', cta: 'Open chat'
+    };
   }
   // 1b. organizer: vetoes are blocked until A/B is set (manual mode)
   if (viewerIsOrganizer() && T.veto && T.veto.enabled && T.veto.abMode === 'manual' && T.matches) {

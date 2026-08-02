@@ -53,6 +53,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 ### Running a tournament
 - Launch queue shows what is next; running scores (e.g. 1-0 in a Bo3) display live.
 - Captains report their own matches; the organizer can correct results.
+- Replay IDs are FAF replay numbers: the field accepts digits only, and pasting a URL or a messy list keeps just the numbers. In the bracket each one links to `replay.faforever.com` while still displaying only the number.
 - Organizer score reporting supports an explicit winner and replay IDs together: you can record a match as, say, 1-1 with one team marked the winner (green) and keep the replay IDs - useful when a series was tied and decided by a forfeit. A pure forfeit (no games played) marks the losing side "FF" and awards the win; either way the correct team advances and the match is tagged FORFEIT.
 - A personal **Show players** toggle swaps team names for that team's players everywhere they appear: the bracket, the Matches tab, the Vetoes tab (including the ban/pick log and A/B legend) and the match-details popup. Labels stay on one line and truncate with an ellipsis, with the full team name on hover. Labels stay on one line and truncate with an ellipsis, and the score is never pushed out of view.
 - Clicking a team anywhere in the bracket opens a popup listing its members, ratings, captain, seed, and combined rating.
@@ -92,7 +93,9 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 ### Chat
 - Per-tournament chat with a Global room and a room per match (created only once both teams are known). Match chats for finished matches collapse into a "Completed matches" group, minimised by default.
 - `@name` mention autocomplete (Discord-style): type `@`, a filtered dropdown of players and team names appears, and the mention is highlighted in the message. A mentioned FAF player who is signed up gets a red badge on that room and on the CHAT tab until they read it.
-- `!organizer` (or the ping button) flags a room for the organizers; `!roll` posts a 1-100 roll.
+- `!organizer` (or the ping button) flags a room for the organizers; `!roll` posts a 1-100 roll. A flagged room also raises a banner on the organizer's Overview, like a veto turn does.
+- Before the bracket starts, the Chat tab carries a notice that organizers may not be around yet, with their Discord handles.
+- Organizers are listed one per row with their Discord handle where they have set one.
 - Match chats are also linked from the Bracket and Vetoes tabs.
 
 ### Vetoes tab
@@ -115,7 +118,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 
 ### Dates and time zones
 - An optional **overall cash prize** (currency plus a number, USD/EUR/RUB) is stored separately from the free-text Rewards and shown as its own box at the top of them, so it reads at a glance and can be reused in listings. The amount accepts digits only.
-- Optional event date and time (entered in UTC) per tournament, editable any time.
+- Optional event date and time (entered in UTC) per tournament, editable any time. When an event date is set, **check-in only opens on the day of the event** - trying earlier tells the player exactly when it opens rather than just failing. Organizers can always check a team in.
 - Stored in UTC, displayed in each viewer's chosen time zone (remembered per browser). The Completed list is ordered most-recent-first.
 - Display settings (the gear icon) also choose the **date format** (`7 Jul 2026`, `07/07/2026`, or `2026-07-07`) and the **time format** (24-hour or 12-hour). These are per browser. Note that the placeholder inside a native date-picker field follows the browser's own locale and cannot be overridden by the site.
 - The overview's "latest update" news block is hidden once a tournament is finished.

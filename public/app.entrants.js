@@ -279,6 +279,7 @@ function drawPlayers(el) {
       }
       await api('/api/t/' + T.id + '/signup', body);
       toast('Signed up — good luck, commander');
+      maybeRemindDiscord();
       await refresh();
     } catch (e) { toast(e.message, true); }
   };

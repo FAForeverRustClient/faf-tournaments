@@ -590,11 +590,11 @@ tbody tr:hover { background: #ffffff05; }
 .infocell .ic-label { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--amber); margin-bottom: 5px; }
 .ic-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 /* rich-text (markdown-lite) elements */
-.ic-body .art-h1, .art-preview .art-h1 { display: block; font-family: var(--display); font-size: 18px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin: 10px 0 4px; }
-.ic-body .art-h2, .art-preview .art-h2 { display: block; font-family: var(--display); font-size: 15px; letter-spacing: 1px; text-transform: uppercase; color: var(--blue); margin: 8px 0 3px; }
-.ic-body .art-h3, .art-preview .art-h3 { display: block; font-weight: 700; font-size: 13px; margin: 6px 0 2px; }
-.ic-body .art-li, .art-preview .art-li { display: block; padding-left: 16px; position: relative; }
-.ic-body .art-li::before, .art-preview .art-li::before { content: '\2022'; position: absolute; left: 4px; color: var(--amber); }
+.ic-body .art-h1, .art-preview .art-h1, .news-body .art-h1 { display: block; font-family: var(--display); font-size: 18px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin: 10px 0 4px; }
+.ic-body .art-h2, .art-preview .art-h2, .news-body .art-h2 { display: block; font-family: var(--display); font-size: 15px; letter-spacing: 1px; text-transform: uppercase; color: var(--blue); margin: 8px 0 3px; }
+.ic-body .art-h3, .art-preview .art-h3, .news-body .art-h3 { display: block; font-weight: 700; font-size: 13px; margin: 6px 0 2px; }
+.ic-body .art-li, .art-preview .art-li, .news-body .art-li { display: block; padding-left: 16px; position: relative; }
+.ic-body .art-li::before, .art-preview .art-li::before, .news-body .art-li::before { content: '\2022'; position: absolute; left: 4px; color: var(--amber); }
 .md-toolbar { display: flex; gap: 4px; margin: 6px 0; flex-wrap: wrap; }
 .md-toolbar button { background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 3px; color: var(--text, #dbe2ea); font-size: 12px; min-width: 30px; padding: 4px 8px; cursor: pointer; }
 .md-toolbar button:hover { border-color: var(--amber); color: var(--amber); }
@@ -933,3 +933,13 @@ body.modal-open .turnbanner { animation: none !important; }
 /* Vetoes tab: my-matches / all scope switch (competitors only) */
 .veto-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
 .veto-scope .btn.on { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
+
+/* replay ids link to the FAF vault */
+.replay-link { color: inherit; text-decoration: underline dotted; }
+.replay-link:hover { color: var(--amber); text-decoration: underline; }
+/* organizers listed one per row with their discord handle */
+.org-callout-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.org-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.org-discord { font-family: var(--mono); font-size: 11px; color: var(--blue); background: #4c8fd41f; border: 1px solid #4c8fd444; border-radius: 3px; padding: 1px 6px; }
+/* chat notice shown before the tournament starts */
+.chat-prestart { border-color: #FFB44755; }
