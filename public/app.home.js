@@ -1022,7 +1022,7 @@ function seriesBlockHTML() {
   if (!T.seriesId || !T.seriesName) return '';
   return `<div class="panel section series-block">
     <h2>Series</h2>
-    <p style="margin:0">This tournament is part of the <strong>${esc(T.seriesName)}</strong> series.
+    <p style="margin:0">This tournament is part of the <strong class="sr-inline c-${esc(T.seriesColor || 'amber')}">${esc(T.seriesName)}</strong> series.
     <a href="/series/${esc(T.seriesId)}" data-serieslink>See all editions →</a></p>
   </div>`;
 }

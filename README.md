@@ -86,7 +86,8 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - A **series** groups editions of a recurring event (e.g. a monthly cup) purely for browsing. Editions are completely independent: no qualification, no fixed cadence, no shared state.
 - Anyone with tournament-hosting permission can create a series. Renaming or deleting one is limited to its creator, anyone who organizes a tournament in that series, directors, and site admins.
 - A series can be chosen when creating a tournament (an optional field on the host form), or set and changed later from the Admin tab. Copying an existing tournament to make the next edition inherits its series.
-- A series description supports the same formatting as other rich-text fields (headings, bold, lists, links) and is rendered on the series page.
+- A series description supports the same formatting as other rich-text fields (headings, bold, lists, links) and is rendered on the series page. The series index shows a plain-text, two-line summary so a long description cannot swamp the list.
+- Each series has a **name colour** from a fixed palette (amber, blue, green, red, purple, plain). A colour is picked automatically from the name so a list of series is not a wall of identical headings, and the owner can change it with a live preview. The colour is used on the series page, the index, and the "part of the X series" block on a tournament.
 - `/series` lists every series with its edition count; `/series/<id>` shows that series' editions newest first, with each edition's format, date, status and winner, plus a "series winners" tally.
 - A tournament that belongs to a series shows a "Part of the X series" block near the bottom of its overview, linking to the series page.
 - Deleting a series never deletes tournaments - they simply stop being grouped.

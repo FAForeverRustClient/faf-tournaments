@@ -262,6 +262,19 @@ function canHost(req, token) {
 // organizer link while logged in. Site admin always counts.
 // A tournament is "official" only when explicitly tagged so (site admin sets this).
 function isOfficial(t) { return t && t.category === 'official'; }
+// Series name colours. A fixed palette rather than free-form hex, so a series can never end up
+// unreadable against the dark theme. New series get one picked from their name, so a list of
+// series isn't a wall of identical headings; the owner can change it.
+const SERIES_COLORS = ['amber', 'blue', 'green', 'red', 'purple', 'plain'];
+function cleanSeriesColor(c) {
+  const v = String(c || '').toLowerCase();
+  return SERIES_COLORS.indexOf(v) >= 0 ? v : null;
+}
+function autoSeriesColor(name) {
+  let h = 0;
+  for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return SERIES_COLORS[h % (SERIES_COLORS.length - 1)];   // never auto-pick 'plain'
+}
 // Chats close a couple of days after the event so nobody can dig up an old tournament and ping
 // its organizers or players. Reading stays open; only posting stops.
 const CHAT_LOCK_MS = 2 * 24 * 60 * 60 * 1000;
@@ -764,6 +777,7 @@ function publicView(t) {
     }),
     feedsInto: feedsIntoFor(t),
     seriesName: (t.seriesId && db.series[t.seriesId]) ? db.series[t.seriesId].name : null,
+    seriesColor: (t.seriesId && db.series[t.seriesId]) ? (db.series[t.seriesId].color || autoSeriesColor(db.series[t.seriesId].name)) : null,
     signupOpensAt: t.signupOpensAt || null,
     signupClosesAt: t.signupClosesAt || null,
     minTeams: t.minTeams || 0,
@@ -1965,6 +1979,7 @@ async function handleAPI(req, res, url) {
       const latest = eds.slice().sort((a, c) => (tourneyMs(c) - tourneyMs(a)))[0] || null;
       return {
         id: s.id, name: s.name, description: s.description || '',
+        color: s.color || autoSeriesColor(s.name),
         editions: eds.length,
         latestName: latest ? latest.name : null,
         latestId: latest ? latest.id : null,
@@ -1995,7 +2010,7 @@ async function handleAPI(req, res, url) {
         champion: t.championTeamId ? ((t.teams || []).find(x => x.id === t.championTeamId) || {}).name || null : null
       }));
     return json(res, 200, {
-      series: { id: s.id, name: s.name, description: s.description || '' },
+      series: { id: s.id, name: s.name, description: s.description || '', color: s.color || autoSeriesColor(s.name) },
       editions: eds,
       canEdit: canManageSeries(req, s)
     });
@@ -2018,6 +2033,7 @@ async function handleAPI(req, res, url) {
       const id = uid(8);
       db.series[id] = {
         id, name, description: cleanName(b.description, 4000) || '',
+        color: cleanSeriesColor(b.color) || autoSeriesColor(name),
         at: now(), by: actorOf(req, null).name, byFafId: (sess && sess.fafId) || null
       };
       saveDB();
@@ -2030,6 +2046,7 @@ async function handleAPI(req, res, url) {
       if (!canManage(s2)) return json(res, 403, { error: 'Only an organizer of a tournament in this series (or its creator, a director, or a site admin) can edit it' });
       if (b.name !== undefined) { const n = cleanName(b.name, 80); if (!n) return bad(res, 'Enter a series name'); s2.name = n; }
       if (b.description !== undefined) s2.description = cleanName(b.description, 4000) || '';
+      if (b.color !== undefined) { const c = cleanSeriesColor(b.color); if (c) s2.color = c; }
       saveDB();
       audit(req, 'series_updated', { detail: s2.name });
       return json(res, 200, { ok: true });

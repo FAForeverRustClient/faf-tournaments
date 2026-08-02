@@ -946,6 +946,24 @@ body.modal-open .turnbanner { animation: none !important; }
 
 /* Quiet unread marker. Intentionally much softer than the red @mention badge - a mention needs
    you personally, unread just means something was said. */
-.unread-dot { display: inline-block; min-width: 14px; height: 14px; line-height: 14px; text-align: center; padding: 0 4px; margin-left: 5px; border-radius: 7px; font-size: 10px; font-weight: 700; color: var(--blue); background: #4c8fd426; border: 1px solid #4c8fd455; vertical-align: 1px; }
+.unread-dot { display: inline-block; min-width: 14px; height: 14px; line-height: 14px; text-align: center; padding: 0 4px; margin-left: 4px; border-radius: 7px; font-size: 10px; font-weight: 700; color: var(--blue); background: #4c8fd426; border: 1px solid #4c8fd455; vertical-align: 1px; }
 .tab-badge.quiet { background: #4c8fd426; border: 1px solid #4c8fd455; color: var(--blue); }
 .series-desc { margin: 0 0 14px; }
+
+/* ---- series name colours (fixed palette so nothing can be unreadable) ---- */
+.c-amber  { color: var(--amber); }
+.c-blue   { color: var(--blue); }
+.c-green  { color: #3fb950; }
+.c-red    { color: #ff6369; }
+.c-purple { color: #a371f7; }
+.c-plain  { color: var(--text); }
+.sr-title { font-family: var(--display); letter-spacing: 1px; }
+.sr-inline { font-weight: 700; }
+.sr-item-main { min-width: 0; }
+.sr-name { font-family: var(--display); font-size: 19px; letter-spacing: 1px; margin-bottom: 3px; }
+/* long descriptions must not swamp the list */
+.sr-summary { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 2px; }
+.sr-swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+.sr-swatch { font-family: var(--display); font-size: 14px; width: 38px; height: 30px; border: 1px solid var(--line-solid); border-radius: 4px; background: var(--panel2, #141d28); cursor: pointer; }
+.sr-swatch:hover { border-color: var(--amber); }
+.sr-swatch.on { border-color: currentColor; box-shadow: 0 0 0 1px currentColor inset; }

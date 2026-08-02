@@ -1195,6 +1195,24 @@ let _chatRoom = null;
 let _chatActiveRoom = null;
 let _chatCompletedOpen = false;   // completed-match chats collapsed by default
 let _chatSince = 0;
+// Drop a room's unread marker from the cached view and repaint just the affected badges.
+function clearUnreadFor(room) {
+  if (!T || !T.unreadByRoom) return;
+  const had = T.unreadByRoom[room] || 0;
+  if (!had) return;
+  delete T.unreadByRoom[room];
+  T.myUnreadCount = Math.max(0, (T.myUnreadCount || 0) - had);
+  // room button in the list
+  const btn = document.querySelector('.chat-room[data-room="' + (window.CSS && CSS.escape ? CSS.escape(room) : room) + '"] .unread-dot');
+  if (btn) btn.remove();
+  // the CHAT tab's quiet badge
+  const tabBtn = document.querySelector('.tab[data-tab="chat"] .tab-badge.quiet');
+  if (tabBtn) {
+    if (T.myUnreadCount > 0) tabBtn.textContent = T.myUnreadCount > 9 ? '9+' : T.myUnreadCount;
+    else tabBtn.remove();
+  }
+}
+
 let _chatTimer = null;
 let _chatMsgs = [];
 
@@ -1262,6 +1280,10 @@ async function mountChat(host, room, label) {
       } else if (!incremental) {
         _chatMsgs = []; renderChatMessages(logEl);
       }
+      // Reading the room clears its unread server-side, but the badges come from the cached
+      // tournament view, and the poll deliberately doesn't redraw while you're in chat. Clear
+      // them locally so the marker disappears as you read instead of on the next tab switch.
+      clearUnreadFor(room);
     } catch (e) { note.textContent = e.message; stopChatPoll(); }
   };
   await load(false);
@@ -1741,8 +1763,9 @@ async function renderSeriesIndex() {
   html += '<div class="panel section"><h2>All series <span class="h2-strong">(' + list.length + ')</span></h2>';
   if (!list.length) html += '<div class="empty">No series yet.</div>';
   else html += '<div class="sr-list">' + list.map(s => `<a class="sr-item" href="/series/${esc(s.id)}" data-link>
-      <div><div class="sr-name">${esc(s.name)}</div>
-      ${s.description ? '<div class="muted small">' + esc(s.description) + '</div>' : ''}
+      <div class="sr-item-main">
+      <div class="sr-name c-${esc(s.color || 'amber')}">${esc(s.name)}</div>
+      ${s.description ? '<div class="muted small sr-summary">' + esc(stripMd(s.description)) + '</div>' : ''}
       ${s.latestName ? '<div class="muted small">Latest: ' + esc(s.latestName) + (s.latestDate ? ' \u00b7 ' + esc(fmtDate(s.latestDate)) : '') + '</div>' : ''}</div>
       <span class="sr-count">${s.editions} edition${s.editions === 1 ? '' : 's'}</span>
     </a>`).join('') + '</div>';
@@ -1770,7 +1793,7 @@ async function renderSeries(id) {
   setTitle(s.name);
   const done = eds.filter(e => e.status === 'finished' && !e.abandoned);
   let html = `<p class="muted small" style="margin:0 0 6px"><a href="/series" data-link>← All series</a></p>
-    <h1 style="margin:0 0 4px">${esc(s.name)}</h1>
+    <h1 class="sr-title c-${esc(s.color || 'amber')}" style="margin:0 0 4px">${esc(s.name)}</h1>
     ${s.description ? '<div class="ic-body series-desc">' + renderArticleBody(s.description) + '</div>' : '<div style="height:10px"></div>'}
     <div class="panel section"><h2>Editions <span class="h2-strong">(${eds.length})</span></h2>`;
   if (!eds.length) html += '<div class="empty">No tournaments in this series yet.</div>';
@@ -1801,6 +1824,11 @@ async function renderSeries(id) {
       <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
         <div style="flex:1;min-width:200px"><label>Name</label><input type="text" id="srEdName" value="${esc(s.name)}"></div>
       </div>
+      <label style="margin-top:10px">Name colour</label>
+      <div class="sr-swatches" id="srColors">
+        ${['amber','blue','green','red','purple','plain'].map(c =>
+          `<button type="button" class="sr-swatch c-${c}${(s.color || 'amber') === c ? ' on' : ''}" data-srcolor="${c}" title="${c}">Aa</button>`).join('')}
+      </div>
       <label style="margin-top:10px">Description</label>
       ${mdToolbarHTML()}
       <textarea id="srEdDesc" rows="10">${esc(s.description || '')}</textarea>
@@ -1809,10 +1837,17 @@ async function renderSeries(id) {
   }
   document.getElementById('srBody').innerHTML = html;
   wireSeriesLinks();
+  let srColor = s.color || 'amber';
+  document.querySelectorAll('[data-srcolor]').forEach(b => b.onclick = () => {
+    srColor = b.dataset.srcolor;
+    document.querySelectorAll('[data-srcolor]').forEach(x => x.classList.toggle('on', x === b));
+    const h1 = document.querySelector('.sr-title');
+    if (h1) h1.className = 'sr-title c-' + srColor;   // live preview
+  });
   const sv = document.getElementById('srSave');
   if (sv) sv.onclick = async () => {
     try {
-      await api('/api/series', { action: 'update', id: s.id, name: document.getElementById('srEdName').value, description: document.getElementById('srEdDesc').value });
+      await api('/api/series', { action: 'update', id: s.id, name: document.getElementById('srEdName').value, description: document.getElementById('srEdDesc').value, color: srColor });
       toast('Saved'); renderSeries(s.id);
     } catch (e) { toast(e.message, true); }
   };

@@ -1207,6 +1207,21 @@ const SA_ACTION_LABEL = {
 //   **bold**  *italic*  __underline__  # / ## / ### headings  - bullet lines
 //   [text](url) links (http/https)     ![alt](url) images (local upload dirs or http/https)
 // Newlines are preserved via pre-wrap on the containers.
+// Plain-text summary of a markdown body, for places that need one line rather than formatting
+// (list previews). Strips the syntax instead of showing it raw.
+function stripMd(text) {
+  return String(text || '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')     // images -> alt text
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')      // links -> label
+    .replace(/^#{1,6}\s+/gm, '')                    // headings
+    .replace(/^[-*]\s+/gm, '')                      // bullets
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function renderArticleBody(text) {
   let s = esc(text || '');
   // images first so their ![..](..) doesn't get eaten by the link rule
