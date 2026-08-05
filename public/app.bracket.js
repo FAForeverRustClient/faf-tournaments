@@ -340,7 +340,7 @@ function matchBox(m) {
     // chat first, then the veto link, on one row to keep the box compact
     (() => {
       const chat = (m.team1 && m.team2 && matchChatAllowed(m))
-        ? '<a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a>' + unreadDot('match:' + m.id) : '';
+        ? '<a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat' + unreadDot('match:' + m.id) + '</a>' : '';
       const veto = masked ? '' : vetoLinkHTML(m);
       return (chat || veto) ? '<div class="mlinks">' + chat + veto + '</div>' : '';
     })() +
@@ -1027,7 +1027,7 @@ function drawVetoes(el) {
   let html = '';
   const card = (m) => {
     const label = mLabel(m);
-    const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat</a>` + unreadDot('match:' + m.id) : '';
+    const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat${unreadDot('match:' + m.id)}</a>` : '';
     const nameHtml = (tid) => {
       const real = T.teams && T.teams.some(t => t.id === tid);
       return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
@@ -1427,6 +1427,17 @@ function alignBracketSections(el) {
 }
 
 function drawBracket(el) {
+  // Imported events with no reproducible bracket (free-for-all, round robin, group-only) have no
+  // tree to draw - point at the results instead of rendering an empty frame.
+  if (T.imported && T.standingsOnly) {
+    el.innerHTML = '<div class="panel"><div class="empty">This tournament was imported from Challonge as <strong>'
+      + esc(T.importedType || 'a non-bracket format') + '</strong>, which has no elimination bracket. '
+      + 'See the <a href="#" data-goto="standings">Standings</a> tab for the results.</div></div>';
+    const g = el.querySelector('[data-goto]');
+    if (g) g.onclick = (e) => { e.preventDefault(); currentTab = 'standings'; syncTabURL(); drawTournament(); };
+    return;
+  }
+
   el.innerHTML = '';
   connectorRedraws = [];
   buildFeeders();
@@ -2186,7 +2197,7 @@ function showMatchDetails(m) {
     </div>
     <div id="mdVeto"></div>
     <div class="md-foot">
-      ${chatOk ? '<a href="#" id="mdChat" class="veto-mini-link">\u{1F4AC} Match chat</a>' + unreadDot('match:' + m.id) : ''}
+      ${chatOk ? '<a href="#" id="mdChat" class="veto-mini-link">\u{1F4AC} Match chat' + unreadDot('match:' + m.id) + '</a>' : ''}
       ${(streamerMode && m.status === 'done') ? '<button class="btn ghost small" id="mdReveal">' + (revealedMatches.has(m.id) ? 'Hide result' : 'Reveal result') + '</button>' : ''}
     </div>
     <div class="actions">

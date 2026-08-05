@@ -427,6 +427,12 @@ function statusLabel(s) {
 }
 
 function typeLine(t) {
+  // Challonge doesn't tell us the team size or our formation options, so don't fabricate a
+  // format for an imported event - say where it came from and what Challonge called it.
+  if (t.imported) {
+    const src = t.importedType ? ' \u00b7 ' + t.importedType : '';
+    return 'Imported from Challonge' + src + (t.standingsOnly ? ' \u00b7 results only' : '');
+  }
   if (t.competition === 'ffa') {
     const sz = t.teamSize === 1 ? 'solo' : t.teamSize + '-player teams';
     const md = t.ffaCfg.mode === 'points' ? 'points' : 'knockout';

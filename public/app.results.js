@@ -254,9 +254,39 @@ function reportFfaPoints(m) {
 
 // ----- standings -----
 
+// Challonge group-stage tables and final placements, for imported tournaments.
+function importedTablesHTML() {
+  let h = '';
+  for (const g of (T.importedGroups || [])) {
+    h += `<div class="panel section"><h2>${esc(g.name)}</h2>
+      <table class="mt-table"><thead><tr><th>#</th><th>Player</th><th>W\u2013L</th><th>Games</th></tr></thead><tbody>
+      ${g.rows.map((r, i) => `<tr>
+        <td class="mt-fixed mono small muted">${i + 1}</td>
+        <td>${esc(r.name)}</td>
+        <td class="mt-fixed mono">${r.w}\u2013${r.l}</td>
+        <td class="mt-fixed mono muted">${r.gw}\u2013${r.gl}</td>
+      </tr>`).join('')}
+      </tbody></table></div>`;
+  }
+  if ((T.importedStandings || []).length) {
+    h += `<div class="panel section"><h2>Final placings</h2>
+      <div class="st-list">${T.importedStandings.map(r => `<div class="st-row">
+        <span class="st-rank">${r.rank}</span><span class="st-name">${esc(r.name)}</span>
+      </div>`).join('')}</div>
+      <p class="muted small" style="margin-top:8px">Placings as recorded on Challonge.</p></div>`;
+  }
+  return h;
+}
+
 function drawStandings(el) {
   if (streamerMode) {
     el.innerHTML = '<div class="panel"><div class="empty">Standings are hidden while streamer mode is on (it would reveal results). Toggle it off in the header to view them.</div></div>';
+    return;
+  }
+  // an imported event's own tables come first (and may be all there is)
+  const impHtml = T.imported ? importedTablesHTML() : '';
+  if (T.imported && impHtml) {
+    el.innerHTML = impHtml;
     return;
   }
   if (T.status !== 'running' && T.status !== 'finished') {
@@ -1190,6 +1220,7 @@ function drawTlog(el) {
 // ---------- chat ----------
 // A lightweight polling chat that runs independently of the main tournament poll so
 // messages arrive quickly. One active room at a time; its own timer, torn down on close.
+let _srOfficialOnly = false;   // series index: show only official series
 let _qlPanelOpen = false;   // Qualifiers controls revealed on the Admin tab (per session)
 let _chatRoom = null;
 let _chatActiveRoom = null;
@@ -1760,18 +1791,38 @@ async function renderSeriesIndex() {
       </div>
       <p class="muted small" style="margin-top:8px">A series just groups editions together for browsing. Anyone who can host a tournament can create one; organizers attach their tournament to a series from its Admin tab. Only the creator (or a director / site admin) can rename or delete a series.</p></div>`;
   }
-  html += '<div class="panel section"><h2>All series <span class="h2-strong">(' + list.length + ')</span></h2>';
-  if (!list.length) html += '<div class="empty">No series yet.</div>';
-  else html += '<div class="sr-list">' + list.map(s => `<a class="sr-item" href="/series/${esc(s.id)}" data-link>
+  const officialOnly = _srOfficialOnly;
+  const shown = officialOnly ? list.filter(x => x.category === 'official') : list;
+  const active = shown.filter(x => (x.activeCount || 0) > 0);
+  const dormant = shown.filter(x => !(x.activeCount || 0));   // already newest-first from the server
+
+  const row = (s) => `<a class="sr-item" href="/series/${esc(s.id)}" data-link>
       <div class="sr-item-main">
-      <div class="sr-name c-${esc(s.color || 'amber')}">${esc(s.name)}</div>
+      <div class="sr-name c-${esc(s.color || 'amber')}">${esc(s.name)}${s.category ? ' <span class="idbadge ' + (s.category === 'official' ? 'verified' : 'late') + '">' + esc(s.category.toUpperCase()) + '</span>' : ''}</div>
       ${s.description ? '<div class="muted small sr-summary">' + esc(stripMd(s.description)) + '</div>' : ''}
       ${s.latestName ? '<div class="muted small">Latest: ' + esc(s.latestName) + (s.latestDate ? ' \u00b7 ' + esc(fmtDate(s.latestDate)) : '') + '</div>' : ''}</div>
-      <span class="sr-count">${s.editions} edition${s.editions === 1 ? '' : 's'}</span>
-    </a>`).join('') + '</div>';
+      <span class="sr-right">
+        ${(s.activeCount || 0) > 0 ? '<span class="sr-live">' + s.activeCount + ' running</span>' : ''}
+        <span class="sr-count">${s.editions} edition${s.editions === 1 ? '' : 's'}</span>
+      </span>
+    </a>`;
+
+  html += `<div class="panel section">
+    <div class="row" style="justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2 style="margin:0">Series <span class="h2-strong">(${shown.length}${officialOnly ? ' of ' + list.length : ''})</span></h2>
+      <label class="sr-filter"><input type="checkbox" id="srOfficial"${officialOnly ? ' checked' : ''}> Official only</label>
+    </div>`;
+  if (!shown.length) {
+    html += '<div class="empty">' + (officialOnly && list.length ? 'No official series yet.' : 'No series yet.') + '</div>';
+  } else {
+    if (active.length) html += '<div class="sr-group">Running now</div><div class="sr-list">' + active.map(row).join('') + '</div>';
+    if (dormant.length) html += '<div class="sr-group"' + (active.length ? ' style="margin-top:16px"' : '') + '>Nothing scheduled \u2014 most recent first</div><div class="sr-list">' + dormant.map(row).join('') + '</div>';
+  }
   html += '</div>';
   document.getElementById('srBody').innerHTML = html;
   wireSeriesLinks();
+  { const of = document.getElementById('srOfficial');
+    if (of) of.onchange = () => { _srOfficialOnly = of.checked; renderSeriesIndex(); }; }
   const c = document.getElementById('srCreate');
   if (c) c.onclick = async () => {
     const name = (document.getElementById('srName').value || '').trim();
@@ -1793,7 +1844,7 @@ async function renderSeries(id) {
   setTitle(s.name);
   const done = eds.filter(e => e.status === 'finished' && !e.abandoned);
   let html = `<p class="muted small" style="margin:0 0 6px"><a href="/series" data-link>← All series</a></p>
-    <h1 class="sr-title c-${esc(s.color || 'amber')}" style="margin:0 0 4px">${esc(s.name)}</h1>
+    <h1 class="sr-title c-${esc(s.color || 'amber')}" style="margin:0 0 4px">${esc(s.name)}${s.category ? ' <span class="idbadge ' + (s.category === 'official' ? 'verified' : 'late') + '" style="vertical-align:middle">' + esc(s.category.toUpperCase()) + '</span>' : ''}</h1>
     ${s.description ? '<div class="ic-body series-desc">' + renderArticleBody(s.description) + '</div>' : '<div style="height:10px"></div>'}
     <div class="panel section"><h2>Editions <span class="h2-strong">(${eds.length})</span></h2>`;
   if (!eds.length) html += '<div class="empty">No tournaments in this series yet.</div>';
@@ -1824,6 +1875,12 @@ async function renderSeries(id) {
       <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
         <div style="flex:1;min-width:200px"><label>Name</label><input type="text" id="srEdName" value="${esc(s.name)}"></div>
       </div>
+      <label style="margin-top:10px">Type</label>
+      <select id="srEdCat">
+        <option value=""${!s.category ? ' selected' : ''}>\u2014 unset \u2014</option>
+        <option value="official"${s.category === 'official' ? ' selected' : ''}>Official</option>
+        <option value="community"${s.category === 'community' ? ' selected' : ''}>Community</option>
+      </select>
       <label style="margin-top:10px">Name colour</label>
       <div class="sr-swatches" id="srColors">
         ${['amber','blue','green','red','purple','plain'].map(c =>
@@ -1847,7 +1904,7 @@ async function renderSeries(id) {
   const sv = document.getElementById('srSave');
   if (sv) sv.onclick = async () => {
     try {
-      await api('/api/series', { action: 'update', id: s.id, name: document.getElementById('srEdName').value, description: document.getElementById('srEdDesc').value, color: srColor });
+      await api('/api/series', { action: 'update', id: s.id, name: document.getElementById('srEdName').value, description: document.getElementById('srEdDesc').value, color: srColor, category: document.getElementById('srEdCat').value });
       toast('Saved'); renderSeries(s.id);
     } catch (e) { toast(e.message, true); }
   };

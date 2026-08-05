@@ -265,6 +265,23 @@ function isOfficial(t) { return t && t.category === 'official'; }
 // Series name colours. A fixed palette rather than free-form hex, so a series can never end up
 // unreadable against the dark theme. New series get one picked from their name, so a list of
 // series isn't a wall of identical headings; the owner can change it.
+function cleanSeriesCategory(c) {
+  return (c === 'official' || c === 'community') ? c : null;
+}
+// A series counts as ACTIVE while any of its editions is still open or being played. Finished and
+// abandoned editions don't count, so dormant series sink to the bottom of the list.
+function seriesActivity(seriesId) {
+  let active = 0, lastMs = 0, total = 0;
+  for (const t of Object.values(db.tournaments || {})) {
+    if (t.seriesId !== seriesId || t.archived || t.published === false) continue;
+    total++;
+    const ms = tourneyMs(t);
+    if (ms > lastMs) lastMs = ms;
+    if (!t.abandoned && ['signup', 'draft', 'drafted', 'running'].indexOf(t.status) >= 0) active++;
+  }
+  return { active, lastMs, total };
+}
+
 const SERIES_COLORS = ['amber', 'blue', 'green', 'red', 'purple', 'plain'];
 function cleanSeriesColor(c) {
   const v = String(c || '').toLowerCase();
@@ -838,6 +855,12 @@ function publicView(t) {
     pendingCaptains: t.pendingCaptains || [],
     divisions: t.divisions || 0,
     imported: t.imported || false,
+    // Challonge imports: source format, per-group tables, final placements, and whether the event
+    // had no reproducible bracket (free-for-all / round robin / group-only).
+    importedType: t.importedType || null,
+    importedGroups: t.importedGroups || [],
+    importedStandings: t.importedStandings || [],
+    standingsOnly: t.standingsOnly ? 1 : 0,
     hasOrganizer: (Array.isArray(t.organizerFafIds) && t.organizerFafIds.length > 0) ? 1 : 0,
     createdByName: t.createdByName || '',
     source: t.source || null,
@@ -1977,15 +2000,21 @@ async function handleAPI(req, res, url) {
     const out = Object.values(db.series).map(s => {
       const eds = Object.values(db.tournaments).filter(t => t.seriesId === s.id && !t.archived && t.published !== false);
       const latest = eds.slice().sort((a, c) => (tourneyMs(c) - tourneyMs(a)))[0] || null;
+      const act = seriesActivity(s.id);
       return {
         id: s.id, name: s.name, description: s.description || '',
         color: s.color || autoSeriesColor(s.name),
+        category: s.category || null,
         editions: eds.length,
+        activeCount: act.active,
+        lastMs: act.lastMs,
         latestName: latest ? latest.name : null,
         latestId: latest ? latest.id : null,
         latestDate: latest ? (latest.eventDate || null) : null
       };
-    }).sort((a, b) => b.editions - a.editions || String(a.name).localeCompare(String(b.name)));
+    // running series first, then by most recent activity (newest at the top), so dormant series
+    // fall to the bottom instead of being mixed in.
+    }).sort((a, b) => (b.activeCount > 0) - (a.activeCount > 0) || b.lastMs - a.lastMs || String(a.name).localeCompare(String(b.name)));
     return json(res, 200, { series: out });
   }
 
@@ -2010,7 +2039,7 @@ async function handleAPI(req, res, url) {
         champion: t.championTeamId ? ((t.teams || []).find(x => x.id === t.championTeamId) || {}).name || null : null
       }));
     return json(res, 200, {
-      series: { id: s.id, name: s.name, description: s.description || '', color: s.color || autoSeriesColor(s.name) },
+      series: { id: s.id, name: s.name, description: s.description || '', color: s.color || autoSeriesColor(s.name), category: s.category || null },
       editions: eds,
       canEdit: canManageSeries(req, s)
     });
@@ -2034,6 +2063,7 @@ async function handleAPI(req, res, url) {
       db.series[id] = {
         id, name, description: cleanName(b.description, 4000) || '',
         color: cleanSeriesColor(b.color) || autoSeriesColor(name),
+        category: cleanSeriesCategory(b.category),
         at: now(), by: actorOf(req, null).name, byFafId: (sess && sess.fafId) || null
       };
       saveDB();
@@ -2047,6 +2077,7 @@ async function handleAPI(req, res, url) {
       if (b.name !== undefined) { const n = cleanName(b.name, 80); if (!n) return bad(res, 'Enter a series name'); s2.name = n; }
       if (b.description !== undefined) s2.description = cleanName(b.description, 4000) || '';
       if (b.color !== undefined) { const c = cleanSeriesColor(b.color); if (c) s2.color = c; }
+      if (b.category !== undefined) s2.category = cleanSeriesCategory(b.category);
       saveDB();
       audit(req, 'series_updated', { detail: s2.name });
       return json(res, 200, { ok: true });

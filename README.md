@@ -88,6 +88,8 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - A series can be chosen when creating a tournament (an optional field on the host form), or set and changed later from the Admin tab. Copying an existing tournament to make the next edition inherits its series.
 - A series description supports the same formatting as other rich-text fields (headings, bold, lists, links) and is rendered on the series page. The series index shows a plain-text, two-line summary so a long description cannot swamp the list.
 - Each series has a **name colour** from a fixed palette (amber, blue, green, red, purple, plain). A colour is picked automatically from the name so a list of series is not a wall of identical headings, and the owner can change it with a live preview. The colour is used on the series page, the index, and the "part of the X series" block on a tournament.
+- A series can be tagged **Official** or **Community**, shown as the same green/blue badge tournaments use, with an "Official only" filter on the index.
+- The index splits series into **Running now** (any edition still open or being played) and dormant ones, with dormant sorted by their most recent tournament, newest first - so inactive series sink to the bottom.
 - `/series` lists every series with its edition count; `/series/<id>` shows that series' editions newest first, with each edition's format, date, status and winner, plus a "series winners" tally.
 - A tournament that belongs to a series shows a "Part of the X series" block near the bottom of its overview, linking to the series page.
 - Deleting a series never deletes tournaments - they simply stop being grouped.
@@ -129,7 +131,10 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - The overview's "latest update" news block is hidden once a tournament is finished.
 
 ### Importing from Challonge
-- Import a completed Challonge tournament (single or double elimination) as a read-only bracket via the Import button. Bracket topology, per-game series scores, and final placements are reconstructed.
+- Import a completed Challonge tournament as a read-only archive via the Import button. Bracket topology, per-game series scores, and final placements are reconstructed.
+- **Two-stage events** (group stage then playoff) are handled: only the final stage becomes the bracket, and each Challonge group is imported as its own standings table (W-L and game record). Previously the group matches were mixed into the bracket, producing a nonsense tree full of TBD matches.
+- **Non-bracket formats** (free-for-all, round robin, swiss) import as a results table instead of being refused. The Bracket tab points at Standings for these.
+- Challonge does not record team size, so an imported event is labelled "Imported from Challonge" with the original Challonge format, rather than guessing a format. Each participant becomes a one-slot team. (It used to hard-code 2, which mislabelled 1v1 events as 2v2.)
 - A Challonge API v1 key is entered per import and never stored.
 
 ---

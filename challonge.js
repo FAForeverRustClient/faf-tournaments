@@ -59,6 +59,43 @@ function seriesScore(csv) {
 
 function uid(n) { return require('crypto').randomBytes(n || 4).toString('hex'); }
 
+// Build one standings table per Challonge group. Challonge only gives numeric group ids, so they
+// are labelled A, B, C... in id order, matching how Challonge itself displays them.
+function buildGroupTables(groupMatches, parts) {
+  if (!groupMatches.length) return [];
+  const nameOf = {};
+  for (const p of parts) nameOf[p.id] = (p.name || p.display_name || ('Seed ' + (p.seed || '?'))).trim();
+
+  const gids = Array.from(new Set(
+    groupMatches.map(m => m.group_id).concat(parts.filter(p => p.group_id).map(p => p.group_id))
+  )).sort((a, b) => a - b);
+  const label = i => 'Group ' + String.fromCharCode(65 + i);
+
+  const tables = [];
+  gids.forEach((gid, i) => {
+    const rows = {};
+    const touch = (cid) => {
+      if (cid == null) return null;
+      if (!rows[cid]) rows[cid] = { cid, name: nameOf[cid] || ('#' + cid), w: 0, l: 0, gw: 0, gl: 0 };
+      return rows[cid];
+    };
+    for (const p of parts) if (p.group_id === gid) touch(p.id);
+    let played = 0;
+    for (const m of groupMatches) {
+      if (m.group_id !== gid) continue;
+      const a = touch(m.player1_id), b = touch(m.player2_id);
+      if (!a || !b) continue;
+      const [s1, s2] = seriesScore(m.scores_csv);
+      a.gw += s1; a.gl += s2; b.gw += s2; b.gl += s1;
+      if (m.winner_id && rows[m.winner_id]) { rows[m.winner_id].w++; played++; }
+      if (m.loser_id && rows[m.loser_id]) rows[m.loser_id].l++;
+    }
+    const list = Object.values(rows).sort((x, y) => y.w - x.w || (y.gw - y.gl) - (x.gw - x.gl) || x.name.localeCompare(y.name));
+    if (list.length) tables.push({ name: label(i), played, rows: list.map(r => ({ name: r.name, w: r.w, l: r.l, gw: r.gw, gl: r.gl })) });
+  });
+  return tables;
+}
+
 // Map Challonge -> our tournament object. Supports single & double elimination.
 function convert(challongeRoot, opts) {
   opts = opts || {};
@@ -69,12 +106,15 @@ function convert(challongeRoot, opts) {
   }
 
   const ctype = (t.tournament_type || '').toLowerCase();
-  let bracketType;
+  let bracketType, standingsOnly = false;
   if (ctype.indexOf('double') >= 0) bracketType = 'double';
   else if (ctype.indexOf('single') >= 0) bracketType = 'single';
-  else if (ctype.indexOf('round robin') >= 0) throw new Error('Round robin tournaments are not supported yet — only single and double elimination.');
-  else if (ctype.indexOf('swiss') >= 0) throw new Error('Swiss tournaments are not supported yet — only single and double elimination.');
-  else throw new Error('Unsupported Challonge bracket type: ' + t.tournament_type);
+  else {
+    // Round robin, swiss, free-for-all and the racing formats have no elimination bracket we can
+    // reproduce. Rather than refusing the import, bring them in as a results table.
+    bracketType = 'single';
+    standingsOnly = true;
+  }
 
   const parts = (t.participants || []).map(p => p.participant || p);
   const rawMatches = (t.matches || []).map(m => m.match || m);
@@ -106,11 +146,21 @@ function convert(challongeRoot, opts) {
   }
   const players = teams.map(team => ({ id: team.captainId, name: team.name, rating: null, teamId: team.id, teamName: '' }));
 
+  // Challonge two-stage events (groups -> playoff) put BOTH stages in the same match list, with
+  // group matches carrying a group_id and their own round numbering starting at 1. Mixing those
+  // into the bracket produces a nonsense tree, so the bracket is built from the final stage only
+  // and the group results are kept separately as tables.
+  const groupRaw = rawMatches.filter(m => m.group_id);
+  const stageRaw = rawMatches.filter(m => !m.group_id);
+  const importedGroups = buildGroupTables(groupRaw, parts);
+  if (!stageRaw.length) standingsOnly = true;   // group-only / round-robin style event
+
   // classify + index matches per our bracket rounds.
   // Challonge: positive round = winners bracket; final positive round in DE = grand final.
   // negative round = losers bracket.
-  const wbMatches = rawMatches.filter(m => m.round > 0).sort((a, b) => a.round - b.round || a.identifier.localeCompare(b.identifier));
-  const lbMatches = rawMatches.filter(m => m.round < 0).sort((a, b) => Math.abs(a.round) - Math.abs(b.round) || a.identifier.localeCompare(b.identifier));
+  const idOf = m => String(m.identifier || m.id || '');
+  const wbMatches = standingsOnly ? [] : stageRaw.filter(m => m.round > 0).sort((a, b) => a.round - b.round || idOf(a).localeCompare(idOf(b)));
+  const lbMatches = standingsOnly ? [] : stageRaw.filter(m => m.round < 0).sort((a, b) => Math.abs(a.round) - Math.abs(b.round) || idOf(a).localeCompare(idOf(b)));
 
   const maxWbRound = wbMatches.reduce((mx, m) => Math.max(mx, m.round), 0);
 
@@ -158,7 +208,7 @@ function convert(challongeRoot, opts) {
   function pushMatches(info, bracket) {
     for (const cr of info.rounds) {
       const ourRound = info.roundMap[cr];
-      const inRound = info.byRound[cr].slice().sort((a, b) => a.identifier.localeCompare(b.identifier));
+      const inRound = info.byRound[cr].slice().sort((a, b) => String(a.identifier || '').localeCompare(String(b.identifier || '')));
       inRound.forEach((cm, idx) => {
         const [s1, s2] = seriesScore(cm.scores_csv);
         const team1 = teamByCid[cm.player1_id] ? teamByCid[cm.player1_id].id : null;
@@ -227,6 +277,13 @@ function convert(challongeRoot, opts) {
     linkSlot(cm.player2_prereq_match_id, cm.player2_is_prereq_match_loser, 2);
   }
 
+  // Final placement table straight from Challonge's own ranks. This is the only thing we can show
+  // for formats with no bracket (free-for-all, round robin, swiss), and a useful extra otherwise.
+  const importedStandings = teams
+    .filter(x => x.finalRank)
+    .sort((a, b) => a.finalRank - b.finalRank)
+    .map(x => ({ rank: x.finalRank, name: x.name }));
+
   // winner of the whole thing
   let championTeamId = null;
   const rank1 = teams.find(x => x.finalRank === 1);
@@ -253,7 +310,14 @@ function convert(challongeRoot, opts) {
     lobbyOptions: '', mods: '',
     competition: 'team',
     formation: 'premade',
-    teamSize: 2, // display-only; imported teams show their full name
+    // Challonge doesn't record how many players were on a side, so don't invent one - each
+    // participant becomes a one-slot team and the UI shows "Imported from Challonge" instead of
+    // claiming a format we can't know. (This used to hard-code 2, labelling 1v1 events as 2v2.)
+    teamSize: 1,
+    importedType: t.tournament_type || null,
+    importedGroups: importedGroups,
+    standingsOnly: standingsOnly,
+    importedStandings: importedStandings,
     draftOrder: 'linear',
     bracketType,
     ffaCfg: null,
