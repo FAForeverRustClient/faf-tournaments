@@ -656,20 +656,11 @@ function drawMaps(el) {
     try { await api('/api/t/' + T.id + '/map_publish', { all: 1, published: 1, admin: adminToken() }); toast('All maps published'); await refresh(); }
     catch (e) { toast(e.message, true); }
   };
+  // A map is always editable. Pools and rounds only reference it by id, so a rename or a new
+  // image shows up everywhere immediately - no confirmation needed, and being in a pool (with or
+  // without vetoes) never blocks an edit.
   el.querySelectorAll('[data-mapedit]').forEach(b => b.onclick = () => {
-    const m = mapObj(b.dataset.mapedit);
-    if (!m) return editMapEntry(null);
-    // A published map that players can already see — in a published pool or assigned to
-    // rounds/matches — deserves a deliberate edit, not an accidental one.
-    const livePools = (T.mapPools || []).filter(p => p.published && (p.mapIds || []).indexOf(m.id) >= 0).map(p => p.name);
-    const used = usage[m.id] || [];
-    if (m.published && (livePools.length || used.length)) {
-      const where = [];
-      if (livePools.length) where.push('part of the published pool' + (livePools.length > 1 ? 's' : '') + ' "' + livePools.join('", "') + '"');
-      if (used.length) where.push('played in ' + (used.length > 3 ? used.slice(0, 3).join(', ') + ' and ' + (used.length - 3) + ' more rounds' : used.join(', ')));
-      if (!confirm('Are you sure you want to edit map "' + m.name + '"? It is ' + where.join(' and ') + ', and visible to players.')) return;
-    }
-    editMapEntry(m);
+    editMapEntry(mapObj(b.dataset.mapedit) || null);
   });
   el.querySelectorAll('[data-mappub]').forEach(b => b.onclick = async () => {
     const m = mapObj(b.dataset.mappub);
@@ -678,7 +669,7 @@ function drawMaps(el) {
   });
   el.querySelectorAll('[data-mapdel]').forEach(b => b.onclick = async () => {
     const m = mapObj(b.dataset.mapdel);
-    const used = (usage[m.id] || []).length || (inPool[m.id] && inPool[m.id].length);
+    const used = (directUse[m.id] || []).length || (inPool[m.id] && inPool[m.id].length);
     if (!confirm('Delete "' + m.name + '"?' + (used ? ' It will be removed from rounds and pools too.' : ''))) return;
     try { await api('/api/t/' + T.id + '/map_delete', { id: m.id, admin: adminToken() }); toast('Map deleted'); await refresh(); }
     catch (e) { toast(e.message, true); }
