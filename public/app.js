@@ -92,19 +92,46 @@ async function refreshPending() {
     app.parentNode.insertBefore(bar, app);
   }
   if (!fafAuth.enabled || !me()) { bar.innerHTML = ''; return; }
-  let items = [];
-  try { const d = await (await fetch('/api/my/pending', { credentials: 'same-origin' })).json(); items = (d && d.pending) || []; }
+  let items = [], alert = null;
+  try {
+    const d = await (await fetch('/api/my/pending', { credentials: 'same-origin' })).json();
+    items = (d && d.pending) || [];
+    alert = (d && d.alert) || null;
+  }
   catch (e) { bar.innerHTML = ''; return; }
   const cur = tourneyId();
   const shown = items.filter(it => it.tId !== cur);
-  if (!shown.length) { bar.innerHTML = ''; return; }
-  const it = shown[0];
-  const more = shown.length > 1 ? '<span class="pending-more">+' + (shown.length - 1) + ' more</span>' : '';
-  bar.innerHTML = '<div class="pending-bar"><span class="pending-text">\u26A1 ' + esc(it.text) + ' \u2014 <strong>' + esc(it.tName) + '</strong></span>' +
-    '<button class="btn small" id="pendingGo">Go</button>' + more + '</div>';
-  bar.querySelector('#pendingGo').onclick = () => {
+  // The alert points at the console, so it's noise while you're already in it.
+  if (alert && location.pathname === '/siteadmin') alert = null;
+  if (!shown.length && !alert) { bar.innerHTML = ''; return; }
+  let html = '';
+  if (shown.length) {
+    const it = shown[0];
+    const more = shown.length > 1 ? '<span class="pending-more">+' + (shown.length - 1) + ' more</span>' : '';
+    html += '<div class="pending-bar"><span class="pending-text">\u26A1 ' + esc(it.text) + ' \u2014 <strong>' + esc(it.tName) + '</strong></span>' +
+      '<button class="btn small" id="pendingGo">Go</button>' + more + '</div>';
+  }
+  // Only this row gets a dismiss button. It waits on a decision the admin is allowed to defer,
+  // unlike the turn-based rows above (map ban/pick, draft picks), which block someone else and
+  // must stay put until acted on.
+  if (alert) {
+    html += '<div class="pending-bar pending-admin"><span class="pending-text">\uD83D\uDD14 ' + esc(alert.text) + '</span>' +
+      '<button class="btn small" id="alertGo">Review</button>' +
+      (alert.dismissible ? '<button class="pending-x" id="alertX" title="Hide this until a new request comes in" aria-label="Dismiss">\u00D7</button>' : '') + '</div>';
+  }
+  bar.innerHTML = html;
+  const goBtn = bar.querySelector('#pendingGo');
+  if (goBtn) goBtn.onclick = () => {
+    const it = shown[0];
     history.pushState(null, '', '/t/' + it.tId + (it.tab && it.tab !== 'overview' ? '?tab=' + it.tab : ''));
     route();
+  };
+  const alGo = bar.querySelector('#alertGo');
+  if (alGo) alGo.onclick = () => { saTab = 'requests'; history.pushState(null, '', '/siteadmin'); route(); };
+  const alX = bar.querySelector('#alertX');
+  if (alX) alX.onclick = async () => {
+    try { await api('/api/my/dismiss_requests', {}); } catch (e) { toast(e.message, true); }
+    refreshPending();
   };
 }
 // A site admin is now a FAF account linked via the master password. This reflects that
@@ -1598,8 +1625,16 @@ async function renderImporter() {
   </div>`;
   const body = document.getElementById('impBody');
 
-  // Site admins always have importer access.
-  if (siteAdmin()) { body.innerHTML = ''; openImportWindow(); return; }
+  // Site admins always have importer access. Render the panel as well as opening the dialog,
+  // so closing the dialog leaves a usable page instead of a blank one.
+  if (siteAdmin()) {
+    body.innerHTML = `<div class="panel section"><h2>You have importer access</h2>
+      <p class="muted small">Site admins can always import. Pull a completed tournament in from Challonge.</p>
+      <button class="btn primary" id="impOpen">Import from Challonge</button></div>`;
+    document.getElementById('impOpen').onclick = openImportWindow;
+    openImportWindow();
+    return;
+  }
 
   let st = null;
   try { st = await (await fetch('/api/importer_status')).json(); } catch (e) {}

@@ -525,6 +525,20 @@ function canOrganize(t, req, body) {
   if (isOrganizer(t, req)) return true;              // logged-in claimed organizer
   return false;
 }
+// ---------- site-admin access requests (hosting / editor / importer) ----------
+// The three queues share a shape ({ id, fafId, fafName, status }) and one console tab, so
+// alerts treat them as a single stream. Returns only requests still awaiting a decision.
+function pendingAccessRequests() {
+  const out = [];
+  const groups = [['hosting', db.hostRequests], ['editor', db.editorRequests], ['importer', db.importerRequests]];
+  for (const g of groups) {
+    for (const r of (g[1] || [])) {
+      if (r && r.status === 'pending') out.push({ id: r.id, kind: g[0], name: r.fafName || '' });
+    }
+  }
+  return out;
+}
+
 // ---------- map database ----------
 // Each map: { id, name, image (filename in MAP_IMG_DIR or null), description, published }
 // map ids -> display objects (for serialization); unknown ids are dropped
@@ -2196,7 +2210,7 @@ async function handleAPI(req, res, url) {
         // organizer: signup requests waiting for review
         if (Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(sess.fafId) >= 0) {
           const nReq = (t.players || []).filter(p => p.pending).length;
-          if (nReq) out.push({ tId: t.id, tName: t.name, type: 'requests', tab: 'players', text: nReq + ' signup request' + (nReq === 1 ? '' : 's') + ' await your review' });
+          if (nReq) out.push({ tId: t.id, tName: t.name, type: 'requests', tab: 'players', text: nReq + ' signup request' + (nReq === 1 ? ' awaits' : 's await') + ' your review' });
         }
         if (!meP) continue;
         // score submissions awaiting MY team's confirmation
@@ -2239,7 +2253,40 @@ async function handleAPI(req, res, url) {
         }
       }
     }
-    return json(res, 200, { pending: out });
+
+    // Site-admin access requests. These are the only pending items that aren't tournament-scoped,
+    // and the only dismissible ones: they sit in the console until decided, so an admin who isn't
+    // ready to decide can silence the alert. A request arriving AFTER a dismissal un-silences it,
+    // which is the point - the alert exists because three hosting requests went unnoticed.
+    let alert = null;
+    if (sess && sess.fafId && isSiteAdmin(req)) {
+      const pend = pendingAccessRequests();
+      const seen = ((db.profiles[sess.fafId] || {}).seenRequests) || {};
+      const fresh = pend.filter(r => !seen[r.id]);
+      if (fresh.length) {
+        const n = pend.length;
+        alert = {
+          type: 'access', dismissible: 1,
+          text: n + ' access request' + (n === 1 ? '' : 's') + ' waiting for review' +
+            (fresh.length < n ? ' (' + fresh.length + ' new)' : '')
+        };
+      }
+    }
+    return json(res, 200, { pending: out, alert });
+  }
+
+  // Silence the access-request alert until a NEW request arrives. Only ids that are still
+  // pending are stored, so decided requests drop out and the map can't grow without bound.
+  if (parts.length === 3 && parts[1] === 'my' && parts[2] === 'dismiss_requests' && method === 'POST') {
+    const sess = currentSession(req);
+    if (!sess || !sess.fafId) return json(res, 401, { error: 'Log in with FAF first' });
+    if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
+    const seen = {};
+    for (const r of pendingAccessRequests()) seen[r.id] = 1;
+    db.profiles[sess.fafId] = db.profiles[sess.fafId] || {};
+    db.profiles[sess.fafId].seenRequests = seen;
+    saveDB();
+    return json(res, 200, { ok: true, dismissed: Object.keys(seen).length });
   }
 
   if (parts.length >= 3 && parts[1] === 't') {
@@ -4585,7 +4632,7 @@ const MIME = {
 
 function serveStatic(req, res, url) {
   let p = url.pathname;
-  if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/editor' || p === '/hall' || p === '/faq' || p === '/series' || p.startsWith('/series/') || p.startsWith('/t/')) p = '/index.html';
+  if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/editor' || p === '/importer' || p === '/hall' || p === '/faq' || p === '/series' || p.startsWith('/series/') || p.startsWith('/t/')) p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
