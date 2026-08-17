@@ -476,16 +476,41 @@ async function openMapImport() {
 function editMapEntry(map) {
   const editing = !!map;
   const curImg = map && map.image ? '/map-images/' + encodeURIComponent(map.image) : '';
+  const spec = (editing && map.spec) || {};
+  // Spawn numbers are toggles rather than a <select multiple>: a map has at most 16 slots, and
+  // clicking 1 and 3 is far quicker than ctrl-clicking a list.
+  const chipRow = (key, label) => {
+    const on = Array.isArray(spec[key]) ? spec[key] : [];
+    let h = `<label style="margin-top:10px">${label} <span class="muted small">(optional)</span></label><div class="spawn-row" data-spawn="${key}">`;
+    for (let i = 1; i <= MAP_SPAWN_MAX; i++) {
+      h += `<button type="button" class="spawn-chip${on.indexOf(i) >= 0 ? ' on' : ''}" data-n="${i}">${i}</button>`;
+    }
+    return h + '</div>';
+  };
   modal(`<h3>${editing ? 'Edit map' : 'Add map'}</h3>
     <label>Name</label>
     <input type="text" id="mName" maxlength="60" autocomplete="off" placeholder="e.g. Setons Clutch" value="${editing ? esc(map.name) : ''}">
-    <label style="margin-top:10px">Description <span class="muted small">(optional)</span></label>
-    <textarea id="mDesc" rows="3" style="width:100%">${editing ? esc(map.description || '') : ''}</textarea>
+    ${chipRow('t1', 'Spawns Team 1')}
+    ${chipRow('t2', 'Spawns Team 2')}
+    ${chipRow('closed', 'Closed spawns')}
+    ${chipRow('closedMex', 'Closed spawn mexes')}
+    <label style="margin-top:10px">Map size <span class="muted small">(optional)</span></label>
+    <select id="mSize"><option value="">\u2014 not set \u2014</option>${MAP_SIZES.map(s => `<option value="${s}"${spec.size === s ? ' selected' : ''}>${s} km</option>`).join('')}</select>
+    <label style="margin-top:10px">Description <span class="muted small">(optional \u2014 anything the fields above don't cover, e.g. reclaim or author)</span></label>
+    <textarea id="mDesc" rows="6" style="width:100%">${editing ? esc(map.description || '') : ''}</textarea>
     <label style="margin-top:10px">Image <span class="muted small">(optional, 5MB max)</span></label>
     <div id="mImgWrap">${curImg ? `<img src="${curImg}" alt="" style="max-height:120px;border-radius:4px;display:block;margin:6px 0"><label class="muted small" style="display:block"><input type="checkbox" id="mRemoveImg"> Remove current image</label>` : ''}</div>
     <input type="file" id="mImg" accept="image/*">
     <label style="margin-top:10px;display:block"><input type="checkbox" id="mPub" ${editing && map.published ? 'checked' : ''}> Published (visible to players)</label>
     <div class="actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Save map</button></div>`, root => {
+    root.querySelectorAll('.spawn-chip').forEach(b => {
+      b.onclick = () => b.classList.toggle('on');
+    });
+    const readSpawns = (key) => {
+      const row = root.querySelector('[data-spawn="' + key + '"]');
+      if (!row) return [];
+      return Array.from(row.querySelectorAll('.spawn-chip.on')).map(b => parseInt(b.dataset.n, 10));
+    };
     root.querySelector('#mCancel').onclick = closeModal;
     root.querySelector('#mSave').onclick = async () => {
       const name = root.querySelector('#mName').value.trim();
@@ -493,6 +518,11 @@ function editMapEntry(map) {
       const body = {
         name,
         description: root.querySelector('#mDesc').value,
+        spec: {
+          t1: readSpawns('t1'), t2: readSpawns('t2'),
+          closed: readSpawns('closed'), closedMex: readSpawns('closedMex'),
+          size: root.querySelector('#mSize').value
+        },
         published: root.querySelector('#mPub').checked ? 1 : 0,
         admin: adminToken()
       };
@@ -510,7 +540,7 @@ function editMapEntry(map) {
         closeModal(); toast(editing ? 'Map updated' : 'Map added'); await refresh();
       } catch (e) { toast(e.message, true); }
     };
-  });
+  }, { mid: true });
 }
 
 function drawMaps(el) {
@@ -569,7 +599,7 @@ function drawMaps(el) {
         </div>
         <div class="mapdb-body">
           <div class="mapdb-name">${esc(m.name)} ${badges.join(' ')}</div>
-          ${m.description ? `<div class="mapdb-desc">${esc(m.description)}</div>` : ''}
+          ${mapSpecHTML(m, 'mapdb-desc')}
           ${used.length
             ? `<div class="mapdb-used">Played in: ${used.map(u => esc(u)).join(', ')}</div>`
             : (inPool[m.id]
@@ -612,7 +642,8 @@ function drawMaps(el) {
           }
         }
         poolsHtml += `<div class="pool-card">
-          <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}${(admin && !pool.published) ? ' <span class="idbadge late">hidden</span>' : ''}</span><span class="muted small">Bo${pool.bo || 1} &middot; ${names.length} map${names.length === 1 ? '' : 's'}</span></div>
+          <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}${(admin && !pool.published) ? ' <span class="idbadge late">hidden</span>' : ''}${(admin && !pool.published && pool.publishAt) ? ' <span class="idbadge verified" title="Publishes automatically">scheduled</span>' : ''}</span><span class="muted small">Bo${pool.bo || 1} &middot; ${names.length} map${names.length === 1 ? '' : 's'}</span></div>
+          ${(admin && !pool.published && pool.publishAt) ? `<div class="pool-card-assign">Publishes ${esc(fmtDateTime(pool.publishAt))}</div>` : ''}
           <div class="pool-card-maps pool-thumbs">${names.length ? (pool.mapIds || []).map(id => {
             const mo = mapObj(id);
             if (!mo) return '';
@@ -810,6 +841,7 @@ function editPool(existing) {
   const pool = existing || { name: '', mapIds: [], sequence: [] };
   const db = T.mapDb || [];
   let vseq = (pool.sequence || []).map(s => ({ action: s.action, team: s.team }));
+  const pubAt = splitDateTimeUTC(pool.publishAt || '');
   const body = `
     <h3>${existing ? 'Edit pool' : 'New pool'}</h3>
     <label>Pool name</label>
@@ -840,6 +872,12 @@ function editPool(existing) {
       <button class="btn ghost small" data-plAdd="pick:B">+ B picks</button>
     </div>
     <div id="plSummary" class="veto-summary"></div>
+
+    <label style="margin-top:14px">Publish this pool at <span class="muted small">(UTC, optional \u2014 leave empty to publish it yourself)</span></label>
+    <div style="display:flex;gap:8px"><input type="date" id="plPubDate" value="${esc(pubAt.date)}" style="flex:1"><input type="time" id="plPubTime" value="${esc(pubAt.time)}" style="width:130px"></div>
+    <p class="muted small" style="margin:6px 0 0">${existing && existing.published
+      ? 'Already published, so a schedule does nothing here.'
+      : 'When the time passes, the pool and every map in it become visible to players.'}</p>
 
     <div class="actions"><button class="btn ghost" id="plCancel">Cancel</button><button class="btn primary" id="plSave">${existing ? 'Save' : 'Create pool'}</button></div>`;
   modal(body, root => {
@@ -916,7 +954,11 @@ function editPool(existing) {
         return toast('A Bo' + bo + ' pool needs exactly ' + (bo - 1) + ' pick step(s) — you have ' + nPicks, true);
       }
       try {
-        await api('/api/t/' + T.id + '/pool_save', { id: existing ? pool.id : undefined, name, mapIds, sequence: vseq, bo, admin: adminToken() });
+        await api('/api/t/' + T.id + '/pool_save', {
+          id: existing ? pool.id : undefined, name, mapIds, sequence: vseq, bo,
+          publishAt: combineDateTimeUTC(root.querySelector('#plPubDate'), root.querySelector('#plPubTime')),
+          admin: adminToken()
+        });
         closeModal(); toast(existing ? 'Pool saved' : 'Pool created'); await refresh();
       } catch (e) { toast(e.message, true); }
     };

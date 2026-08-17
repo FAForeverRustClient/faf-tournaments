@@ -418,18 +418,13 @@ function drawOpenTeams(el) {
       <p class="muted small" style="margin-top:8px">You'll be captain. Teams need ${size} players to enter the bracket. Once you have a team, invite players from the pool or approve requests to join.</p></div>`;
   }
 
-  // ---- check-in deadline ----
+  // ---- check-in deadline (status only; the organizer sets it on the Admin tab) ----
   const canJoin = myPlayer && !myTeam;
-  if (T.checkInDeadline || admin) {
-    const dl = T.checkInDeadline ? new Date(T.checkInDeadline) : null;
-    const passed = dl && Date.now() > T.checkInDeadline;
+  if (T.checkInDeadline) {
+    const dl = new Date(T.checkInDeadline);
+    const passed = Date.now() > T.checkInDeadline;
     html += `<div class="panel section"><h2>Check-in</h2>`;
-    if (dl) html += `<p class="${passed ? 'warn' : 'muted'} small">Deadline: <strong>${esc(dl.toLocaleString())}</strong>${passed ? ' — passed' : ''}. Any member of a full team can check it in.</p>`;
-    else html += `<p class="muted small">No check-in deadline set. Teams enter by signup order up to the cap.</p>`;
-    if (admin) html += `<div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
-      <input type="datetime-local" id="ciDeadline"${dl ? ` value="${localDatetimeValue(T.checkInDeadline)}"` : ''}>
-      <button class="btn ghost small" id="ciSave">Set deadline</button>
-      ${dl ? '<button class="btn ghost small" id="ciClear">Clear</button>' : ''}</div>`;
+    html += `<p class="${passed ? 'warn' : 'muted'} small">Deadline: <strong>${esc(fmtDateTime(dl.toISOString()))}</strong>${passed ? ' \u2014 passed' : ''}. Any member of a full team can check it in.</p>`;
     html += '</div>';
   }
 
@@ -598,12 +593,6 @@ function drawOpenTeams(el) {
   const otUncheck = document.getElementById('otUncheck');
   if (otUncheck) otUncheck.onclick = () => call('/checkin_team', { value: 0 }, 'Check-in undone');
   el.querySelectorAll('[data-checkin]').forEach(b => b.onclick = () => call('/checkin_team', { teamId: b.dataset.checkin, value: +b.dataset.val, admin: adminToken() }, 'Updated'));
-
-  // check-in deadline (organizer)
-  const ciSave = document.getElementById('ciSave');
-  if (ciSave) ciSave.onclick = () => { const v = document.getElementById('ciDeadline').value; if (!v) return toast('Pick a date and time', true); call('/edit_info', { checkInDeadline: v, admin: adminToken() }, 'Deadline set'); };
-  const ciClear = document.getElementById('ciClear');
-  if (ciClear) ciClear.onclick = () => call('/edit_info', { checkInDeadline: '', admin: adminToken() }, 'Deadline cleared');
 
   // organizer: build a team around a free agent (#6)
   const otOrgCreate = document.getElementById('otOrgCreate');

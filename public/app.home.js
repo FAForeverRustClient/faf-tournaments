@@ -2,6 +2,9 @@
 
 function pv(id) { return document.getElementById(id).value; }
 
+// Images pasted into the host form before the tournament exists. Uploaded on create.
+let _pendingCreateImages = [];
+
 async function renderHome() {
   setTitle(null);
   stopPoll();
@@ -94,7 +97,7 @@ async function renderHome() {
       div.innerHTML = `
         <div>
           <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a>${t.category ? ' <span class="catbox ' + (t.category === 'official' ? 'official' : 'community') + '">' + (t.category === 'official' ? 'OFFICIAL' : 'COMMUNITY') + '</span>' : ''}</div>
-          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}${teamsLine ? ' \u00b7 ' + esc(teamsLine) : ''}</div>
+          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}${teamsLine ? ' \u00b7 ' + esc(teamsLine) : ''}${t.prize ? ' \u00b7 <span class="tprize">' + esc(formatPrize(t.prize)) + '</span>' : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
           ${t.published === 0 ? '<span class="idbadge late" title="Draft — only you can see this until you publish it">draft</span>' : ''}
@@ -143,6 +146,8 @@ async function renderHost() {
         <label>Signups close at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 after this, signups auto-close; team forming &amp; captain picks still work. Leave empty to close manually)</span></label>
         <div style="display:flex;gap:8px"><input type="date" id="cScDate" style="flex:1"><input type="time" id="cScTime" style="width:130px"></div>
         <label>Description (rules, schedule)</label>
+        <span class="muted small">Paste a screenshot straight in, or <a href="#" id="cDescImgBtn">insert an image</a>.</span>
+        <input type="file" id="cDescImgFile" accept="image/*" style="display:none">
         ${mdToolbarHTML()}
         <textarea id="cDesc" maxlength="20000" rows="6" placeholder="Sunday 19:00 CEST. Check-in in Discord... (supports **bold**, headings, lists, links)"></textarea>
         <label>Lobby options</label>
@@ -158,9 +163,13 @@ async function renderHost() {
         </div>
         <div class="muted small" style="margin-top:4px">Just the number \u2014 describe the full prize breakdown in Rewards below.</div>
         <label>Rewards <span class="muted small">(optional)</span></label>
+        <span class="muted small">Paste a screenshot straight in (e.g. an avatar), or <a href="#" id="cRwImgBtn">insert an image</a>.</span>
+        <input type="file" id="cRwImgFile" accept="image/*" style="display:none">
         ${mdToolbarHTML()}
         <textarea id="cRewards" maxlength="2000" rows="3" placeholder="1st: avatar + 500 credits..."></textarea>
         <label>Sponsors <span class="muted small">(optional)</span></label>
+        <span class="muted small">Paste a screenshot straight in, or <a href="#" id="cSpImgBtn">insert an image</a>.</span>
+        <input type="file" id="cSpImgFile" accept="image/*" style="display:none">
         ${mdToolbarHTML()}
         <textarea id="cSponsors" maxlength="2000" rows="3" placeholder="Powered by [YourSponsor](https://...)"></textarea>
         <label>Livestream links <span class="muted small">(optional)</span></label>
@@ -411,6 +420,22 @@ async function renderHost() {
   // markdown toolbars for the two rich fields in the creation form
   const cDescTa = document.getElementById('cDesc');
   if (cDescTa) wireMdToolbar(cDescTa.previousElementSibling, cDescTa);
+  // Images can't be uploaded yet - there is no tournament to attach them to. Hold each one as a
+  // data URL behind a placeholder token, then upload and swap the tokens for real urls the moment
+  // the tournament exists (see the create handler below).
+  _pendingCreateImages = [];
+  const deferredUploader = async (dataUrl) => {
+    const token = 'pending-image-' + _pendingCreateImages.length;
+    _pendingCreateImages.push({ token, dataUrl });
+    return { url: token };
+  };
+  if (cDescTa) wireImagePaste(cDescTa, deferredUploader, document.getElementById('cDescImgBtn'), document.getElementById('cDescImgFile'));
+  const cRwTa0 = document.getElementById('cRewards');
+  if (cRwTa0) wireImagePaste(cRwTa0, deferredUploader, document.getElementById('cRwImgBtn'), document.getElementById('cRwImgFile'));
+  const cSpTa0 = document.getElementById('cSponsors');
+  if (cSpTa0) wireImagePaste(cSpTa0, deferredUploader, document.getElementById('cSpImgBtn'), document.getElementById('cSpImgFile'));
+  const cLobbyTa0 = document.getElementById('cLobby');
+  if (cLobbyTa0) wireImagePaste(cLobbyTa0, deferredUploader, null, null);
   const cLobbyTa = document.getElementById('cLobby');
   if (cLobbyTa) wireMdToolbar(cLobbyTa.previousElementSibling, cLobbyTa);
   const cModsTa = document.getElementById('cMods');
@@ -568,6 +593,31 @@ async function renderHost() {
         ratingCap: document.getElementById('cRatingCap').value
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
+      // Now the tournament exists, so any images pasted during setup can finally be uploaded and
+      // their placeholders swapped for real urls. A failure here is not fatal: the tournament is
+      // already created, so we tell the organizer rather than losing their work.
+      if (_pendingCreateImages.length) {
+        const map = {};
+        let failed = 0;
+        for (const p of _pendingCreateImages) {
+          try {
+            const d = await api('/api/t/' + r.id + '/add_desc_image', { image: p.dataUrl, admin: r.adminToken });
+            map[p.token] = d.url;
+          } catch (e) { failed++; }
+        }
+        const swap = (s) => String(s || '').replace(/pending-image-\d+/g, tk => map[tk] || tk);
+        try {
+          await api('/api/t/' + r.id + '/edit_info', {
+            admin: r.adminToken,
+            description: swap(document.getElementById('cDesc').value),
+            rewards: swap(document.getElementById('cRewards').value),
+            sponsors: swap(document.getElementById('cSponsors').value),
+            lobbyOptions: swap(document.getElementById('cLobby').value)
+          });
+        } catch (e) { failed++; }
+        if (failed) toast(failed + ' image(s) could not be attached — add them again on the Admin tab', true);
+        _pendingCreateImages = [];
+      }
       history.pushState(null, '', '/t/' + r.id);
       route();
       toast('Tournament created — you are the organizer on this browser');
@@ -680,22 +730,28 @@ async function renderTournament() {
   maybePromptOrganizerClaim();
   maybePromptLateSignup();
   stopPoll();
-  pollTimer = setInterval(async () => {
-    if (document.getElementById('modalRoot').innerHTML) return; // modal open
-    if (formHasFocus()) return;                                  // user is typing
-    try {
-      const tok = viewToken();
-      const fresh = await api('/api/t/' + tourneyId() + (tok ? '?token=' + encodeURIComponent(tok) : ''));
-      const snap = JSON.stringify(fresh);
-      if (snap === lastSnapshot) return;                         // nothing changed
-      T = fresh;
-      lastSnapshot = snap;
-      // The chat tab manages its own live updates and remembers the open room; a full redraw here
-      // would rebuild the room list and yank the user back to Global. Keep data fresh, don't repaint.
-      if (currentTab === 'chat') return;
-      drawTournament();
-    } catch (e) {}
-  }, 4000);
+  // A background tab polls nobody: it costs the server bandwidth and shows no one anything.
+  pollTimer = setInterval(() => { if (!document.hidden) pollOnce(); }, 4000);
+}
+
+// One poll pass. Also fired the moment a hidden tab becomes visible again, so the pause below
+// can never leave someone looking at a stale bracket.
+async function pollOnce() {
+  if (!tourneyId()) return;
+  if (document.getElementById('modalRoot').innerHTML) return;   // modal open
+  if (formHasFocus()) return;                                    // user is typing
+  try {
+    const tok = viewToken();
+    const fresh = await api('/api/t/' + tourneyId() + (tok ? '?token=' + encodeURIComponent(tok) : ''));
+    const snap = JSON.stringify(fresh);
+    if (snap === lastSnapshot) return;                           // nothing changed
+    T = fresh;
+    lastSnapshot = snap;
+    // The chat tab manages its own live updates and remembers the open room; a full redraw here
+    // would rebuild the room list and yank the user back to Global. Keep data fresh, don't repaint.
+    if (currentTab === 'chat') return;
+    drawTournament();
+  } catch (e) {}
 }
 
 // ---- "it's your turn" banner ----

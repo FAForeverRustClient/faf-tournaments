@@ -308,6 +308,7 @@ tbody tr:hover { background: #ffffff05; }
 .datebar .db-value { font-size: 14px; color: var(--text); }
 .datebar button { margin-left: auto; }
 .tdate { color: var(--amber); }
+.tprize { color: var(--green); font-weight: 600; }
 .tcat { color: var(--amber); font-size: 13px; font-weight: normal; }
 .dctag { color: var(--muted, #8a97a8); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
 .seedlist { list-style: none; margin: 0; padding: 0; }
@@ -475,7 +476,12 @@ tbody tr:hover { background: #ffffff05; }
 .chat-compact .chat-log { height: clamp(240px, 45vh, 420px); }
 .chat-msg { font-size: 13px; }
 .chat-who { font-weight: 700; color: var(--blue); }
-.chat-time { color: var(--muted); font-size: 10px; margin-left: 6px; font-family: var(--mono); }
+.chat-time { color: var(--muted); font-size: 10px; margin-left: 6px; font-family: var(--mono); cursor: help; }
+/* day separator so a message's date is obvious without stamping it on every line */
+.chat-day { display: flex; align-items: center; gap: 10px; margin: 12px 0 8px; }
+.chat-day::before, .chat-day::after { content: ""; flex: 1; height: 1px; background: #2a3d55; }
+.chat-day span { color: var(--muted); font-size: 10px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+.chat-day:first-child { margin-top: 0; }
 .chat-mod { margin-left: 8px; }
 .chat-mod a { color: var(--muted); font-size: 11px; margin-left: 6px; }
 .chat-mod a:hover { color: #ff6369; }
@@ -621,6 +627,22 @@ tbody tr:hover { background: #ffffff05; }
 .tc-req-btns { white-space: nowrap; }
 .tc-pending { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
 .modal-wide { max-width: 760px; }
+.modal-mid { max-width: 640px; }
+/* spawn number toggles in the map editor */
+.spawn-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.spawn-chip {
+  min-width: 30px; padding: 4px 6px; border-radius: 4px; cursor: pointer;
+  background: #16202c; border: 1px solid #35506e; color: var(--muted);
+  font: inherit; font-size: 12px; line-height: 1.2;
+}
+.spawn-chip:hover { border-color: var(--blue); color: var(--text); }
+.spawn-chip.on { background: #1d3a5c; border-color: var(--blue); color: var(--text); font-weight: 600; }
+/* structured map spec lines, shown above the free-text description */
+.mapdb-desc-spec, .map-desc-spec {
+  font-size: 12px; line-height: 1.5; color: var(--text);
+  margin-bottom: 6px; white-space: normal;
+}
+.map-desc-spec { font-size: 13px; }
 .ic-body .art-img, .art-preview .art-img { display: block; max-width: 100%; max-height: 420px; border-radius: 4px; border: 1px solid var(--line-solid); margin: 8px 0; }
 .art-preview { margin-top: 6px; padding: 12px 14px; border: 1px solid var(--line-solid); border-radius: 4px; background: #0c121980; min-height: 60px; }
 

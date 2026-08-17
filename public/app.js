@@ -142,6 +142,16 @@ function siteAdmin() { return (fafAuth.user && fafAuth.user.siteAdmin) ? 'sitead
 // The bar above is otherwise only drawn on navigation, so its "your turn to ban/pick" text
 // could go stale while a veto progresses elsewhere. Keep it current.
 setInterval(() => { try { refreshPending(); } catch (e) {} }, 30000);
+// The tournament and chat polls stand down while the tab is hidden. Catch up the instant it comes
+// back, so returning to the tab never shows a stale bracket or a missing message. The 30s alert
+// poll above deliberately keeps running in the background: someone waiting on their veto turn
+// should still get the banner with the tab tucked away.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  try { refreshPending(); } catch (e) {}
+  try { if (typeof pollOnce === 'function') pollOnce(); } catch (e) {}
+  try { if (typeof _chatPollNow === 'function' && _chatPollNow) _chatPollNow(); } catch (e) {}
+});
 // FAF login state, populated by refreshFafAuth() on load. fafAuth = { enabled, user:{fafId,fafName}|null }
 let fafAuth = { enabled: false, user: null };
 // the effective logged-in name: a verified FAF session wins over the manual name
@@ -230,15 +240,47 @@ function mapChip(id, cls) {
   const hasInfo = m && (m.image || m.description);
   return '<span class="veto-map ' + (cls || '') + (hasInfo ? ' has-info' : '') + '"' + (hasInfo ? ' data-map-info="' + esc(id) + '"' : '') + '>' + esc(name) + '</span>';
 }
+// ---------- structured map spec ----------
+// Spawn layout stored as data rather than free text. Rendered as labelled lines above the
+// free-text description; a field left empty is omitted entirely rather than printed as "none",
+// so an unused option adds no clutter.
+const MAP_SPAWN_MAX = 16;
+const MAP_SIZES = ['5x5', '10x10', '20x20', '40x40', '81x81'];
+const MAP_SPEC_FIELDS = [
+  ['t1', 'Spawns Team 1'],
+  ['t2', 'Spawns Team 2'],
+  ['closed', 'Closed Spawns'],
+  ['closedMex', 'Closed Spawns Mex']
+];
+function mapSpecLines(m) {
+  const s = m && m.spec;
+  if (!s) return [];
+  const out = [];
+  for (const f of MAP_SPEC_FIELDS) {
+    const v = s[f[0]];
+    if (Array.isArray(v) && v.length) out.push(f[1] + ': ' + v.join(', '));
+  }
+  if (s.size) out.push('Mapsize: ' + s.size + ' km');
+  return out;
+}
+// The spec lines plus the free-text description, as safe HTML. Either part may be absent.
+function mapSpecHTML(m, cls) {
+  const lines = mapSpecLines(m);
+  const spec = lines.length ? '<div class="' + cls + '-spec">' + lines.map(l => esc(l)).join('<br>') + '</div>' : '';
+  const desc = (m && m.description) ? '<div class="' + cls + '">' + esc(m.description) + '</div>' : '';
+  return spec + desc;
+}
+
 // open a lightbox with the map's preview image (enlargeable) and description
 function showMapInfo(id) {
   const m = mapObj(id);
   if (!m) return;
   const hasImg = !!m.image;
+  const info = mapSpecHTML(m, 'map-desc');
   const body = `
     <h3>${esc(m.name)}</h3>
     ${hasImg ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}" class="map-lightbox-img" id="mapBig">` : ''}
-    ${m.description ? `<div class="map-desc">${esc(m.description)}</div>` : '<p class="muted small">No description.</p>'}
+    ${info || '<p class="muted small">No description.</p>'}
     <div class="actions"><button class="btn ghost" id="miClose">Close</button></div>`;
   modal(body, root => {
     root.querySelector('#miClose').onclick = closeModal;
@@ -513,7 +555,7 @@ function planSummary(t) {
 
 function modal(html, onMount, opts) {
   const root = document.getElementById('modalRoot');
-  const wide = opts && opts.wide ? ' modal-wide' : '';
+  const wide = opts && opts.wide ? ' modal-wide' : (opts && opts.mid ? ' modal-mid' : '');
   root.innerHTML = '<div class="modal-bg"><div class="modal' + wide + '">' + html + '</div></div>';
   root.querySelector('.modal-bg').addEventListener('mousedown', e => {
     if (e.target.classList.contains('modal-bg')) closeModal();

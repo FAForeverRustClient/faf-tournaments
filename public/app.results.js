@@ -403,6 +403,8 @@ async function drawAdmin(el) {
     const dv = splitDateTimeUTC(T.eventDate || '');
     const su = splitDateTimeUTC(T.signupOpensAt || '');
     const sc = splitDateTimeUTC(T.signupClosesAt || '');
+    // checkInDeadline is stored as an epoch ms number, unlike the other three (ISO strings).
+    const ci = splitDateTimeUTC(T.checkInDeadline ? new Date(T.checkInDeadline).toISOString() : '');
     html += `<div class="panel section"><h2>Tournament details</h2>
       <p class="muted small">Times are in <strong>UTC</strong> and display in each viewer's own time zone. All editable at any time.</p>
       <label>Tournament name</label>
@@ -413,6 +415,8 @@ async function drawAdmin(el) {
       <div style="display:flex;gap:8px"><input type="date" id="td_sudate" value="${esc(su.date)}" style="flex:1"><input type="time" id="td_sutime" value="${esc(su.time)}" style="width:130px"></div>
       <label style="margin-top:12px">Signups close at <span class="muted small">(auto-closes signups; team forming &amp; picks still work. Empty = manual)</span></label>
       <div style="display:flex;gap:8px"><input type="date" id="td_scdate" value="${esc(sc.date)}" style="flex:1"><input type="time" id="td_sctime" value="${esc(sc.time)}" style="width:130px"></div>
+      <label style="margin-top:12px">Check-in deadline <span class="muted small">(any member of a full team can check it in. Empty = no check-in; teams enter by signup order)</span></label>
+      <div style="display:flex;gap:8px"><input type="date" id="td_cidate" value="${esc(ci.date)}" style="flex:1"><input type="time" id="td_citime" value="${esc(ci.time)}" style="width:130px"></div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
         <div style="flex:1;min-width:150px"><label>Min teams / entrants <span class="muted small">(display only)</span></label><input type="number" id="td_min" min="0" max="128" value="${T.minTeams || 0}"></div>
         <div style="flex:1;min-width:150px"><label>Max teams / entrants <span class="muted small">(0 = unlimited)</span></label><input type="number" id="td_max" min="0" max="128" value="${T.maxTeams || 0}"></div>
@@ -774,6 +778,7 @@ async function drawAdmin(el) {
         info.eventDate = combineDateTimeUTC(dd, document.getElementById('td_time'));
         info.signupOpensAt = combineDateTimeUTC(document.getElementById('td_sudate'), document.getElementById('td_sutime'));
         info.signupClosesAt = combineDateTimeUTC(document.getElementById('td_scdate'), document.getElementById('td_sctime'));
+        info.checkInDeadline = combineDateTimeUTC(document.getElementById('td_cidate'), document.getElementById('td_citime'));
         info.minTeams = document.getElementById('td_min').value;
         info.maxTeams = document.getElementById('td_max').value;
       }
@@ -1247,7 +1252,8 @@ function clearUnreadFor(room) {
 let _chatTimer = null;
 let _chatMsgs = [];
 
-function stopChatPoll() { if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null; } }
+let _chatPollNow = null;
+function stopChatPoll() { if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null; } _chatPollNow = null; }
 
 async function chatRooms() {
   const tok = viewToken();
@@ -1264,14 +1270,22 @@ function highlightMentions(text) {
 
 function renderChatMessages(container) {
   const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+  // Timestamps used to be raw browser-local hours, which ignored the viewer's chosen time zone
+  // and gave no clue what DAY a message was from. Now: a divider whenever the day changes, and
+  // the full date/time on hover, both honouring the viewer's tz and format settings.
+  let lastDay = '';
   container.innerHTML = _chatMsgs.map(m => {
-    const t = new Date(m.at);
-    const time = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
-    if (m.sys) return `<div class="chat-sys">\u{1F3B2} ${esc(m.text)} <span class="chat-time">${time}</span></div>`;
+    const iso = new Date(m.at).toISOString();
+    const time = fmtTimePart(new Date(m.at), resolvedTZ());
+    const full = fmtDateTime(iso);
+    const day = fmtDatePart(new Date(m.at), resolvedTZ());
+    let divider = '';
+    if (day !== lastDay) { divider = `<div class="chat-day"><span>${esc(day)}</span></div>`; lastDay = day; }
+    if (m.sys) return divider + `<div class="chat-sys">\u{1F3B2} ${esc(m.text)} <span class="chat-time" title="${esc(full)}">${esc(time)}</span></div>`;
     const org = viewerIsOrganizer();
-    return `<div class="chat-msg" data-mid="${esc(m.id)}">
+    return divider + `<div class="chat-msg" data-mid="${esc(m.id)}">
       <span class="chat-who">${esc(m.who)}</span>
-      <span class="chat-time">${time}</span>
+      <span class="chat-time" title="${esc(full)}">${esc(time)}</span>
       ${org && m.fafId ? `<span class="chat-mod"><a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a></span>` : ''}
       <div class="chat-text">${highlightMentions(m.text)}</div>
     </div>`;
@@ -1417,7 +1431,9 @@ async function mountChat(host, room, label) {
     }
   };
 
+  _chatPollNow = () => { if (_chatRoom === room) load(true); };
   _chatTimer = setInterval(() => {
+    if (document.hidden) return;                       // tab in the background
     if (_chatRoom !== room) { stopChatPoll(); return; }
     if (document.activeElement === inp && inp.value) { /* still poll, just don't steal focus */ }
     load(true);

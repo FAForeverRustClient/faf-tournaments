@@ -5,6 +5,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const zlib = require('zlib');
 const challonge = require('./challonge');
 // Leaf helpers now live in lib/util.js (see that file). Destructured here so
 // existing call sites are unchanged.
@@ -143,6 +145,18 @@ function loadDB() {
     }
     if (backfillMatchLinks(t)) changed = true;
   }
+  // Sessions created before token encryption hold plaintext access/refresh tokens. Re-wrap them
+  // in place on first boot. Without a key (OAuth not configured) they are left untouched rather
+  // than destroyed - there is nothing to protect them with and nothing using them either.
+  if (TOKEN_KEY) {
+    for (const sid of Object.keys(db.sessions || {})) {
+      const s = db.sessions[sid];
+      if (!s || !s.faf || s.faf.enc) continue;
+      if (!s.faf.access && !s.faf.refresh) continue;
+      setSessTokens(s, s.faf.access || null, s.faf.refresh || null, s.faf.exp || 0);
+      changed = true;
+    }
+  }
   if (changed) { try { saveDB(); } catch (e) {} }
 }
 
@@ -163,6 +177,63 @@ function saveDB() {
       console.error('save failed:', e.message);
     }
   }, 150);
+}
+
+// ---------- FAF token encryption ----------
+// A logged-in session carries the player's FAF access + refresh tokens so the server can read
+// their rating on their behalf. Those are live credentials, so they are encrypted at rest:
+// db.json (and any backup or copy of it) holds ciphertext only.
+//
+// The key is derived from FAF_CLIENT_SECRET, which is already required for OAuth to work at all
+// and already lives only in the container environment, never on disk beside the data. Nothing new
+// to configure. Consequence: rotating the FAF client secret makes existing session tokens
+// undecryptable, which logs everyone out (they just log in again). Losing the key is never worse
+// than that - tokens are disposable, no tournament data depends on them.
+const TOKEN_KEY = FAF_CLIENT_SECRET
+  ? crypto.createHash('sha256').update('faf-tourney:session-tokens:v1:' + FAF_CLIENT_SECRET).digest()
+  : null;
+
+// { access, refresh } -> "v1:iv:tag:ciphertext" (base64url). Null key (no OAuth configured) or
+// nothing worth storing returns null, and the caller simply stores no tokens.
+function encTokens(access, refresh) {
+  if (!TOKEN_KEY || (!access && !refresh)) return null;
+  try {
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv('aes-256-gcm', TOKEN_KEY, iv);
+    const body = Buffer.concat([c.update(JSON.stringify({ a: access || null, r: refresh || null }), 'utf8'), c.final()]);
+    return 'v1:' + b64url(iv) + ':' + b64url(c.getAuthTag()) + ':' + b64url(body);
+  } catch (e) { return null; }
+}
+
+// Inverse. Any failure (rotated secret, corrupted value, truncated file) returns empty tokens
+// rather than throwing: callers already treat a missing token as "log out and back in", which is
+// the correct outcome when we genuinely can no longer read the credential.
+function decTokens(blob) {
+  if (!TOKEN_KEY || typeof blob !== 'string' || blob.slice(0, 3) !== 'v1:') return { access: null, refresh: null };
+  try {
+    const p = blob.split(':');
+    if (p.length !== 4) return { access: null, refresh: null };
+    const d = crypto.createDecipheriv('aes-256-gcm', TOKEN_KEY, Buffer.from(p[1], 'base64url'));
+    d.setAuthTag(Buffer.from(p[2], 'base64url'));
+    const out = JSON.parse(Buffer.concat([d.update(Buffer.from(p[3], 'base64url')), d.final()]).toString('utf8'));
+    return { access: out.a || null, refresh: out.r || null };
+  } catch (e) { return { access: null, refresh: null }; }
+}
+
+// Read a session's tokens, transparently handling both the encrypted form and the legacy
+// plaintext one (a session created before this change and not yet migrated).
+function sessTokens(sess) {
+  if (!sess || !sess.faf) return { access: null, refresh: null };
+  if (sess.faf.enc) return decTokens(sess.faf.enc);
+  return { access: sess.faf.access || null, refresh: sess.faf.refresh || null };
+}
+
+// Write tokens back in encrypted form, clearing any legacy plaintext fields.
+function setSessTokens(sess, access, refresh, exp) {
+  if (!sess) return;
+  const enc = encTokens(access, refresh);
+  sess.faf = enc ? { enc, exp } : { access, refresh, exp };
+  return sess.faf;
 }
 
 // ---------- helpers ----------
@@ -539,6 +610,57 @@ function pendingAccessRequests() {
   return out;
 }
 
+// A pool can be scheduled to reveal itself (e.g. maps go public the morning of the event). There
+// is no background timer, mirroring how tournament scheduled publishing works: the sweep runs
+// whenever the tournament is read, which covers every way a pool becomes visible.
+function sweepPoolPublishes(t) {
+  if (!t || !Array.isArray(t.mapPools)) return false;
+  const now = Date.now();
+  let changed = false;
+  for (const pool of t.mapPools) {
+    if (pool.published || !pool.publishAt) continue;
+    const at = new Date(pool.publishAt).getTime();
+    if (isNaN(at) || now < at) continue;
+    pool.published = 1;
+    pool.publishAt = null;
+    // Same rule as a manual publish: a visible pool's maps must be visible too.
+    for (const id of (pool.mapIds || [])) { const mp = mapById(t, id); if (mp && !mp.published) mp.published = true; }
+    tpush(t, 'Scheduled', 'pool "' + pool.name + '" published on schedule');
+    changed = true;
+  }
+  return changed;
+}
+
+// ---------- structured map spec ----------
+// Spawn layout as data rather than free text, so it renders consistently and can be filtered on
+// later. Everything is optional: an unset field is simply omitted when the description is shown,
+// which is why empty arrays are stored as empty rather than as a literal "none".
+const MAP_SPAWN_MAX = 16;
+const MAP_SIZES = ['5x5', '10x10', '20x20', '40x40', '81x81'];
+function cleanSpawnList(v) {
+  if (!Array.isArray(v)) return [];
+  const seen = {}, out = [];
+  for (const x of v) {
+    const n = parseInt(x, 10);
+    if (!isFinite(n) || n < 1 || n > MAP_SPAWN_MAX || seen[n]) continue;
+    seen[n] = 1; out.push(n);
+  }
+  return out.sort((a, b) => a - b);
+}
+function cleanMapSpec(v) {
+  if (!v || typeof v !== 'object') return null;
+  const spec = {
+    t1: cleanSpawnList(v.t1),
+    t2: cleanSpawnList(v.t2),
+    closed: cleanSpawnList(v.closed),
+    closedMex: cleanSpawnList(v.closedMex),
+    size: MAP_SIZES.indexOf(String(v.size || '')) >= 0 ? String(v.size) : ''
+  };
+  // Nothing set at all -> store null rather than an object of empties.
+  if (!spec.t1.length && !spec.t2.length && !spec.closed.length && !spec.closedMex.length && !spec.size) return null;
+  return spec;
+}
+
 // ---------- map database ----------
 // Each map: { id, name, image (filename in MAP_IMG_DIR or null), description, published }
 // map ids -> display objects (for serialization); unknown ids are dropped
@@ -847,7 +969,7 @@ function publicView(t) {
     rounds: t.rounds || 0,
     maps: t.maps || {},
     mapDb: (t.mapDb || []).map(publicMapView),
-    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice(), sequence: (p.sequence || []).slice(), bo: p.bo || ((p.sequence || []).filter(x => x.action === 'pick').length + 1), published: p.published ? 1 : 0 })),
+    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice(), sequence: (p.sequence || []).slice(), bo: p.bo || ((p.sequence || []).filter(x => x.action === 'pick').length + 1), published: p.published ? 1 : 0, publishAt: p.publishAt || null })),
     poolAssign: t.poolAssign || {},
     players: t.players,
     teams: t.teams.map(x => ({
@@ -1072,25 +1194,27 @@ function rsqlQuote(v) { return '"' + String(v).replace(/\\/g, '\\\\').replace(/"
 // refresh token if it has expired. Null if the session predates token storage (re-login needed).
 async function fafValidToken(sess) {
   if (!sess || !sess.faf) return null;
-  if (sess.faf.access && sess.faf.exp && Date.now() < sess.faf.exp - 30000) return sess.faf.access;
-  if (!sess.faf.refresh) return sess.faf.access || null;
+  // Tokens are stored encrypted; decrypt once here, at the only point that reads them.
+  const cur = sessTokens(sess);
+  if (cur.access && sess.faf.exp && Date.now() < sess.faf.exp - 30000) return cur.access;
+  if (!cur.refresh) return cur.access || null;
   try {
     const form = new URLSearchParams({
-      grant_type: 'refresh_token', refresh_token: sess.faf.refresh,
+      grant_type: 'refresh_token', refresh_token: cur.refresh,
       client_id: FAF_CLIENT_ID, client_secret: FAF_CLIENT_SECRET
     }).toString();
     const r = await httpsRequest({
       host: 'hydra.faforever.com', path: '/oauth2/token', method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }
     }, form);
-    if (r.status !== 200) return sess.faf.access || null;
+    if (r.status !== 200) return cur.access || null;
     const j = JSON.parse(r.text);
-    if (j.access_token) sess.faf.access = j.access_token;
-    if (j.refresh_token) sess.faf.refresh = j.refresh_token;
-    sess.faf.exp = Date.now() + ((j.expires_in || 3600) * 1000);
+    const access = j.access_token || cur.access;
+    const refresh = j.refresh_token || cur.refresh;
+    setSessTokens(sess, access, refresh, Date.now() + ((j.expires_in || 3600) * 1000));
     saveDB();
-    return sess.faf.access;
-  } catch (e) { return sess.faf.access || null; }
+    return access;
+  } catch (e) { return cur.access || null; }
 }
 
 // One journal lookup, mirroring the FAF downloader's Rating-lookup tab. rating = the entry's
@@ -1340,10 +1464,8 @@ async function handleAuth(req, res, url) {
     // Keep the FAF token bundle so we can read the player's own data (e.g. rating) on their behalf.
     pruneSessions();
     const sid = randToken(32);
-    db.sessions[sid] = {
-      fafId: ident.fafId, fafName: ident.fafName, exp: Date.now() + SESSION_TTL_MS,
-      faf: { access: accessToken, refresh: tok.refresh_token || null, exp: Date.now() + ((tok.expires_in || 3600) * 1000) }
-    };
+    db.sessions[sid] = { fafId: ident.fafId, fafName: ident.fafName, exp: Date.now() + SESSION_TTL_MS };
+    setSessTokens(db.sessions[sid], accessToken, tok.refresh_token || null, Date.now() + ((tok.expires_in || 3600) * 1000));
     saveDB();
     setSessionCookie(res, sid, SESSION_TTL_MS);
     const dest = (pending.returnTo && pending.returnTo.charAt(0) === '/') ? pending.returnTo : '/';
@@ -2136,7 +2258,8 @@ async function handleAPI(req, res, url) {
         minRating: t.minRating != null ? t.minRating : null,
         maxRating: t.maxRating != null ? t.maxRating : null,
         maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null,
-        ratingCap: t.ratingCap != null ? t.ratingCap : null
+        ratingCap: t.ratingCap != null ? t.ratingCap : null,
+        prize: (t.prize && t.prize.currency && t.prize.amount != null) ? t.prize : null
       }));
     return json(res, 200, list);
   }
@@ -2297,7 +2420,9 @@ async function handleAPI(req, res, url) {
     if (method === 'GET' && !sub) {
       const tok = url.searchParams.get('token');
       sweepQualifications();   // opening a parent applies any qualifier whose child just finished
-      if (noteFinished(t)) saveDB();   // record when it ended (starts the chat-lock clock)
+      let dirty = noteFinished(t);          // record when it ended (starts the chat-lock clock)
+      if (sweepPoolPublishes(t)) dirty = true;   // reveal any pool whose scheduled time has passed
+      if (dirty) saveDB();
       const view = publicView(t);
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
@@ -3793,6 +3918,9 @@ async function handleAPI(req, res, url) {
         return bad(res, 'A Bo' + bo + ' pool needs exactly ' + (bo - 1) + ' pick step' + (bo - 1 === 1 ? '' : 's') + ' (plus the decider). This order has ' + picks + '.');
       }
       let pool;
+      // A scheduled reveal. Stored as UTC; cleared automatically once it fires, and ignored
+      // outright if the pool is already published (nothing left to reveal).
+      const publishAt = b.publishAt !== undefined ? (cleanDate(b.publishAt) || null) : undefined;
       if (b.id) {
         pool = poolById(t, b.id);
         if (!pool) return bad(res, 'Pool not found');
@@ -3801,11 +3929,13 @@ async function handleAPI(req, res, url) {
         pool.sequence = seq;
         pool.bo = bo;
         if (b.published !== undefined) pool.published = b.published ? 1 : 0;
+        if (publishAt !== undefined) pool.publishAt = publishAt;
       } else {
-        pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq, bo: bo, published: b.published ? 1 : 0 };
+        pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq, bo: bo, published: b.published ? 1 : 0, publishAt: publishAt || null };
         t.mapPools.push(pool);
       }
       if (pool.published) {
+        pool.publishAt = null;
         for (const id of (pool.mapIds || [])) { const mp = mapById(t, id); if (mp && !mp.published) mp.published = true; }
       }
       tlog(t, req, b.admin, (b.id ? 'edited pool "' : 'created pool "') + pool.name + '" (' + ids.length + ' maps, Bo' + pool.bo + ')');
@@ -3909,6 +4039,9 @@ async function handleAPI(req, res, url) {
       const pool = poolById(t, b.id);
       if (!pool) return bad(res, 'Pool not found');
       pool.published = b.published ? 1 : 0;
+      // A manual decision overrides a pending schedule either way: publishing fulfils it,
+      // hiding means the organizer no longer wants it to appear on its own.
+      pool.publishAt = null;
       let alsoPublished = 0;
       if (pool.published) {
         // A published pool is visible to players, so its maps must be visible too — otherwise
@@ -3992,11 +4125,12 @@ async function handleAPI(req, res, url) {
         map = mapById(t, b.id);
         if (!map) { deleteMapImage(newImageFile); return bad(res, 'Map not found'); }
       } else {
-        map = { id: 'map' + uid(5), name: '', image: null, description: '', published: 0 };
+        map = { id: 'map' + uid(5), name: '', image: null, description: '', spec: null, published: 0 };
         t.mapDb.push(map);
       }
       map.name = name;
       map.description = description;
+      map.spec = cleanMapSpec(b.spec);
       map.published = published;
       if (newImageFile) { deleteMapImage(map.image); map.image = newImageFile; }
       else if (doRemoveImage) { deleteMapImage(map.image); map.image = null; }
@@ -4630,6 +4764,10 @@ const MIME = {
   '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2'
 };
 
+// path -> gzipped buffer (or null if compression failed). Bounded by the number of files in
+// public/, which is fixed at 7.
+const GZ_CACHE = new Map();
+
 function serveStatic(req, res, url) {
   let p = url.pathname;
   if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/editor' || p === '/importer' || p === '/hall' || p === '/faq' || p === '/series' || p.startsWith('/series/') || p.startsWith('/t/')) p = '/index.html';
@@ -4638,10 +4776,28 @@ function serveStatic(req, res, url) {
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); return res.end('not found'); }
     if (file.endsWith('index.html')) data = data.toString().replace(/__V__/g, BOOT);
-    res.writeHead(200, {
+    const h = {
       'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': 'no-store'
-    });
+    };
+    // The client pulls ~550 KB of JS/CSS on every load. gzip takes that to ~140 KB. The container
+    // re-clones the repo on start, so these files cannot change while the process is alive -
+    // compress each one once and serve the cached buffer from then on.
+    if (/\bgzip\b/.test(String((req.headers && req.headers['accept-encoding']) || '')) && /\.(js|css|html|svg)$/.test(file)) {
+      let gz = GZ_CACHE.get(file);
+      if (gz === undefined) {
+        try { gz = zlib.gzipSync(Buffer.from(data), { level: 6 }); } catch (e) { gz = null; }
+        // index.html carries the per-boot cache-buster, so it is never worth caching compressed.
+        if (!file.endsWith('index.html')) GZ_CACHE.set(file, gz);
+      }
+      if (gz) {
+        h['Content-Encoding'] = 'gzip';
+        h['Vary'] = 'Accept-Encoding';
+        res.writeHead(200, h);
+        return res.end(gz);
+      }
+    }
+    res.writeHead(200, h);
     res.end(data);
   });
 }

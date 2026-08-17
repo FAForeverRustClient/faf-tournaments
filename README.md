@@ -42,6 +42,8 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 
 ### Maps, pools, and vetoes
 - A per-tournament map database with preview images, descriptions, and publish/hide. On the Maps tab, pools are listed first, then an "All maps" grid. A map card shows "Played in [rounds]" only for direct round assignments, and "In pool: [name]" for pool membership.
+- **Structured spawn info.** Each map optionally carries spawns for team 1 and team 2, closed spawns, closed spawn mexes (all picked as 1-16 toggles) and a map size. These render as labelled lines above the free-text description everywhere the map appears. A field left empty is omitted entirely rather than printed as "none", so unused options add no clutter. Anything the fields don't cover (reclaim, author, notes) still goes in the description.
+- Pools can be **published on a schedule**: set a UTC date and time and the pool reveals itself, publishing every map inside it. As with tournament scheduled publishing there is no background timer - the sweep runs whenever the tournament is read. Publishing or hiding a pool by hand clears any pending schedule.
 - Named map pools, each with its own best-of and its own ban/pick order. The edit-pool dialog shows a live map count and the number of ban/pick steps required. A pool's sequence length is tied to its size so that exactly one map is left as the decider, which means one order cannot serve pools of different sizes even at the same best-of.
 - Publishing a pool also publishes every hidden map inside it (a published pool is shown to players, so its maps must be visible too).
 - Pools can be assigned to whole rounds or to specific matches, including before the bracket is generated (rounds are projected from the expected team count). Reassigning a pool re-initialises the veto on affected ready matches, so a fixed pool takes effect immediately.
@@ -95,6 +97,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Deleting a series never deletes tournaments - they simply stop being grouped.
 
 ### Chat
+- Messages are grouped under a **day divider**, with the full date and time on hover. Timestamps follow the viewer's chosen time zone and time format like the rest of the site.
 - Per-tournament chat with a Global room and a room per match (created only once both teams are known). Match chats for finished matches collapse into a "Completed matches" group, minimised by default.
 - `@name` mention autocomplete (Discord-style): type `@`, a filtered dropdown of players and team names appears, and the mention is highlighted in the message. A mentioned FAF player who is signed up gets a red badge on that room and on the CHAT tab until they read it.
 - `!organizer` (or the ping button) flags a room for the organizers; `!roll` posts a 1-100 roll. A flagged room also raises a banner on the organizer's Overview, like a veto turn does.
@@ -124,7 +127,9 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - A draft can be published immediately or **scheduled**: enter a UTC date and time and it publishes itself. There is no background timer - the schedule is applied whenever tournaments are listed, which covers every way a tournament becomes visible. A pending schedule is shown on the draft banner and can be cancelled.
 
 ### Dates and time zones
-- An optional **overall cash prize** (currency plus a number, USD/EUR/RUB) is stored separately from the free-text Rewards and shown as its own box at the top of them, so it reads at a glance and can be reused in listings. The amount accepts digits only.
+- An optional **overall cash prize** (currency plus a number, USD/EUR/RUB) is stored separately from the free-text Rewards and shown as its own box at the top of them, so it reads at a glance and can be reused in listings. The amount accepts digits only. It also appears on every home-page listing, so a prize no longer has to be written into the tournament name.
+- Description, Rewards, Sponsors and Lobby options accept **pasted screenshots and inserted images at creation time**, not only when editing later. There is no tournament to attach an image to until it exists, so images pasted on the host form are held in the browser and uploaded the moment the tournament is created.
+- Event date, signup open/close and the **check-in deadline** are all set together on the Admin tab, in UTC. The Teams tab shows the deadline read-only to players.
 - Optional event date and time (entered in UTC) per tournament, editable any time. When an event date is set, **check-in only opens on the day of the event** - trying earlier tells the player exactly when it opens rather than just failing. Organizers can always check a team in.
 - Stored in UTC, displayed in each viewer's chosen time zone (remembered per browser). The Completed list is ordered most-recent-first.
 - Display settings (the gear icon) also choose the **date format** (`7 Jul 2026`, `07/07/2026`, or `2026-07-07`) and the **time format** (24-hour or 12-hour). These are per browser. Note that the placeholder inside a native date-picker field follows the browser's own locale and cannot be overridden by the site.
@@ -158,6 +163,13 @@ Access is by FAF identity when FAF login is on. The roles:
 
 Plain `http` server, no framework, JSON file storage. The code is split into small modules; there is still no build step and no runtime dependency.
 
+### Bandwidth
+The tournament page polls a full snapshot every 4 seconds, so three measures keep that cheap. All are transparent - no page looks or behaves differently:
+
+- **gzip.** API responses over 1 KB and static JS/CSS are gzipped via Node's built-in `zlib` (no dependency). A 64-player bracket snapshot goes from ~24 KB to ~3.5 KB; the client bundle from ~550 KB to ~140 KB. Static files are compressed once and cached in memory, since the container re-clones on start and they cannot change while the process is alive.
+- **ETag / 304.** Successful GETs carry an ETag hashed from the response body, so a poll that finds nothing changed (the common case) returns an empty 304. This needs `Cache-Control: private, no-cache` rather than `no-store`, which still forces revalidation on every use, so nothing stale is ever shown. The tag is computed from the response built for *that* viewer, so an organizer and a spectator can never share a cache entry.
+- **Hidden tabs stand down.** The 4-second tournament poll and the chat poll skip while `document.hidden`, and fire immediately on `visibilitychange` so returning to the tab never shows a stale bracket. The 30-second alert poll deliberately keeps running in the background, so someone waiting on a veto turn still gets the banner.
+
 ```
 server.js            HTTP layer: router, auth/OAuth, sessions, static + image serving,
                      storage (loadDB/saveDB with self-healing migrations), audit,
@@ -184,7 +196,11 @@ docker-compose.yml
 The client is delivered as several ordinary (non-module) scripts loaded in order; together they run in one shared global scope, exactly as a single file would.
 
 ### Storage
-A single JSON file at `DATA_DIR/db.json`, keyed by `tournaments`, `sessions` (FAF login), `oauthPending`, `auditLog` (capped at 5000), `hostRequests`, `hostAllowed`, `siteAdmins`, `directors`, `editorAllowed`/`editorRequests`, `importerAllowed`/`importerRequests`, `bans`, and `series` (tournament series; each tournament may carry a `seriesId`). Per-user chat `@mention` pings are tracked per tournament. Map preview images are written as binary to `MAP_IMG_DIR` and served from `/map-images/<file>`; `db.json` stores only the filename.
+A single JSON file at `DATA_DIR/db.json`, keyed by `tournaments`, `sessions` (FAF login), `oauthPending`, `auditLog` (capped at 5000), `hostRequests`, `hostAllowed`, `siteAdmins`, `directors`, `editorAllowed`/`editorRequests`, `importerAllowed`/`importerRequests`, `tourneyBans`, `profiles`, `articles`, and `series` (tournament series; each tournament may carry a `seriesId`). Per-user chat `@mention` pings are tracked per tournament. Map preview images are written as binary to `MAP_IMG_DIR` and served from `/map-images/<file>`; `db.json` stores only the filename.
+
+**FAF tokens are encrypted at rest.** A logged-in session carries that player's FAF access and refresh tokens so the server can read their rating on their behalf. Those are live credentials, so they are stored as AES-256-GCM ciphertext (`session.faf.enc`) rather than plain text: a copy or backup of `db.json` exposes no usable token. The key is derived from `FAF_CLIENT_SECRET`, which is already required for OAuth and already lives only in the container environment, so there is nothing extra to configure. Sessions created before this change are re-wrapped automatically on first boot.
+
+Consequence: **rotating the FAF client secret makes existing session tokens unreadable.** Nobody is logged out (identity is stored separately, in the clear) but rating lookups will ask affected users to log out and back in, which mints fresh tokens. Decryption failure is always handled this way rather than by throwing.
 
 On load, `loadDB` runs small self-healing migrations: legacy "premade" tournaments are converted to the create/join/invite model, and teams with stale member ids (from an old withdrawal) are repaired. These only touch data during signup and never remove a team that has real players.
 
