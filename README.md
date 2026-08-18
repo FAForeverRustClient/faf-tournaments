@@ -109,7 +109,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Match chats are also linked from the Bracket and Vetoes tabs.
 
 ### Vetoes tab
-- Shows each match's ban/pick veto. Players see only vetoes for matches their own team is in; organizers, casters (streamer link), tournament directors on official events, and site admins see all.
+- Shows each match's ban/pick veto. Players see only vetoes for matches their own team is in; organizers, casters, tournament directors on official events, and site admins see all.
 - In-progress vetoes are listed first (newest round first), then completed ones (highlighted, with the decided maps).
 - On a **finished** tournament, a Veto statistics panel shows "most banned" and "most played" maps. It is visible only to organizers of that tournament, tournament directors (on official tournaments), and site admins.
 
@@ -155,6 +155,7 @@ Access is by FAF identity when FAF login is on. The roles:
 - **Editor** and **Importer** - request-or-grant roles. A user can request the role and a site admin approves in the Requests tab, or a site admin grants it directly. Importer allows using the Challonge importer; editor allows editing content as configured.
 - **Captains** - with FAF login on, captains act by their FAF identity: they draft on their turn, invite/approve teammates, ban/pick in the veto, report their matches, and get one team rename in team games.
 - **Bans** - site admins and directors can ban FAF accounts from participating.
+- **Caster** - a FAF account granted read access to everything on one tournament: every chat room (and they may post in them), hidden maps and pools, and all vetoes. Zero organizer powers - no Admin tab, no Log, no mutations. Added and removed on the Admin tab by any of that tournament's organizers, by FAF name or id. Exposed to clients as `viewer.caster` on `GET /api/t/<id>`, granted with `add_caster` and revoked with `remove_caster`. This replaced the old `?streamer=<token>` share link, so access is bound to an account and a leaked URL grants nothing.
 - **Everyone else** - the public view is read-only plus signup.
 
 ### API access for the desktop client

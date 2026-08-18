@@ -396,7 +396,7 @@ async function drawAdmin(el) {
   let html = `<div class="panel section"><h2>Share links</h2>
     ${copyRow('Public link — share with everyone', base)}
     ${copyRow('Late-signup link — lets someone sign up after signups close (they must log in)', base + '?late=' + secrets.lateToken)}
-    ${secrets.streamerToken ? copyRow('Streamer/caster link — read access to EVERYTHING (all chats, hidden maps & pools) and can post in every chat, but zero organizer powers: no Admin tab, no Log, no player changes. For casters & production.', base + '?streamer=' + secrets.streamerToken) : ''}
+
   </div>`;
 
   { // Tournament details — name, dates, team counts — editable any time
@@ -479,6 +479,17 @@ async function drawAdmin(el) {
         ${fafAuth.user && (sa || (fafAuth.user.director && T.category === 'official')) && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf" style="margin-bottom:10px">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
         <div id="orgAdd"></div>
       </div></div>`;
+
+    const casters = T.casters || [];
+    html += `<div class="panel section"><h2>Casters</h2>
+      <p class="muted small">Read access to everything on this tournament: every chat room (and they can post in them), hidden maps and pools, and all vetoes. No organizer powers at all \u2014 no Admin tab, no Log, no player changes.</p>
+      <p class="muted small">Bound to a FAF account, so it works in the desktop client too. Any organizer can add or remove a caster.</p>
+      ${casters.length ? '' : '<div class="empty" style="margin:10px 0">No casters yet. Add one below by FAF name or id.</div>'}
+      <div class="pick-rows" style="margin-top:10px">${casters.map(c => `<div class="pick-row on" style="cursor:default">
+        <span class="pr-name">${esc(c.name)} <span class="muted small">FAF id ${esc(c.fafId)}</span></span>
+        <button class="btn danger small" data-casterdel="${esc(c.fafId)}">Remove</button>
+      </div>`).join('')}</div>
+      <div style="margin-top:10px"><div id="casterAdd"></div></div></div>`;
   }
 
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0) {
@@ -889,6 +900,22 @@ async function drawAdmin(el) {
       } catch (e) { toast(e.message, true); }
     };
   }, { tournamentId: T.id });
+  const casterAddBox = document.getElementById('casterAdd');
+  if (casterAddBox) adminLookupBox(casterAddBox, (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="casterAddGo">Make caster</button>`;
+    result.querySelector('#casterAddGo').onclick = async () => {
+      try {
+        await api('/api/t/' + T.id + '/add_caster', { fafId: found.fafId, name: found.name, admin: adminToken() });
+        toast('Caster added'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  }, { tournamentId: T.id });
+  el.querySelectorAll('[data-casterdel]').forEach(b => b.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/remove_caster', { fafId: b.dataset.casterdel, admin: adminToken() });
+      toast('Caster removed'); await refresh();
+    } catch (e) { toast(e.message, true); }
+  });
   el.querySelectorAll('[data-orgvis]').forEach(b => b.onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/organizer_visibility', { fafId: b.dataset.orgvis, hidden: b.dataset.hidden === '1' ? 0 : 1, admin: adminToken() });

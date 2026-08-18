@@ -724,7 +724,7 @@ async function renderTournament() {
     app.innerHTML = '<div class="page"><div class="panel"><div class="empty">Tournament not found.</div><a href="/">← Back</a></div></div>';
     return;
   }
-  drawTopbar(viewerIsOrganizer() ? 'ORGANIZER' : (T.viewer && T.viewer.streamer ? 'STREAMER' : ''));
+  drawTopbar(viewerIsOrganizer() ? 'ORGANIZER' : (T.viewer && T.viewer.caster ? 'CASTER' : ''));
   lastSnapshot = JSON.stringify(T);
   drawTournament();
   maybePromptOrganizerClaim();
@@ -858,7 +858,7 @@ function drawTournament() {
   const tabs = ['overview', 'news', 'chat', 'players', 'teams', 'bracket'];
   // Vetoes tab appears once the bracket is running and vetoes are enabled
   const vetoActive = T.veto && T.veto.enabled && (T.status === 'running' || T.status === 'finished') && T.matches.some(m => m.veto);
-  if (!(T.viewer && (T.viewer.organizer || T.viewer.signedUpPlayerId || T.viewer.memberTeamId || T.viewer.streamer))) {
+  if (!(T.viewer && (T.viewer.organizer || T.viewer.signedUpPlayerId || T.viewer.memberTeamId || T.viewer.caster))) {
     const ci = tabs.indexOf('chat'); if (ci >= 0) tabs.splice(ci, 1);
   }
   // Matches: a flat, observer/streamer-friendly list of every match. Only useful once the

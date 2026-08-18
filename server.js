@@ -771,10 +771,15 @@ function recomputeAllRatings(t) {
   for (const p of (t.players || [])) applyRatingCap(t, p);
 }
 
-// Streamer/caster access: a share link that opens every chat room and marks the viewer
-// as STREAMER, with zero organizer powers (no admin tab, no log, no mutations).
-function isStreamer(t, token) {
-  return !!(token && t.streamerToken && token === t.streamerToken);
+// Caster access: a FAF account granted read access to everything on this tournament (every chat
+// room, hidden maps and pools, all vetoes) with zero organizer powers - no admin tab, no log, no
+// mutations. Granted per tournament by its organizers, the same way co-organizers are.
+// This replaced a share link (`?streamer=<token>`); access is now bound to an account so the
+// desktop client can rely on it and so a leaked URL grants nothing.
+function isCaster(t, req) {
+  const sess = currentSession(req);
+  if (!sess || !sess.fafId) return false;
+  return Array.isArray(t.casterFafIds) && t.casterFafIds.indexOf(sess.fafId) >= 0;
 }
 
 function teamOfSession(t, req) {
@@ -853,7 +858,7 @@ function viewerTeamIds(t, req) {
 // Can this request read/write the given room? organizer => everything.
 function chatAccess(t, req, room, token) {
   if (isAdmin(t, token, req) || isOrganizer(t, req)) return true;
-  if (isStreamer(t, token)) return room === 'global' || (room.indexOf('match:') === 0 && !!matchById(t, room.slice(6)));
+  if (isCaster(t, req)) return room === 'global' || (room.indexOf('match:') === 0 && !!matchById(t, room.slice(6)));
   const sess = currentSession(req);
   if (!sess || !sess.fafId) return false;
   // must be a participant of the tournament at all
@@ -870,7 +875,7 @@ function chatAccess(t, req, room, token) {
 // The list of rooms a viewer can see, with labels and unread counts.
 function chatRoomsFor(t, req, token) {
   const organizer = isAdmin(t, token, req) || isOrganizer(t, req);
-  const streamer = !organizer && isStreamer(t, token);
+  const streamer = !organizer && isCaster(t, req);
   const rooms = [];
   const store = t.chat || {};
   const rsess = currentSession(req);
@@ -1608,7 +1613,7 @@ async function handleAPI(req, res, url) {
     }
     const maxTeams = intIn(b.maxTeams, 0, 128, 0);
     const t = {
-      id: uid(5), adminToken: uid(12), lateToken: uid(12), streamerToken: uid(12),
+      id: uid(5), adminToken: uid(12), lateToken: uid(12),
       name, description: cleanName(b.description, 20000),
       rewards: cleanName(b.rewards, 2000), sponsors: cleanName(b.sponsors, 2000),
       prize: cleanPrize(b.prizeCurrency, b.prizeAmount),
@@ -2488,7 +2493,7 @@ async function handleAPI(req, res, url) {
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
       const organizer = isAdmin(t, tok, req) || isOrganizer(t, req);
-      const streamer = !organizer && isStreamer(t, tok);
+      const streamer = !organizer && isCaster(t, req);
       // Who organizes a tournament is visible to its organizers and site admins only.
       if (!organizer) delete view.createdByName;
       if (organizer) {
@@ -2503,6 +2508,8 @@ async function handleAPI(req, res, url) {
           return { fafId: fid, name, hidden: (t.organizerHidden && t.organizerHidden[fid]) ? 1 : 0 };
         });
         view.chatPingCount = Object.keys(t.chatPings || {}).length;
+        const cnames = t.casterNames || {};
+        view.casters = (t.casterFafIds || []).map(fid => ({ fafId: fid, name: cnames[fid] || ('FAF ' + fid) }));
       }
       // is the logged-in viewer already signed up (by FAF id)?
       let signedUpId = null;
@@ -2559,7 +2566,8 @@ async function handleAPI(req, res, url) {
         memberTeamId: memberTeamId,
         invited: (sess && (t.invites || []).some(i => i.fafId === sess.fafId)) ? 1 : 0,
         oauthEnabled: FAF_OAUTH_ON ? 1 : 0,
-        streamer: streamer ? 1 : 0,
+        caster: streamer ? 1 : 0,
+        streamer: streamer ? 1 : 0,   // deprecated alias for `caster`
         newsReadAt: (sess && db.profiles[sess.fafId] && db.profiles[sess.fafId].newsRead && db.profiles[sess.fafId].newsRead[t.id]) || 0
       };
       // Hide prep from non-organizers: unpublished maps and unpublished pools.
@@ -2594,11 +2602,9 @@ async function handleAPI(req, res, url) {
 
     if (method === 'GET' && sub === 'secrets') {
       if (!isAdmin(t, url.searchParams.get('admin'), req) && !isOrganizer(t, req)) return json(res, 403, { error: 'Organizer rights required' });
-      if (!t.streamerToken) { t.streamerToken = uid(12); saveDB(); }
       return json(res, 200, {
         adminToken: t.adminToken,
-        lateToken: t.lateToken,
-        streamerToken: t.streamerToken
+        lateToken: t.lateToken
       });
     }
 
@@ -3476,6 +3482,46 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true, remaining: t.organizerFafIds.length });
     }
 
+    // ---- casters: read-everything access, no organizer powers ----
+    // Any organizer may add or remove a caster on their own tournament. Unlike organizers,
+    // removal is not site-admin-only: a caster grants no power, so letting the organizer who
+    // added one take it away again avoids a pointless admin round trip.
+    if (sub === 'add_caster') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      if (!Array.isArray(t.casterFafIds)) t.casterFafIds = [];
+      if (t.casterFafIds.indexOf(fid) >= 0) return bad(res, 'Already a caster');
+      t.casterFafIds.push(fid);
+      t.casterNames = t.casterNames || {};
+      t.casterNames[fid] = cleanName(b.name, 60) || ('FAF ' + fid);
+      saveDB();
+      tlog(t, req, b.admin, 'added caster ' + t.casterNames[fid]);
+      audit(req, 'caster_added', {
+        tournamentId: t.id, tournamentName: t.name,
+        actor: actorOf(req, b.admin),
+        detail: t.casterNames[fid] + ' (' + fid + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'remove_caster') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const fid = String(b.fafId || '').trim();
+      if (!Array.isArray(t.casterFafIds) || t.casterFafIds.indexOf(fid) < 0) return bad(res, 'Not a caster on this tournament');
+      t.casterFafIds = t.casterFafIds.filter(x => x !== fid);
+      const name = (t.casterNames && t.casterNames[fid]) || fid;
+      if (t.casterNames) delete t.casterNames[fid];
+      saveDB();
+      tlog(t, req, b.admin, 'removed caster ' + name);
+      audit(req, 'caster_removed', {
+        tournamentId: t.id, tournamentName: t.name,
+        actor: actorOf(req, b.admin),
+        detail: name + ' (' + fid + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
     // Claim organizer rights by opening the organizer link while logged in with FAF.
     if (sub === 'claim_organizer') {
       const sess = currentSession(req);
@@ -3816,13 +3862,15 @@ async function handleAPI(req, res, url) {
       if (!chatAccess(t, req, room, b.token)) return json(res, 403, { error: 'No access to this chat' });
       const sess = currentSession(req);
       const organizer = isAdmin(t, b.token, req) || isOrganizer(t, req);
-      const streamer = !organizer && isStreamer(t, b.token);
+      const streamer = !organizer && isCaster(t, req);
       // Everyone posting must be identifiable so muting and attribution work.
       if (!sess && !organizer && !streamer) return json(res, 401, { error: 'Log in to chat' });
       if (sess && chatMuted(t, sess.fafId)) return json(res, 403, { error: 'You are muted in this tournament\u2019s chat' });
       let text = String(b.text || '').trim().slice(0, CHAT_MSG_LEN);
       if (!text) return bad(res, 'Empty message');
-      const who = (sess ? (sess.fafName || ('FAF ' + sess.fafId)) : (organizer ? 'Organizer' : 'Streamer')) + (streamer ? ' [caster]' : '');
+      // A caster is always a logged-in FAF account now, so the anonymous fallback only ever
+      // applies to the organizer link.
+      const who = (sess ? (sess.fafName || ('FAF ' + sess.fafId)) : 'Organizer') + (streamer ? ' [caster]' : '');
       t.chat = t.chat || {};
       t.chat[room] = t.chat[room] || [];
       // !organizer — flag this room so organizers see it needs attention, without them

@@ -188,7 +188,7 @@ function editMaps(bracket, round) {
 // Match chat is open to the two participating teams' members and to organizers.
 function matchChatAllowed(m) {
   if (viewerIsOrganizer()) return true;
-  if (T.viewer && T.viewer.streamer) return true;   // caster link: every chat
+  if (T.viewer && T.viewer.caster) return true;   // caster role: every chat
   const mine = (T.viewer && T.viewer.memberTeamId) || (T.viewer && T.viewer.teamId) || null;
   return !!(mine && (mine === m.team1 || mine === m.team2));
 }
@@ -1024,7 +1024,7 @@ function wireVetoScope(el) {
 }
 
 function drawVetoes(el) {
-  const isOrg = viewerIsOrganizer() || (T.viewer && T.viewer.streamer);
+  const isOrg = viewerIsOrganizer() || (T.viewer && T.viewer.caster);
   const myTeamId = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
   const allMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
   const mineMatches = myTeamId ? allMatches.filter(m => m.team1 === myTeamId || m.team2 === myTeamId) : [];
