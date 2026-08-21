@@ -132,7 +132,7 @@ function pickPoolForRound(bracket, round) {
 function projectedBoFor(bracket, round) {
   const plan = T.plan || {};
   if (bracket === 'gf') return plan.gf || 5;
-  const n = (T.teams && T.teams.length >= 2) ? T.teams.length : projectedTeamCount();
+  const n = projectedTeamCount();
   const size = Math.max(2, Math.pow(2, Math.ceil(Math.log2(Math.max(n, 2)))));
   const R = Math.round(Math.log2(size));
   if (T.bracketType === 'double') {
@@ -1575,19 +1575,22 @@ function previewSeedOrder(n) {
   return order;
 }
 
-// how many teams the bracket will have: locked teams if formed, else cap, else current entrant estimate
+// How many teams the bracket will have. There used to be a second, subtly different copy of this
+// here, which is what drew the preview's seed list - it counted every team (forming ones included)
+// and ignored maxTeams, so 8 full teams plus 2 half-built ones drew a 10-seed bracket. One
+// implementation now, so the seeds, the round keys and the per-round Bo can never disagree.
 function expectedTeamCount() {
-  if (T.teams && T.teams.length) return T.teams.length;
-  if (T.maxTeams && T.maxTeams > 0) return T.maxTeams;
-  // estimate from signups
-  if (T.competition === 'ffa' || T.teamSize === 1) return T.players.length;
+  const n = projectedTeamCount();
+  if (n >= 2) return n;
+  // Nothing formed yet: fall back to a signup-based estimate, still capped.
+  const cap = T.maxTeams > 0 ? T.maxTeams : Infinity;
+  if (T.competition === 'ffa' || T.teamSize === 1) return Math.min(T.players.length, cap);
   if (T.formation === 'premade') {
     const names = {};
     for (const p of T.players) if (p.teamName) names[p.teamName.toLowerCase()] = 1;
-    return Object.keys(names).length;
+    return Math.min(Object.keys(names).length, cap);
   }
-  // draft: one team per captain isn't known yet; fall back to players/teamSize
-  return Math.floor(T.players.length / T.teamSize);
+  return Math.min(Math.floor(T.players.length / Math.max(T.teamSize, 1)), cap);
 }
 
 function seedLabelMap() {
