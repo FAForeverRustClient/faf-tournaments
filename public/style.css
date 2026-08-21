@@ -998,3 +998,47 @@ body.modal-open .turnbanner { animation: none !important; }
 .sr-swatch { font-family: var(--display); font-size: 14px; width: 38px; height: 30px; border: 1px solid var(--line-solid); border-radius: 4px; background: var(--panel2, #141d28); cursor: pointer; }
 .sr-swatch:hover { border-color: var(--amber); }
 .sr-swatch.on { border-color: currentColor; box-shadow: 0 0 0 1px currentColor inset; }
+
+/* ---------- faction veto ---------- */
+/* Sits to the right of each game's map inside .veto-game. Colours stand in for faction logos
+   (which are game assets we don't ship); the initial plus the name keeps it unambiguous. */
+.fveto-col {
+  margin-left: auto; padding-left: 14px; border-left: 1px solid #2a3d55;
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  min-width: 210px; max-width: 340px;
+}
+.fveto-col.active { border-left-color: var(--amber); }
+.fveto-col.done { border-left-color: var(--green); }
+.fveto-prompt { font-size: 12px; font-weight: 600; color: var(--amber); }
+.fveto-chips, .fveto-mine { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.fveto-wait { font-size: 12px; color: var(--muted); font-style: italic; }
+.fveto-note { line-height: 1.4; }
+.fveto-res { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.fv-who { color: var(--muted); min-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-arrow { color: var(--muted); font-size: 12px; }
+
+.fchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px 3px 4px; border-radius: 4px; font: inherit; font-size: 11px;
+  background: #16202c; border: 1px solid #35506e; color: var(--text); cursor: default;
+}
+.fchip .fchip-glyph {
+  width: 17px; height: 17px; border-radius: 3px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 10px; color: #08121c;
+}
+.fchip.f-uef  .fchip-glyph { background: #4a90d9; }
+.fchip.f-aeon .fchip-glyph { background: #57c46a; }
+.fchip.f-cybran .fchip-glyph { background: #d9534f; }
+.fchip.f-sera .fchip-glyph { background: #d9b84a; }
+.fchip.clickable { cursor: pointer; }
+.fchip.clickable:hover { border-color: var(--amber); background: #1d2b3a; }
+.fchip.dim { opacity: .4; }
+.fchip.dim .fchip-name { text-decoration: line-through; }
+.fchip.on { border-color: var(--green); }
+.fchip[disabled] { cursor: default; }
+/* the game row becomes a flex line so the faction column can sit beside the map */
+.veto-game { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .fveto-col { margin-left: 0; padding-left: 0; border-left: none; border-top: 1px solid #2a3d55; padding-top: 8px; width: 100%; max-width: none; }
+}

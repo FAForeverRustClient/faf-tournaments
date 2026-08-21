@@ -2,6 +2,27 @@
 
 function pv(id) { return document.getElementById(id).value; }
 
+// A caster opening a tournament that is under way gets streamer mode turned on for them, so they
+// don't have to remember before going live. Deliberately a one-time default per tournament, not a
+// forced state: streamer mode is a single global per-browser flag, so re-applying it on every
+// render would make it impossible for a caster to switch it off. Once applied we record the
+// tournament id and never touch it again, leaving the toggle (and the S key) fully theirs.
+function maybeAutoStreamerMode() {
+  try {
+    if (!T || !T.id) return;
+    if (!(T.viewer && T.viewer.caster)) return;      // casters only
+    if (T.status !== 'running') return;              // only once it has actually started
+    const key = 'faf_sm_auto_' + T.id;
+    if (localStorage.getItem(key)) return;           // already defaulted for this tournament
+    localStorage.setItem(key, '1');
+    if (streamerMode) return;                        // already on - nothing to do, and no toast
+    setStreamerMode(true);
+    drawTopbar(viewerIsOrganizer() ? 'ORGANIZER' : 'CASTER');
+    toast('Streamer mode on \u2014 results hidden for the cast. Turn it off any time with the toggle' +
+      (hotkeyFor('streamer') ? ' or ' + hotkeyFor('streamer') : '') + '.');
+  } catch (e) {}
+}
+
 // Images pasted into the host form before the tournament exists. Uploaded on create.
 let _pendingCreateImages = [];
 
@@ -725,6 +746,7 @@ async function renderTournament() {
     return;
   }
   drawTopbar(viewerIsOrganizer() ? 'ORGANIZER' : (T.viewer && T.viewer.caster ? 'CASTER' : ''));
+  maybeAutoStreamerMode();
   lastSnapshot = JSON.stringify(T);
   drawTournament();
   maybePromptOrganizerClaim();

@@ -743,6 +743,26 @@ async function drawAdmin(el) {
     </div>`;
   }
 
+  // Faction vetoes: 1v1 only, since each side is one player choosing their own faction.
+  if (T.status !== 'finished' && T.competition === 'team' && T.teamSize === 1) {
+    const fv = T.fveto || { enabled: 0, bans: 1, picks: 2 };
+    html += `<div class="panel section"><h2>Faction vetoes</h2>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="fvEnabled" style="width:auto"${fv.enabled ? ' checked' : ''}> Enable faction vetoes</label>
+      <div id="fvCfg" style="${fv.enabled ? '' : 'display:none;'}margin-top:12px">
+        <p class="muted small">Runs per game of a series, in parallel with the map veto and independently of it. Each player bans factions (denying them to their opponent), then picks factions in order of preference. <strong>Nobody sees anyone else's choices \u2014 not the opponent, not you.</strong> You can see who still owes choices. Once both are done the result is shown to everyone.</p>
+        <label style="margin-top:12px">Bans each</label>
+        <select id="fvBans" style="max-width:200px">
+          <option value="1"${fv.bans === 1 ? ' selected' : ''}>1 ban</option>
+          <option value="2"${fv.bans === 2 ? ' selected' : ''}>2 bans</option>
+        </select>
+        <label style="margin-top:12px">Picks each</label>
+        <select id="fvPicks" style="max-width:200px"></select>
+        <div class="muted small" style="margin-top:6px" id="fvNote"></div>
+      </div>
+      <div style="margin-top:12px"><button class="btn amber" id="fvSave">Save faction vetoes</button></div>
+    </div>`;
+  }
+
   html += `<div class="panel section"><h2>Organizer notes</h2>
     <ul class="muted small">
       <li>Substitutions: Players tab \u2192 "Replace" next to the player. The sub takes over their exact spot (team, seed, results). Subs come from unteamed signups \u2014 share the late-signup link from this tab if you need someone new mid-tournament.</li>
@@ -1079,6 +1099,48 @@ async function drawAdmin(el) {
         await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, abMode }, admin: adminToken() });
         await refresh();
         toast('Vetoes saved');
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+
+  // ---- faction vetoes ----
+  const fvEnabled = document.getElementById('fvEnabled');
+  if (fvEnabled) {
+    const cfg = document.getElementById('fvCfg');
+    const bansSel = document.getElementById('fvBans');
+    const picksSel = document.getElementById('fvPicks');
+    const note = document.getElementById('fvNote');
+    const cur = T.fveto || { bans: 1, picks: 2 };
+    // Picks must exceed bans or an opponent could ban every faction you nominated, leaving the
+    // game unresolvable. The options offered adapt so an invalid pair can't be chosen at all.
+    const syncPicks = () => {
+      const b = parseInt(bansSel.value, 10);
+      const min = b + 1;
+      const keep = parseInt(picksSel.value, 10) || cur.picks || min;
+      picksSel.innerHTML = '';
+      for (let n = min; n <= 3; n++) {
+        const o = document.createElement('option');
+        o.value = String(n); o.textContent = n + ' pick' + (n === 1 ? '' : 's');
+        if (n === keep) o.selected = true;
+        picksSel.appendChild(o);
+      }
+      if (!picksSel.value) picksSel.selectedIndex = 0;
+      note.textContent = 'With ' + b + ' ban' + (b === 1 ? '' : 's') + ' each, at least ' + min +
+        ' picks are needed so your opponent can never ban all of them. There are 4 factions.';
+    };
+    fvEnabled.onchange = () => { cfg.style.display = fvEnabled.checked ? '' : 'none'; };
+    bansSel.onchange = syncPicks;
+    syncPicks();
+    document.getElementById('fvSave').onclick = async () => {
+      try {
+        await api('/api/t/' + T.id + '/fveto_config', {
+          enabled: fvEnabled.checked ? 1 : 0,
+          bans: parseInt(bansSel.value, 10),
+          picks: parseInt(picksSel.value, 10),
+          admin: adminToken()
+        });
+        await refresh();
+        toast('Faction vetoes saved');
       } catch (e) { toast(e.message, true); }
     };
   }

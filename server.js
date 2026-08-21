@@ -20,7 +20,8 @@ const { BO_OK, seedOrder, nextPow2, log2i, seededSlots, cleanBoList } = require(
 // Match core + veto engine (one cohesive unit) live in lib/match.js.
 const {
   poolById, poolForMatch, poolMapIds, cleanSequence, cleanVeto, abRating, decideTeamA,
-  initVeto, vetoCurrentStep, vetoAdvance,
+  initVeto, vetoCurrentStep, vetoAdvance, initMatchVetoes,
+  FACTIONS, factionVetoOn, initFactionVeto, newFactionGame, factionSideKey, factionNextStep, factionResolve, factionViewFor,
   newMatch, routeVal, setSlot, evaluate, finalizeMatch, undoMatch, backfillMatchLinks,
   buildSingle, buildDouble,
 } = require('./lib/match');
@@ -994,6 +995,9 @@ function publicView(t) {
     championTeamId: t.championTeamId || null,
     subs: t.subs || [],
     pendingCaptains: t.pendingCaptains || [],
+    fveto: t.fveto ? { enabled: t.fveto.enabled ? 1 : 0, bans: t.fveto.bans, picks: t.fveto.picks } : null,
+    captainMode: t.captainMode || 'manual',
+    captainCount: t.captainCount || 0,
     divisions: t.divisions || 0,
     imported: t.imported || false,
     // Challonge imports: source format, per-group tables, final placements, and whether the event
@@ -2592,6 +2596,20 @@ async function handleAPI(req, res, url) {
         view.mapDb = (view.mapDb || []).filter(m => m.published || inPlay[m.id]);
         view.mapPools = (view.mapPools || []).filter(p => p.published);
       }
+      // Faction vetoes are secret until both sides finish. Replace each match's raw record with
+      // the slice THIS viewer may see: a competitor gets their own choices, everyone else
+      // (organizers, casters, admins and spectators alike) gets only completion flags until the
+      // result exists. Enforced here rather than in the UI, so opening devtools reveals nothing.
+      // The match object is shallow-copied first - view.matches aliases the stored array.
+      if (Array.isArray(view.matches)) {
+        view.matches = view.matches.map(m => {
+          if (!m || !m.fveto) return m;
+          const mySide = capTeam ? factionSideKey(m, capTeam.id) : null;
+          const copy = Object.assign({}, m);
+          copy.fveto = factionViewFor(m, mySide);
+          return copy;
+        });
+      }
       return json(res, 200, view);
     }
 
@@ -3994,7 +4012,7 @@ async function handleAPI(req, res, url) {
           // enabling (including mid-bracket): give every ready match without a veto one now,
           // so turning this on later is never a dead end.
           for (const m of t.matches) {
-            if (m.status === 'ready' && !m.veto) initVeto(t, m);
+            if (m.status === 'ready') initMatchVetoes(t, m);
           }
         } else {
           // disabling: drop vetoes that haven't been acted on; leave finished ones as a record
@@ -4170,10 +4188,14 @@ async function handleAPI(req, res, url) {
       const delPool = poolById(t, b.id);
       if (delPool) tlog(t, req, b.admin, 'deleted pool "' + delPool.name + '"');
       t.mapPools = (t.mapPools || []).filter(p => p.id !== b.id);
-      // clear any assignments pointing to this pool
+      // clear any assignments pointing to this pool. This is why a round can quietly revert to
+      // the fallback pool: deleting a pool unassigns it everywhere. Record which rounds lost
+      // their assignment so it is traceable in the log rather than a silent surprise.
+      const orphaned = [];
       for (const key of Object.keys(t.poolAssign || {})) {
-        if (t.poolAssign[key] === b.id) delete t.poolAssign[key];
+        if (t.poolAssign[key] === b.id) { orphaned.push(key.replace(':', ' round ')); delete t.poolAssign[key]; }
       }
+      if (orphaned.length) tlog(t, req, b.admin, 'that pool was assigned to ' + orphaned.join(', ') + ' \u2014 those rounds now fall back to the first pool');
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -4203,7 +4225,7 @@ async function handleAPI(req, res, url) {
           if (key === rk && t.poolAssign['match:' + m.id]) continue;  // a per-match override wins
           if (m.veto && m.veto.stepIndex > 0) continue;         // veto already in progress
           m.veto = null;
-          initVeto(t, m);
+          initMatchVetoes(t, m);
         }
       }
       saveDB();
@@ -4317,6 +4339,22 @@ async function handleAPI(req, res, url) {
       }
 
       // set the pending captain list (organizer toggles captains from the player list before drafting)
+      // How captains are chosen: 'manual' (organizer marks them, the original behaviour) or
+      // 'rating' (the top N by rating become captains, recomputed at draft start so late signups
+      // and rating corrections are picked up). Editable until the draft actually starts.
+      if (a === 'set_captain_mode') {
+        if (t.formation !== 'draft') return bad(res, 'This tournament does not use a draft');
+        if (t.status !== 'signup') return bad(res, 'Draft already started');
+        if (b.mode !== undefined) t.captainMode = b.mode === 'rating' ? 'rating' : 'manual';
+        if (b.count !== undefined) {
+          const n = parseInt(b.count, 10);
+          if (!isFinite(n) || n < 2 || n > 64) return bad(res, 'Number of captains must be between 2 and 64');
+          t.captainCount = n;
+        }
+        saveDB();
+        return json(res, 200, { ok: true, mode: t.captainMode || 'manual', count: t.captainCount || 0 });
+      }
+
       if (a === 'set_captains') {
         if (t.formation !== 'draft') return bad(res, 'This tournament does not use a draft');
         if (t.status !== 'signup') return bad(res, 'Draft already started');
@@ -4331,14 +4369,26 @@ async function handleAPI(req, res, url) {
       if (a === 'start_draft') {
         if (t.formation !== 'draft') return bad(res, 'This tournament does not use a draft');
         if (t.status !== 'signup') return bad(res, 'Draft already started');
-        // captains come from the pending list (or an explicit list for backward-compat)
-        let capIds = Array.isArray(b.captainIds) ? b.captainIds : (t.pendingCaptains || []);
+        let capIds;
+        if (t.captainMode === 'rating') {
+          // Top N by rating, resolved now rather than when the setting was saved, so late
+          // signups, withdrawals and rating corrections are all reflected.
+          const n = t.captainCount || 0;
+          if (n < 2) return bad(res, 'Set how many captains there should be first');
+          const ranked = (t.players || []).filter(p => !p.pending)
+            .slice().sort((x, y) => (y.rating || 0) - (x.rating || 0));
+          if (ranked.length < n) return bad(res, 'Only ' + ranked.length + ' player' + (ranked.length === 1 ? '' : 's') + ' signed up; need at least ' + n + ' for ' + n + ' captains');
+          capIds = ranked.slice(0, n).map(p => p.id);
+        } else {
+          // captains come from the pending list (or an explicit list for backward-compat)
+          capIds = Array.isArray(b.captainIds) ? b.captainIds : (t.pendingCaptains || []);
+        }
         capIds = capIds.filter(id => playerById(t, id));
         if (capIds.length < 2) return bad(res, 'Mark at least 2 captains in the player list first');
         buildDraft(t, capIds);
         finishDraftIfDone(t);
         t.pendingCaptains = [];
-        tlog(t, req, b.admin, 'closed signups & started the captains draft (' + capIds.length + ' captains)');
+        tlog(t, req, b.admin, 'closed signups & started the captains draft (' + capIds.length + ' captains' + (t.captainMode === 'rating' ? ', top by rating' : '') + ')');
         saveDB();
         return json(res, 200, { ok: true });
       }
@@ -4469,7 +4519,12 @@ async function handleAPI(req, res, url) {
         if (division != null && (m.division || 0) !== division) continue;
         // don't disturb a match already under way or done
         if (m.status === 'live' || m.status === 'done' || (Array.isArray(m.games) && m.games.length)) { skipped++; continue; }
-        if (m.bo !== boVal) { m.bo = boVal; changed++; }
+        if (m.bo !== boVal) {
+          m.bo = boVal; changed++;
+          // A longer series needs faction slots for the extra games; a shorter one leaves the
+          // surplus behind harmlessly. Without this a Bo1 raised to Bo3 has no slots for games 2-3.
+          initFactionVeto(t, m);
+        }
       }
       // keep the stored plan arrays in sync so the format summary reflects the change too
       t.perRoundBo = 1;
@@ -4555,6 +4610,83 @@ async function handleAPI(req, res, url) {
     }
 
     // Perform the next veto step (a ban or a pick, per the sequence).
+    // ---- faction veto: settings (organizer) ----
+    // 1v1 only. `picks` must exceed `bans`, otherwise an opponent could ban every faction a
+    // player nominated and leave the game unresolvable.
+    if (sub === 'fveto_config') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (t.teamSize !== 1 || t.competition === 'ffa') return bad(res, 'Faction vetoes are only available for 1v1 tournaments');
+      const enabled = b.enabled ? 1 : 0;
+      const bans = Math.max(1, Math.min(2, parseInt(b.bans, 10) || 1));
+      const picks = parseInt(b.picks, 10) || 0;
+      if (enabled && !(picks > bans)) return bad(res, 'Picks must be higher than bans (' + bans + ' ban' + (bans === 1 ? '' : 's') + ' needs at least ' + (bans + 1) + ' picks), otherwise every pick could be banned');
+      if (enabled && picks > 3) return bad(res, 'At most 3 picks');
+      t.fveto = { enabled, bans, picks: enabled ? picks : (t.fveto ? t.fveto.picks : 2) };
+      // Retro-fit onto (or strip from) every live match, the same way map vetoes can be toggled
+      // mid-bracket. A match that already has a result is left alone.
+      for (const m of (t.matches || [])) {
+        if (m.status === 'done') continue;
+        if (enabled) initFactionVeto(t, m);
+        else m.fveto = null;
+      }
+      saveDB();
+      tlog(t, req, b.admin, enabled ? ('enabled faction vetoes (' + bans + ' ban' + (bans === 1 ? '' : 's') + ', ' + picks + ' picks)') : 'disabled faction vetoes');
+      return json(res, 200, { ok: true, fveto: t.fveto });
+    }
+
+    // ---- faction veto: a competitor submits one ban or pick ----
+    // Deliberately NOT actionable by the organizer on someone's behalf: the whole point is that
+    // nobody but the player knows their choices, and an organizer proxy would break that.
+    if (sub === 'fveto_action') {
+      if (!factionVetoOn(t)) return bad(res, 'Faction vetoes are not enabled for this tournament');
+      const m = matchById(t, b.matchId);
+      if (!m) return bad(res, 'Match not found');
+      if (!m.fveto) return bad(res, 'No faction veto for this match');
+      if (m.status === 'done') return bad(res, 'This match already has a result');
+      const myTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
+      if (!myTeam) return json(res, 403, { error: 'Only the two competitors can make faction choices' });
+      const sideKey = factionSideKey(m, myTeam.id);
+      if (!sideKey) return json(res, 403, { error: 'You are not in this match' });
+      const g = String(parseInt(b.game, 10) || 0);
+      const game = m.fveto.games[g];
+      if (!game) return bad(res, 'No such game in this series');
+      const side = game[sideKey];
+      const step = factionNextStep(m.fveto, side);
+      if (!step) return bad(res, 'You have already finished your faction choices for this game');
+      const faction = String(b.faction || '').toLowerCase().trim();
+      if (FACTIONS.indexOf(faction) < 0) return bad(res, 'Unknown faction');
+      // No repeats within your own bans, or within your own picks. (Banning a faction you also
+      // pick is allowed: a ban denies it to your opponent, it does not deny it to you.)
+      const list = step.action === 'ban' ? side.bans : side.picks;
+      if (list.indexOf(faction) >= 0) return bad(res, 'You already chose that faction for this step');
+      list.push(faction);
+      if (!factionNextStep(m.fveto, side)) side.done = true;
+      factionResolve(m.fveto, game);
+      saveDB();
+      // The log records only that a choice was made - never which faction, or the secret leaks
+      // to anyone who can read the tournament log.
+      tlog(t, req, b.token, tTeamName(t, myTeam.id) + ' made a faction ' + step.action + ' for game ' + g + ' (' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ')');
+      return json(res, 200, { ok: true, done: !!side.done });
+    }
+
+    // ---- faction veto: organizer clears one side's choices (misclick / substitution) ----
+    if (sub === 'fveto_reset') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const m = matchById(t, b.matchId);
+      if (!m || !m.fveto) return bad(res, 'No faction veto for this match');
+      const g = String(parseInt(b.game, 10) || 0);
+      const game = m.fveto.games[g];
+      if (!game) return bad(res, 'No such game in this series');
+      const which = b.side === 't1' || b.side === 't2' ? b.side : null;
+      if (which) { game[which] = { bans: [], picks: [], done: false }; }
+      else { m.fveto.games[g] = newFactionGame(); }
+      game.result = null;
+      m.fveto.games[g].result = null;
+      saveDB();
+      tlog(t, req, b.admin, 'reset faction choices for game ' + g + ' (' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ')');
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'veto_action') {
       if (!t.veto || !t.veto.enabled) return bad(res, 'Vetoes are not enabled for this tournament');
       const m = matchById(t, b.matchId);

@@ -54,8 +54,8 @@ function mapsLine(bracket, round, el) {
     }
     div.innerHTML = '<div class="mapblock-head"><span>MAP POOL</span>' + (admin ? '<a href="#">change</a>' : '') + '</div>' +
       (shown
-        ? '<div class="maprow"><span>' + esc(shown.name) + (pool ? '' : ' <span class="muted">(default)</span>') + '</span></div>' + sub
-        : '<div class="maprow muted">no pools yet — add them on the Maps tab</div>');
+        ? '<div class="maprow"><span>' + esc(shown.name) + (pool ? '' : ' <span class="muted" title="No pool is assigned to this round, so the first pool is being used. Click change to pin one.">(default)</span>') + '</span></div>' + sub
+        : '<div class="maprow muted">no pools yet \u2014 add them on the Maps tab</div>');
     const a = div.querySelector('a');
     if (a) a.onclick = e => { e.preventDefault(); pickPoolForRound(bracket, round); };
     const showBtn = div.querySelector('.mapblock-showpool');
@@ -400,6 +400,7 @@ function showVetoPopup(m) {
     const body = root.querySelector('#vpBody');
     body.innerHTML = vetoHTML(m);
     wireVeto(body, m);
+    wireFactionVeto(body);
     const chat = root.querySelector('#vpChat');
     if (chat) chat.onclick = (e) => { e.preventDefault(); closeModal(); openMatchChat(m); };
     root.querySelectorAll('[data-teamid]').forEach(nameEl => {
@@ -725,11 +726,22 @@ function drawMaps(el) {
 }
 
 // How many teams the bracket will likely have, before it's generated.
+// How many teams the bracket will actually be built from. This has to mirror the server's real
+// selection rule (finalizeOpenTeams): only FULL teams enter, and maxTeams caps how many of them
+// do - anything beyond that is a reserve. Counting every team, forming ones included, made the
+// preview invent rounds that could never exist: 8 full teams plus 2 half-built ones projected a
+// 10-team bracket with an extra round.
 function projectedTeamCount() {
-  if (T.teams && T.teams.length) return T.teams.length;
-  if (T.maxTeams) return T.maxTeams;
   const size = (T.competition === 'ffa') ? 1 : (T.teamSize || 1);
-  return Math.floor((T.players || []).length / Math.max(size, 1));
+  const cap = T.maxTeams > 0 ? T.maxTeams : Infinity;
+  if (T.teams && T.teams.length) {
+    // Once the bracket is generated, t.teams IS the entering set - take it as-is.
+    if (T.status !== 'signup') return Math.min(T.teams.length, cap);
+    const full = T.teams.filter(tm => (tm.playerIds || []).length >= size).length;
+    if (full) return Math.min(full, cap);
+  }
+  if (T.maxTeams) return T.maxTeams;
+  return Math.min(Math.floor((T.players || []).length / Math.max(size, 1)), cap);
 }
 
 // The round keys this bracket will have. Uses real matches once generated, otherwise
@@ -1026,7 +1038,10 @@ function wireVetoScope(el) {
 function drawVetoes(el) {
   const isOrg = viewerIsOrganizer() || (T.viewer && T.viewer.caster);
   const myTeamId = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
-  const allMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
+  // A match belongs on this tab if it has a map veto OR a faction veto. With map vetoes off but
+  // faction vetoes on, the card lists the series' game slots ("1st map", "2nd map", ...) purely so
+  // the faction column has somewhere to hang.
+  const allMatches = T.matches.filter(m => (m.veto || m.fveto) && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
   const mineMatches = myTeamId ? allMatches.filter(m => m.team1 === myTeamId || m.team2 === myTeamId) : [];
   // Someone actually playing defaults to just their own matches so the page isn't a wall of other
   // people's vetoes; they can switch to all. Organizers, streamers and observers always see all.
@@ -1043,7 +1058,7 @@ function drawVetoes(el) {
   if (!vetoMatches.length) {
     el.innerHTML = scopeBar + '<div class="panel"><div class="empty">' + (scoped
       ? 'None of your matches have an active map veto right now.' + (allMatches.length ? ' There ' + (allMatches.length === 1 ? 'is 1 other veto' : 'are ' + allMatches.length + ' other vetoes') + ' \u2014 switch to \u201cAll vetoes\u201d to see them.' : '')
-      : 'No map vetoes are active right now. They appear here as matches become ready.') + '</div></div>';
+      : 'No vetoes are active right now. They appear here as matches become ready.') + '</div></div>';
     wireVetoScope(el);
     return;
   }
@@ -1053,7 +1068,7 @@ function drawVetoes(el) {
   // pending (need action) first, then completed — each newest-first
   // A veto is settled once it completes OR once the match has a result - a forfeit or an
   // organizer correction can decide a match mid-veto, and that veto can never be acted on again.
-  const settled = m => m.veto.done || m.status === 'done';
+  const settled = m => (m.veto ? m.veto.done : factionAllDone(m)) || m.status === 'done';
   const pending = vetoMatches.filter(m => !settled(m)).sort(byNewest);
   const done = vetoMatches.filter(settled).sort(byNewest);
 
@@ -1065,11 +1080,12 @@ function drawVetoes(el) {
       const real = T.teams && T.teams.some(t => t.id === tid);
       return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
     };
-    const unfinished = (m.status === 'done') && (m.veto.abandoned || !vetoRanToCompletion(m.veto));
+    const unfinished = (m.status === 'done') && m.veto && (m.veto.abandoned || !vetoRanToCompletion(m.veto));
+    const isDone = m.veto ? m.veto.done : factionAllDone(m);
     const doneTag = unfinished
       ? '<span class="veto-done-tag closed">CLOSED</span>'
-      : (m.veto.done ? '<span class="veto-done-tag">RESULT</span>' : '');
-    return `<div class="panel section veto-card${m.veto.done ? ' veto-done' : ''}" data-vmatch="${m.id}">
+      : (isDone ? '<span class="veto-done-tag">RESULT</span>' : '');
+    return `<div class="panel section veto-card${isDone ? ' veto-done' : ''}" data-vmatch="${m.id}">
       <div class="veto-card-head"><h2>${doneTag}${esc(label)}</h2><span class="veto-card-teams">${nameHtml(m.team1)} <span class="muted">vs</span> ${nameHtml(m.team2)}</span></div>
       <div class="veto-card-body"></div>
       ${chatLink ? '<div class="veto-card-foot">' + chatLink + '</div>' : ''}
@@ -1130,6 +1146,7 @@ function drawVetoes(el) {
     const bodyEl = cardEl.querySelector('.veto-card-body');
     bodyEl.innerHTML = vetoHTML(m);
     wireVeto(bodyEl, m);
+    wireFactionVeto(bodyEl);
     const vchat = cardEl.querySelector('[data-vchat]');
     if (vchat) vchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
     // map thumbnails open the full preview. Only wired on the tab, not inside the match-details
@@ -1198,8 +1215,32 @@ function vetoLogHTML(v) {
   return `<div class="veto-log"><div class="veto-head">Ban / pick order</div>${rows}${dec}</div>`;
 }
 
+// Are every game's factions resolved for this match?
+function factionAllDone(m) {
+  if (!m.fveto || !m.fveto.games) return false;
+  const keys = Object.keys(m.fveto.games);
+  if (!keys.length) return false;
+  return keys.every(k => !!m.fveto.games[k].result);
+}
+
+// Card body when the tournament runs faction vetoes WITHOUT map vetoes: the series' game slots
+// are listed as plain "1st map / 2nd map / ..." labels (no map is being chosen here) so the
+// faction column has a row to sit beside.
+function factionOnlyHTML(m) {
+  const ord = n => n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : n + 'th';
+  const n = m.bo || 1;
+  let h = '<div class="vetobox' + (factionAllDone(m) ? ' done' : '') + '">';
+  h += '<div class="veto-head">Factions <span class="muted small">\u2014 no map veto for this match, so games are listed by number</span></div>';
+  h += '<div class="veto-games">';
+  for (let g = 1; g <= n; g++) {
+    h += `<div class="veto-game"><span class="vg-num">${ord(g)} map</span>${factionGameHTML(m, g)}</div>`;
+  }
+  h += '</div></div>';
+  return h;
+}
+
 function vetoHTML(m) {
-  if (!m.veto) return '';
+  if (!m.veto) return m.fveto ? factionOnlyHTML(m) : '';
   const v = m.veto;
   // Treat a veto on a finished match as closed even if older stored data says otherwise - the
   // result is in, so nobody can ban or pick any more.
@@ -1243,7 +1284,7 @@ function vetoHTML(m) {
 
   if (v.done) {
     h += '<div class="veto-head">Maps</div><div class="veto-games">';
-    h += games.map(g => `<div class="veto-game"><span class="vg-num">Game ${g.game}</span>${mapChip(g.map, 'play')}${g === v.decider ? '<span class="vg-dec">decider</span>' : ''}</div>`).join('');
+    h += games.map(g => `<div class="veto-game"><span class="vg-num">Game ${g.game}</span>${mapChip(g.map, 'play')}${g === v.decider ? '<span class="vg-dec">decider</span>' : ''}${factionGameHTML(m, g.game)}</div>`).join('');
     h += '</div>';
     h += vetoLogHTML(v);
     h += '</div>';
@@ -1277,7 +1318,7 @@ function vetoHTML(m) {
       const th = (mo && mo.image) ? '<img class="vm-thumb dim" src="/map-images/' + encodeURIComponent(mo.image) + '" alt="" loading="lazy">' : '';
       return '<span class="veto-map vm-card banned" title="Banned by ' + esc(teamName(b.by)) + '">' + th + '<span class="vm-name">' + esc(mapName(b.map)) + '</span></span>';
     }).join('') + '</div>';
-    if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span>' + mapChip(g.map, 'play') + '</div>').join('') + '</div>';
+    if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span>' + mapChip(g.map, 'play') + factionGameHTML(m, g.game) + '</div>').join('') + '</div>';
     h += '</div>';
     h += vetoLogHTML(v);
   }
@@ -2239,8 +2280,8 @@ function showMatchDetails(m) {
     </div>`, root => {
     // ban/pick history, hidden while masked so a caster doesn't spoil the maps
     const vh = root.querySelector('#mdVeto');
-    if (m.veto && !masked) { vh.innerHTML = vetoHTML(m); wireVeto(vh, m); }
-    else if (m.veto && masked) vh.innerHTML = '<div class="muted small" style="margin-top:10px">Map veto hidden by streamer mode.</div>';
+    if ((m.veto || m.fveto) && !masked) { vh.innerHTML = vetoHTML(m); wireVeto(vh, m); wireFactionVeto(vh); }
+    else if ((m.veto || m.fveto) && masked) vh.innerHTML = '<div class="muted small" style="margin-top:10px">Veto hidden by streamer mode.</div>';
     root.querySelectorAll('[data-teamid]').forEach(n => n.onclick = (e) => {
       e.preventDefault(); closeModal(); showTeamPopup(n.dataset.teamid);
     });
@@ -2255,4 +2296,109 @@ function showMatchDetails(m) {
     if (rep) rep.onclick = () => { closeModal(); reportScore(m.id); };
     root.querySelector('#mdClose').onclick = closeModal;
   }, { wide: true });
+}
+
+// ---------- faction veto (1v1) ----------
+// Rendered per game slot, to the right of the map that game will be played on. Runs in parallel
+// with the map veto and independently of it: your own choices are the only ones you can ever see,
+// because the server strips the opponent's out of the payload until both sides are finished.
+const FACTION_META = {
+  uef:      { label: 'UEF',      short: 'U', cls: 'uef' },
+  aeon:     { label: 'Aeon',     short: 'A', cls: 'aeon' },
+  cybran:   { label: 'Cybran',   short: 'C', cls: 'cybran' },
+  seraphim: { label: 'Seraphim', short: 'S', cls: 'sera' }
+};
+const FACTION_ORDER = ['uef', 'aeon', 'cybran', 'seraphim'];
+
+function factionChip(f, opts) {
+  const meta = FACTION_META[f];
+  if (!meta) return '';
+  const o = opts || {};
+  const cls = ['fchip', 'f-' + meta.cls];
+  if (o.dim) cls.push('dim');
+  if (o.on) cls.push('on');
+  if (o.btn) cls.push('clickable');
+  const attrs = o.btn ? ` data-fpick="${esc(f)}" data-fgame="${esc(String(o.game))}" data-fmatch="${esc(o.matchId)}"` : '';
+  const title = o.title ? ` title="${esc(o.title)}"` : ` title="${esc(meta.label)}"`;
+  return `<button type="button" class="${cls.join(' ')}"${attrs}${title}${o.btn ? '' : ' disabled'}><span class="fchip-glyph">${meta.short}</span><span class="fchip-name">${esc(meta.label)}</span></button>`;
+}
+
+// The faction column for one game of one match. Returns '' when there is nothing to show.
+function factionGameHTML(m, gameNum) {
+  const fv = m.fveto;
+  if (!fv) return '';
+  const g = fv.games && fv.games[String(gameNum)];
+  if (!g) return '';
+  const myTeamId = (T.viewer && T.viewer.teamId) || null;
+  const mySide = myTeamId ? (myTeamId === m.team1 ? 't1' : (myTeamId === m.team2 ? 't2' : null)) : null;
+  const settled = m.status === 'done';
+
+  // Both finished: everyone sees the outcome.
+  if (g.result) {
+    return `<div class="fveto-col done">
+      <div class="fveto-res"><span class="fv-who">${esc(bracketLabel(m.team1))}</span>${factionChip(g.result.t1, {})}</div>
+      <div class="fveto-res"><span class="fv-who">${esc(bracketLabel(m.team2))}</span>${factionChip(g.result.t2, {})}</div>
+    </div>`;
+  }
+
+  // Not a competitor (organizer, caster, spectator): only who still owes choices.
+  if (!mySide || !g.mine) {
+    const pend = [];
+    if (!g.t1Done) pend.push(bracketLabel(m.team1));
+    if (!g.t2Done) pend.push(bracketLabel(m.team2));
+    return `<div class="fveto-col">
+      <div class="fveto-wait">${pend.length
+        ? 'Waiting on ' + pend.map(esc).join(' and ')
+        : 'Both done \u2014 resolving\u2026'}</div>
+    </div>`;
+  }
+
+  const mine = g.mine;
+  const oppDone = mySide === 't1' ? g.t2Done : g.t1Done;
+
+  // Mine finished, opponent not.
+  if (mine.done) {
+    return `<div class="fveto-col">
+      <div class="fveto-wait">${oppDone ? 'Resolving\u2026' : 'Waiting for faction ban/picks from opponent'}</div>
+      <div class="fveto-mine">${mine.bans.map(f => factionChip(f, { dim: true, title: 'You banned ' + FACTION_META[f].label })).join('')}
+        <span class="fv-arrow">\u2192</span>
+        ${mine.picks.map((f, i) => factionChip(f, { on: true, title: 'Your pick ' + (i + 1) })).join('')}</div>
+    </div>`;
+  }
+
+  if (settled) return '<div class="fveto-col"><div class="fveto-wait">Match decided \u2014 faction veto closed.</div></div>';
+
+  // My turn: banning or picking.
+  const step = g.next;
+  if (!step) return '';
+  const ord = n => n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : n + 'th';
+  const banning = step.action === 'ban';
+  // Already-used factions grey out: you can't ban the same one twice, or pick it twice. Banning a
+  // faction you also pick is allowed - a ban denies it to your opponent, not to you.
+  const used = banning ? mine.bans : mine.picks;
+  const chips = FACTION_ORDER.map(f => used.indexOf(f) >= 0
+    ? factionChip(f, { dim: true, title: banning ? 'Already banned' : 'Already picked' })
+    : factionChip(f, { btn: true, game: gameNum, matchId: m.id })).join('');
+  const soFar = (mine.bans.length ? '<div class="fveto-mine">' + mine.bans.map(f => factionChip(f, { dim: true, title: 'You banned ' + FACTION_META[f].label })).join('') + '</div>' : '')
+    + (mine.picks.length ? '<div class="fveto-mine">' + mine.picks.map((f, i) => factionChip(f, { on: true, title: 'Your pick ' + (i + 1) })).join('') + '</div>' : '');
+  return `<div class="fveto-col active">
+    <div class="fveto-prompt">${ord(step.index)} faction to ${banning ? 'ban' : 'pick'}<span class="muted small"> (${step.index}/${step.of})</span></div>
+    <div class="fveto-chips">${chips}</div>
+    ${soFar}
+    <div class="fveto-note muted small">${banning ? 'Bans deny that faction to your opponent.' : 'Picks are in order of preference \u2014 you get the highest one your opponent didn\u2019t ban.'} Nobody can see your choices.</div>
+  </div>`;
+}
+
+// Wire the faction buttons inside a card body.
+function wireFactionVeto(root) {
+  root.querySelectorAll('[data-fpick]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      await api('/api/t/' + T.id + '/fveto_action', {
+        matchId: b.dataset.fmatch, game: parseInt(b.dataset.fgame, 10),
+        faction: b.dataset.fpick, token: viewToken()
+      });
+      await refresh();
+    } catch (e) { b.disabled = false; toast(e.message, true); }
+  });
 }

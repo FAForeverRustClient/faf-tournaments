@@ -650,10 +650,29 @@ function drawTeams(el) {
   if (T.status === 'signup') {
     if (admin) {
       if (T.formation === 'draft') {
+        const capMode = T.captainMode === 'rating' ? 'rating' : 'manual';
+        const capN = T.captainCount || 0;
+        // Rating mode resolves at draft start, so show a live preview of who it would pick now.
+        const capRanked = T.players.filter(p => !p.pending).slice().sort((a, b) => (b.rating || 0) - (a.rating || 0));
+        const capWould = capN >= 2 ? capRanked.slice(0, capN) : [];
         html += `<div class="panel section"><h2>Captains &amp; draft</h2>
-          <p class="muted small">Mark who the captains are in the list below. The number of captains is the number of teams. Pick order: ${T.draftOrder === 'snake' ? 'snake (1\u2192N, N\u21921, ...)' : 'bottom seed to top seed, every round'}. Each captain fills a team of ${T.teamSize}.</p>
-          <div class="pool" id="capPool"></div>
-          <div id="capCount" class="cap-count"></div>
+          <p class="muted small">The number of captains is the number of teams. Pick order: ${T.draftOrder === 'snake' ? 'snake (1\u2192N, N\u21921, ...)' : 'bottom seed to top seed, every round'}. Each captain fills a team of ${T.teamSize}.</p>
+          <label>How are captains chosen?</label>
+          <select id="capMode">
+            <option value="manual"${capMode === 'manual' ? ' selected' : ''}>I pick them myself</option>
+            <option value="rating"${capMode === 'rating' ? ' selected' : ''}>Top N by rating (automatic)</option>
+          </select>
+          <div id="capRatingWrap" style="${capMode === 'rating' ? '' : 'display:none'}">
+            <label style="margin-top:12px">How many captains</label>
+            <input type="number" id="capNum" min="2" max="64" step="1" value="${capN || ''}" placeholder="e.g. 8" style="max-width:160px">
+            <p class="muted small" style="margin-top:6px">Editable until you start the draft. The highest-rated players become captains, worked out at the moment the draft starts, so late signups and rating corrections are included.</p>
+            <div id="capPreview" class="cap-count"></div>
+          </div>
+          <div id="capManualWrap" style="${capMode === 'manual' ? '' : 'display:none'}">
+            <p class="muted small" style="margin-top:12px">Mark who the captains are in the list below.</p>
+            <div class="pool" id="capPool"></div>
+            <div id="capCount" class="cap-count"></div>
+          </div>
           <div style="margin-top:16px"><button class="btn amber" id="startDraft">Close signups &amp; start draft</button></div></div>`;
       } else {
         html += `<div class="panel section"><h2>Form ${T.teamSize === 1 ? 'entrants' : 'teams'}</h2>
@@ -801,6 +820,46 @@ function drawTeams(el) {
 
   el.innerHTML = html || '<div class="panel"><div class="empty">Nothing here yet.</div></div>';
 
+  // captain-selection mode (manual vs top-N-by-rating)
+  const capModeSel = document.getElementById('capMode');
+  if (capModeSel) {
+    const ratingWrap = document.getElementById('capRatingWrap');
+    const manualWrap = document.getElementById('capManualWrap');
+    const numEl = document.getElementById('capNum');
+    const prevEl = document.getElementById('capPreview');
+    const ranked = T.players.filter(p => !p.pending).slice().sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    const paintPreview = () => {
+      if (!prevEl) return;
+      const n = parseInt(numEl.value, 10);
+      if (!isFinite(n) || n < 2) { prevEl.innerHTML = '<span class="muted">Enter a number (2 or more) to preview.</span>'; return; }
+      if (ranked.length < n) {
+        prevEl.innerHTML = '<span class="warn">Only ' + ranked.length + ' signed up so far; ' + (n - ranked.length) + ' more needed before the draft can start.</span>';
+        return;
+      }
+      const need = n * T.teamSize;
+      const short = ranked.length < need ? ' <span class="warn">' + ranked.length + ' signed up; ' + (need - ranked.length) + ' more needed to fill all ' + n + ' teams.</span>' : '';
+      prevEl.innerHTML = 'Captains right now would be: ' + ranked.slice(0, n).map(p => '<strong>' + esc(p.name) + '</strong> (' + (p.rating != null ? p.rating : '\u2014') + ')').join(', ') + '.' + short;
+    };
+    let capCfgTimer = null;
+    const persistCfg = () => {
+      clearTimeout(capCfgTimer);
+      capCfgTimer = setTimeout(() => {
+        const body = { action: 'set_captain_mode', mode: capModeSel.value, admin: adminToken() };
+        const n = parseInt(numEl.value, 10);
+        if (isFinite(n) && n >= 2) body.count = n;
+        api('/api/t/' + T.id + '/phase', body).catch(() => {});
+      }, 400);
+    };
+    capModeSel.onchange = () => {
+      const rating = capModeSel.value === 'rating';
+      if (ratingWrap) ratingWrap.style.display = rating ? '' : 'none';
+      if (manualWrap) manualWrap.style.display = rating ? 'none' : '';
+      paintPreview(); persistCfg();
+    };
+    if (numEl) numEl.oninput = () => { paintPreview(); persistCfg(); };
+    paintPreview();
+  }
+
   const capPool = document.getElementById('capPool');
   if (capPool) {
     // seed selection from the server's pendingCaptains (persisted across reloads)
@@ -850,16 +909,31 @@ function drawTeams(el) {
     tbl.appendChild(tb);
     capPool.appendChild(tbl);
     updateCount();
-    document.getElementById('startDraft').onclick = async () => {
+  }
+
+  const startDraftBtn = document.getElementById('startDraft');
+  if (startDraftBtn) startDraftBtn.onclick = async () => {
+    const modeEl = document.getElementById('capMode');
+    const rating = modeEl && modeEl.value === 'rating';
+    const body = { action: 'start_draft', admin: adminToken() };
+    if (rating) {
+      const n = parseInt((document.getElementById('capNum') || {}).value, 10);
+      if (!isFinite(n) || n < 2) return toast('Enter how many captains (2 or more)', true);
+      // Make sure the number the organizer is looking at is the one the server uses, even if
+      // the debounced save hasn't fired yet.
+      try { await api('/api/t/' + T.id + '/phase', { action: 'set_captain_mode', mode: 'rating', count: n, admin: adminToken() }); }
+      catch (e) { return toast(e.message, true); }
+    } else {
       const ids = Object.keys(F.capSel);
       if (ids.length < 2) return toast('Mark at least 2 captains', true);
-      try {
-        await api('/api/t/' + T.id + '/phase', { action: 'start_draft', captainIds: ids, admin: adminToken() });
-        F.capSel = {};
-        await refresh();
-      } catch (e) { toast(e.message, true); }
-    };
-  }
+      body.captainIds = ids;
+    }
+    try {
+      await api('/api/t/' + T.id + '/phase', body);
+      F.capSel = {};
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
 
   const ft = document.getElementById('formTeams');
   if (ft) ft.onclick = async () => {
