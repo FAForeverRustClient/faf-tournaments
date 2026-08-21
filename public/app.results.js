@@ -1340,6 +1340,7 @@ function clearUnreadFor(room) {
 
 let _chatTimer = null;
 let _chatMsgs = [];
+let _chatReplyTo = null;   // id of the message the composer is replying to, or null
 
 let _chatPollNow = null;
 function stopChatPoll() { if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null; } _chatPollNow = null; }
@@ -1372,10 +1373,15 @@ function renderChatMessages(container) {
     if (day !== lastDay) { divider = `<div class="chat-day"><span>${esc(day)}</span></div>`; lastDay = day; }
     if (m.sys) return divider + `<div class="chat-sys">\u{1F3B2} ${esc(m.text)} <span class="chat-time" title="${esc(full)}">${esc(time)}</span></div>`;
     const org = viewerIsOrganizer();
-    return divider + `<div class="chat-msg" data-mid="${esc(m.id)}">
+    // The quoted parent is a snapshot taken when the reply was posted, so it still reads
+    // correctly if the original was deleted or has scrolled out of the retained history.
+    const quote = m.replyTo ? `<div class="chat-quote" data-jump="${esc(m.replyTo.id)}" title="Jump to the original">
+      <span class="cq-who">${esc(m.replyTo.who)}</span><span class="cq-text">${esc(m.replyTo.text)}</span></div>` : '';
+    return divider + `<div class="chat-msg${m.everyone ? ' chat-everyone' : ''}" data-mid="${esc(m.id)}">
+      ${quote}
       <span class="chat-who">${esc(m.who)}</span>
       <span class="chat-time" title="${esc(full)}">${esc(time)}</span>
-      ${org && m.fafId ? `<span class="chat-mod"><a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a></span>` : ''}
+      <span class="chat-mod"><a href="#" data-chatreply="${esc(m.id)}" data-replywho="${esc(m.who)}" data-replytext="${esc(String(m.text || '').slice(0, 140))}" title="Reply to this message">reply</a>${org && m.fafId ? ` <a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a>` : ''}</span>
       <div class="chat-text">${highlightMentions(m.text)}</div>
     </div>`;
   }).join('') || '<div class="empty">No messages yet. Say hi, or type <code>!roll</code>.</div>';
@@ -1385,12 +1391,17 @@ function renderChatMessages(container) {
 // Build a chat panel into `host` for the given room. Reusable by the tab and the match modal.
 async function mountChat(host, room, label) {
   stopChatPoll();
-  _chatRoom = room; _chatSince = 0; _chatMsgs = [];
+  _chatRoom = room; _chatSince = 0; _chatMsgs = []; _chatReplyTo = null;
   host.innerHTML = `<div class="chat-panel">
     <div class="chat-head">${esc(label)}</div>
     <div class="chat-log" id="chatLog"><div class="empty">Loading\u2026</div></div>
+    <div class="chat-replybar" id="chatReplyBar" style="display:none">
+      <span class="crb-label">Replying to</span> <span class="crb-who" id="chatReplyWho"></span>
+      <span class="crb-text" id="chatReplyText"></span>
+      <button type="button" class="crb-x" id="chatReplyCancel" title="Cancel reply">\u00D7</button>
+    </div>
     <div class="chat-input">
-      <div class="chat-inwrap"><input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100, !organizer to ping the organizers, @name to mention)" autocomplete="off"><div class="chat-mentions" id="chatMentions" style="display:none"></div></div>
+      <div class="chat-inwrap"><input type="text" id="chatText" maxlength="500" placeholder="${viewerIsOrganizer() ? 'Message\u2026 (@everyone to ping all entrants, @name to mention, !roll for 1\u2013100)' : 'Message\u2026 (!roll for 1\u2013100, !organizer to ping the organizers, @name to mention)'}" autocomplete="off"><div class="chat-mentions" id="chatMentions" style="display:none"></div></div>
       <button class="btn primary small" id="chatSend">Send</button>
       ${viewerIsOrganizer() ? '' : '<button class="btn ghost small" id="chatPing" title="Flags this chat for the organizers so they know you need help">\uD83D\uDD14 Ping organizer</button>'}
     </div>
@@ -1422,12 +1433,34 @@ async function mountChat(host, room, label) {
   };
   await load(false);
 
+  // ---- reply / quote ----
+  const replyBar = host.querySelector('#chatReplyBar');
+  const replyWho = host.querySelector('#chatReplyWho');
+  const replyText = host.querySelector('#chatReplyText');
+  const clearReply = () => { _chatReplyTo = null; if (replyBar) replyBar.style.display = 'none'; };
+  const setReply = (id, who, text) => {
+    _chatReplyTo = id;
+    if (replyWho) replyWho.textContent = who || '';
+    if (replyText) replyText.textContent = text || '';
+    if (replyBar) replyBar.style.display = '';
+    inp.focus();
+  };
+  clearReply();
+  const rc = host.querySelector('#chatReplyCancel');
+  if (rc) rc.onclick = clearReply;
+  // Escape cancels a reply before it does anything else.
+  inp.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && _chatReplyTo) { ev.stopPropagation(); clearReply(); }
+  });
+
   const send = async () => {
     const text = inp.value.trim();
     if (!text) return;
+    const replyTo = _chatReplyTo;
     inp.value = '';
     try {
-      await api('/api/t/' + T.id + '/chat_post', { room, text, token: viewToken() });
+      await api('/api/t/' + T.id + '/chat_post', { room, text, replyTo: replyTo || undefined, token: viewToken() });
+      clearReply();
       await load(true);
     } catch (e) { toast(e.message, true); inp.value = text; }
   };
@@ -1439,6 +1472,9 @@ async function mountChat(host, room, label) {
   const mentionBox = host.querySelector('#chatMentions');
   const nameList = (() => {
     const set = new Map();
+    // Organizers only: @everyone pings every signed-up account. Offered first so it is easy to
+    // reach, and simply absent for anyone who isn't allowed to use it.
+    if (viewerIsOrganizer()) set.set('everyone', 'everyone');
     for (const p of (T.players || [])) if (p && p.name) set.set(p.name.toLowerCase(), p.name);
     for (const tm of (T.teams || [])) if (tm && tm.name) set.set(tm.name.toLowerCase(), tm.name);
     return Array.from(set.values());
@@ -1508,6 +1544,23 @@ async function mountChat(host, room, label) {
   logEl.onclick = async (e) => {
     const del = e.target.closest('[data-chatdel]');
     const mute = e.target.closest('[data-chatmute]');
+    const rep = e.target.closest('[data-chatreply]');
+    const jump = e.target.closest('[data-jump]');
+    if (rep) {
+      e.preventDefault();
+      setReply(rep.dataset.chatreply, rep.dataset.replywho, rep.dataset.replytext);
+      return;
+    }
+    if (jump) {
+      // Scroll the quoted original into view and flash it, if it is still in the loaded history.
+      const target = logEl.querySelector('[data-mid="' + jump.dataset.jump.replace(/"/g, '') + '"]');
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+        target.classList.add('chat-flash');
+        setTimeout(() => target.classList.remove('chat-flash'), 1200);
+      } else { toast('That message is no longer in the loaded history'); }
+      return;
+    }
     if (del) {
       e.preventDefault();
       try { await api('/api/t/' + T.id + '/chat_delete', { room, id: del.dataset.chatdel, admin: adminToken() }); await load(false); }

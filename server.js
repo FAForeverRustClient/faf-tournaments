@@ -149,6 +149,16 @@ function loadDB() {
   // Sessions created before token encryption hold plaintext access/refresh tokens. Re-wrap them
   // in place on first boot. Without a key (OAuth not configured) they are left untouched rather
   // than destroyed - there is nothing to protect them with and nothing using them either.
+  // Teams from before completion stamping: treat their creation time as their entry time, so
+  // existing signups keep a sensible first-come order instead of all sorting as 0.
+  for (const t of Object.values(db.tournaments || {})) {
+    if (!Array.isArray(t.teams)) continue;
+    const size = t.teamSize || 1;
+    for (const tm of t.teams) {
+      if (tm.fullAt === undefined && (tm.playerIds || []).length >= size) { tm.fullAt = tm.createdAt || 0; changed = true; }
+    }
+  }
+
   if (TOKEN_KEY) {
     for (const sid of Object.keys(db.sessions || {})) {
       const s = db.sessions[sid];
@@ -162,7 +172,32 @@ function loadDB() {
 }
 
 let saveTimer = null;
+// Stamp the moment a team became complete. That - not when the team was first created - is when
+// it claimed a slot, so it is the fair key for first-come-first-served: a half-built team that
+// only fills up at the last minute must not jump ahead of one that completed days earlier.
+// Done centrally rather than at each of the eight places membership changes, so no future
+// caller can forget it. Runs before the debounce guard so same-tick changes are still ordered.
+function stampTeamCompletion() {
+  for (const t of Object.values(db.tournaments || {})) {
+    if (t.status !== 'signup' || !Array.isArray(t.teams)) continue;
+    const size = t.teamSize || 1;
+    for (const tm of t.teams) {
+      const full = (tm.playerIds || []).length >= size;
+      if (full && !tm.fullAt) tm.fullAt = now();
+      else if (!full && tm.fullAt) tm.fullAt = null;   // dropped below size: loses its place
+    }
+  }
+}
+
+// Effective first-come-first-served key for a team. An organizer swap sets entryOrder, which
+// overrides it; otherwise it is when the team completed, falling back to when it was created.
+function teamEntryKey(tm) {
+  if (tm.entryOrder != null) return tm.entryOrder;
+  return tm.fullAt || tm.createdAt || 0;
+}
+
 function saveDB() {
+  try { stampTeamCompletion(); } catch (e) {}
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
@@ -856,9 +891,25 @@ function viewerTeamIds(t, req) {
   }
   return ids;
 }
+// Who may read/write the staff room: organizers, casters, and team captains. Intended for
+// official decisions without fifty players joining in. In a 1v1 tournament every entrant is
+// their own captain, so this is only meaningfully narrower in team events.
+function isStaffRoomMember(t, req, token) {
+  if (isAdmin(t, token, req) || isOrganizer(t, req)) return true;
+  if (isCaster(t, req)) return true;
+  const sess = currentSession(req);
+  if (!sess || !sess.fafId) return false;
+  return (t.teams || []).some(tm => {
+    if (!tm.captainId) return false;
+    const c = playerById(t, tm.captainId);
+    return !!(c && c.fafId === sess.fafId);
+  });
+}
+
 // Can this request read/write the given room? organizer => everything.
 function chatAccess(t, req, room, token) {
   if (isAdmin(t, token, req) || isOrganizer(t, req)) return true;
+  if (room === 'staff') return isStaffRoomMember(t, req, token);
   if (isCaster(t, req)) return room === 'global' || (room.indexOf('match:') === 0 && !!matchById(t, room.slice(6)));
   const sess = currentSession(req);
   if (!sess || !sess.fafId) return false;
@@ -900,6 +951,8 @@ function chatRoomsFor(t, req, token) {
   if (organizer || streamer || (currentSession(req) && (t.players || []).some(p => { const sess = currentSession(req); return sess && p.fafId === sess.fafId; }))) {
     push('global', 'Global \u2014 everyone', false);
   }
+  // Staff room, straight after Global so it is easy to find. Only listed for people who may use it.
+  if (isStaffRoomMember(t, req, token)) push('staff', 'Staff \u2014 organizers, casters & captains', false);
   const mine = (organizer || streamer) ? null : viewerTeamIds(t, req);
   for (const m of (t.matches || [])) {
     // a match chat exists only once BOTH sides are known, real teams (not empty, BYE, or an
@@ -983,6 +1036,7 @@ function publicView(t) {
       captainId: x.captainId, playerIds: x.playerIds,
       division: x.division || 0,
       checkedIn: x.checkedIn ? 1 : 0, createdAt: x.createdAt || 0,
+      entryKey: teamEntryKey(x),
       captainRenamed: x.captainRenamed ? 1 : 0,
       joinRequests: (x.joinRequests || []).map(r => ({ playerId: r.playerId, name: r.name, at: r.at || 0 })),
       invites: (x.invites || []).map(iv => ({ playerId: iv.playerId, name: iv.name, at: iv.at || 0 })),
@@ -3500,6 +3554,26 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true, remaining: t.organizerFafIds.length });
     }
 
+    // ---- organizer swaps a waiting team in for one that is currently entering ----
+    // Exchanges their effective entry keys rather than touching createdAt, so history stays
+    // honest and the swap is reversible by swapping back.
+    if (sub === 'swap_team') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (t.status !== 'signup') return bad(res, 'Teams are already locked');
+      const inTeam = (t.teams || []).find(x => x.id === b.inId);
+      const outTeam = (t.teams || []).find(x => x.id === b.outId);
+      if (!inTeam || !outTeam) return bad(res, 'Team not found');
+      if (inTeam.id === outTeam.id) return bad(res, 'Pick two different teams');
+      const size = t.teamSize || 1;
+      if ((inTeam.playerIds || []).length < size) return bad(res, 'That team is not full yet');
+      const ka = teamEntryKey(inTeam), kb = teamEntryKey(outTeam);
+      inTeam.entryOrder = kb;
+      outTeam.entryOrder = ka;
+      saveDB();
+      tlog(t, req, b.admin, 'swapped "' + inTeam.name + '" in and "' + outTeam.name + '" out of the participant list');
+      return json(res, 200, { ok: true });
+    }
+
     // ---- casters: read-everything access, no organizer powers ----
     // Any organizer may add or remove a caster on their own tournament. Unlike organizers,
     // removal is not site-admin-only: a caster grants no power, so letting the organizer who
@@ -3914,7 +3988,58 @@ async function handleAPI(req, res, url) {
         const roll = lo + Math.floor(Math.random() * (hi - lo + 1));
         t.chat[room].push({ id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, sys: 1, text: who + ' rolled ' + roll + ' (' + lo + '\u2013' + hi + ')' });
       } else {
-        t.chat[room].push({ id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, text });
+        // Reply/quote: store only the id, author and a short snippet of the parent. Keeping a
+        // snapshot rather than a live lookup means a reply still reads correctly after the
+        // original is deleted, and it survives the CHAT_MAX trim that drops old messages.
+        let replyTo = null;
+        if (b.replyTo) {
+          const parent = (t.chat[room] || []).find(mm => mm.id === String(b.replyTo));
+          if (parent) {
+            replyTo = {
+              id: parent.id,
+              who: parent.who || '',
+              text: String(parent.text || '').slice(0, 140)
+            };
+          }
+        }
+        const msg = { id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, text };
+        if (replyTo) msg.replyTo = replyTo;
+
+        // @everyone — organizers only. Pings every signed-up FAF account except the sender, so
+        // it is genuinely an announcement channel rather than something 50 players can set off.
+        const wantsEveryone = /(?:^|\s)@everyone\b/i.test(text);
+        if (wantsEveryone && !organizer) {
+          return json(res, 403, { error: '@everyone is organizers only \u2014 your message was not sent' });
+        }
+        t.chat[room].push(msg);
+        if (wantsEveryone) {
+          msg.everyone = 1;
+          t.userPings = t.userPings || {};
+          // Only ping people who can actually OPEN this room. A badge is cleared by reading the
+          // room, so pinging someone who has no access would leave them a badge they can never
+          // clear. In the staff room that means captains; in a match room, the two teams.
+          const canSeeRoom = (p) => {
+            if (room === 'global') return true;
+            if (room === 'staff') {
+              return (t.teams || []).some(tm => tm.captainId === p.id);
+            }
+            if (room.indexOf('match:') === 0) {
+              const mm = matchById(t, room.slice(6));
+              return !!(mm && p.teamId && (p.teamId === mm.team1 || p.teamId === mm.team2));
+            }
+            return false;
+          };
+          let pinged = 0;
+          for (const p of (t.players || [])) {
+            if (!p.fafId) continue;
+            if (sess && p.fafId === sess.fafId) continue;      // don't ping yourself
+            if (!canSeeRoom(p)) continue;
+            t.userPings[p.fafId] = t.userPings[p.fafId] || {};
+            t.userPings[p.fafId][room] = now();
+            pinged++;
+          }
+          tlog(t, req, b.admin || b.token, who + ' used @everyone in ' + (room === 'global' ? 'the global chat' : room === 'staff' ? 'the staff chat' : 'a match chat') + ' (' + pinged + ' pinged)');
+        }
         // @mention pings: resolve @name tokens to signed-up FAF players/captains and flag a
         // per-user, per-room ping. The mentioned person sees a red badge until they open the room.
         const mentions = (text.match(/(?:^|\s)@([^\s@]{1,40})/g) || []).map(s => s.replace(/^\s*@/, '').toLowerCase());
@@ -3926,6 +4051,7 @@ async function handleAPI(req, res, url) {
           }
           const pingedIds = new Set();
           for (const mraw of mentions) {
+            if (mraw === 'everyone') continue;             // handled above
             // match a name that starts with the typed token (so "@nug" hits "nuggets3858")
             let hit = byName[mraw];
             if (!hit) { for (const nm of Object.keys(byName)) { if (nm.startsWith(mraw)) { hit = byName[nm]; break; } } }

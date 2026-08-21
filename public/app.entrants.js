@@ -438,21 +438,26 @@ function drawOpenTeams(el) {
     : '';
   const fullTeams = T.teams.filter(x => x.playerIds.length >= size);
   const useCheckin = !!T.checkInDeadline || fullTeams.some(x => x.checkedIn);
-  // Teams are ordered by combined rating (highest first) — this is also the default seeding, so
-  // the rank shown here is each team's projected seed until the organizer locks/reseeds. If real
-  // seeds have been set (post-lock), respect those. Checked-in teams still sort ahead when
-  // check-in is active, so the participant cap reflects who's actually in.
+  // WHO IS IN is first come first served: checked-in teams first (when check-in is in use), then
+  // by when the team completed. Rating decides SEEDING, never who makes the cut - sorting the cut
+  // by rating meant a newly-finished high-rated team bumped an existing one off the list.
+  // This mirrors finalizeOpenTeams exactly, so the display can't disagree with what start does.
   const seeded = fullTeams.some(x => x.seed);
+  const entryKey = tm => (tm.entryKey != null ? tm.entryKey : (tm.createdAt || 0));
   const orderedFull = fullTeams.slice().sort((a, b) => {
-    if (useCheckin && !!a.checkedIn !== !!b.checkedIn) return a.checkedIn ? -1 : 1;
     if (seeded) return (a.seed || 9999) - (b.seed || 9999);
-    return teamRating(b) - teamRating(a);
+    if (useCheckin && !!a.checkedIn !== !!b.checkedIn) return a.checkedIn ? -1 : 1;
+    return entryKey(a) - entryKey(b);
   });
-  // map team id -> seed number to display (real seed if set, else rank in this ordering)
-  const seedFor = {};
-  orderedFull.forEach((tm, i) => { seedFor[tm.id] = tm.seed || (i + 1); });
   const participants = cap ? orderedFull.slice(0, cap) : orderedFull;
   const waitlist = cap ? orderedFull.slice(cap) : [];
+  // Projected seed is the rating rank AMONG THOSE ACTUALLY ENTERING, so it matches the bracket.
+  const seedFor = {};
+  if (seeded) { orderedFull.forEach(tm => { seedFor[tm.id] = tm.seed; }); }
+  else {
+    participants.slice().sort((a, b) => teamRating(b) - teamRating(a))
+      .forEach((tm, i) => { seedFor[tm.id] = i + 1; });
+  }
   const forming = T.teams.filter(x => x.playerIds.length < size).slice().sort((a, b) => teamRating(b) - teamRating(a));
 
   const teamCard = (tm) => {
@@ -476,13 +481,15 @@ function drawOpenTeams(el) {
     html += '<div class="panel section"><h2>Teams</h2><div class="empty">No teams yet. Be the first to create one.</div></div>';
   } else {
     html += `<div class="panel section"><h2>Participants <span class="h2-strong">(${participants.length}${cap ? ' of ' + cap : ''}${T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>${minMaxNote}`;
-    html += participants.length ? `<p class="muted small" style="margin:-4px 0 10px">Ordered by combined rating. The <span class="tc-seed" style="margin:0">#</span> is each team's ${seeded ? 'seed' : 'projected seed (rating order) — final seeds are set when the organizer locks teams' + (admin ? ', from the Bracket tab' : '')}.</p>` : '';
+    html += participants.length ? `<p class="muted small" style="margin:-4px 0 10px">Places are <strong>first come, first served</strong> \u2014 by when a team filled up${useCheckin ? ', checked-in teams first' : ''}. The <span class="tc-seed" style="margin:0">#</span> is each team's ${seeded ? 'seed' : 'projected seed (by combined rating) — final seeds are set when the organizer locks teams' + (admin ? ', from the Bracket tab' : '')}, which affects the bracket, not who gets in.</p>` : '';
     html += participants.length ? '<div class="teamgrid">' + participants.map(teamCard).join('') + '</div>' : '<div class="empty">No full teams yet.</div>';
     html += '</div>';
     if (waitlist.length) {
       html += `<div class="panel section"><h2>Waiting list <span class="h2-strong">(${waitlist.length})</span></h2>
-        <p class="muted small" style="margin-bottom:8px">Beyond the ${cap}-team cap. If a participant drops or misses check-in, the next checked-in waiting team moves up (signup order).</p>
-        <div class="teamgrid">${waitlist.map(teamCard).join('')}</div></div>`;
+        <p class="muted small" style="margin-bottom:8px">Beyond the ${cap}-team cap, in the order they filled up. If a participant drops or misses check-in, the next waiting team moves up.${admin ? ' As organizer you can swap one in directly.' : ''}</p>
+        <div class="teamgrid">${waitlist.map(tm => teamCard(tm) + (admin && participants.length
+          ? `<div class="wl-swap"><button class="btn ghost small" data-swapin="${tm.id}">Swap in\u2026</button></div>`
+          : '')).join('')}</div></div>`;
     }
     html += '<!--FREEAGENTS-->';
     if (forming.length) {
@@ -569,6 +576,26 @@ function drawOpenTeams(el) {
     const name = prompt('New team name:', myTeam.name);
     if (name && name.trim()) call('/rename_team', { teamId: myTeam.id, name: name.trim(), admin: adminToken() }, 'Renamed');
   };
+  // Organizer: swap a waiting team in for one that is currently entering.
+  el.querySelectorAll('[data-swapin]').forEach(b => b.onclick = () => {
+    const inTeam = T.teams.find(x => x.id === b.dataset.swapin);
+    if (!inTeam) return;
+    const opts = participants.map(tm => `<option value="${esc(tm.id)}">${esc(tm.name)}</option>`).join('');
+    modal(`<h3>Swap in ${esc(inTeam.name)}</h3>
+      <p class="muted small">Pick the team it replaces. That team moves to the waiting list; everyone else keeps their place. Swapping the two back undoes it.</p>
+      <label>Team to move out</label>
+      <select id="swOut">${opts}</select>
+      <div class="actions"><button class="btn ghost" id="swCancel">Cancel</button><button class="btn primary" id="swGo">Swap</button></div>`, root => {
+      root.querySelector('#swCancel').onclick = closeModal;
+      root.querySelector('#swGo').onclick = async () => {
+        try {
+          await api('/api/t/' + T.id + '/swap_team', { inId: inTeam.id, outId: root.querySelector('#swOut').value, admin: adminToken() });
+          closeModal(); toast('Swapped'); await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+    });
+  });
+
   el.querySelectorAll('[data-request-join]').forEach(b => b.onclick = () => call('/request_join', { teamId: b.dataset.requestJoin }, 'Request sent — the captain will approve it'));
   el.querySelectorAll('[data-cancel-join]').forEach(b => b.onclick = () => call('/cancel_join', { teamId: b.dataset.cancelJoin }, 'Request withdrawn'));
   el.querySelectorAll('[data-invite]').forEach(b => b.onclick = () => call('/invite_to_team', { teamId: myCapTeam.id, playerId: b.dataset.invite }, 'Invite sent'));

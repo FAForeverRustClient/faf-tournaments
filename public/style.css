@@ -1042,3 +1042,33 @@ body.modal-open .turnbanner { animation: none !important; }
 @media (max-width: 700px) {
   .fveto-col { margin-left: 0; padding-left: 0; border-left: none; border-top: 1px solid #2a3d55; padding-top: 8px; width: 100%; max-width: none; }
 }
+
+/* ---------- chat: reply / quote and @everyone ---------- */
+.chat-quote {
+  display: flex; gap: 6px; align-items: baseline; cursor: pointer;
+  border-left: 2px solid #3a5a80; padding: 2px 0 2px 8px; margin-bottom: 3px;
+  font-size: 11px; color: var(--muted); max-width: 100%;
+}
+.chat-quote:hover { border-left-color: var(--blue); }
+.chat-quote .cq-who { color: var(--blue); font-weight: 600; flex: 0 0 auto; }
+.chat-quote .cq-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-msg .chat-mod a[data-chatreply] { color: var(--muted); }
+.chat-msg .chat-mod a[data-chatreply]:hover { color: var(--blue); }
+/* the composer's "replying to" bar */
+.chat-replybar {
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
+  background: #16202c; border-left: 2px solid var(--blue);
+  padding: 4px 8px; margin-bottom: 4px; border-radius: 0 4px 4px 0;
+}
+.chat-replybar .crb-label { color: var(--muted); flex: 0 0 auto; }
+.chat-replybar .crb-who { color: var(--blue); font-weight: 600; flex: 0 0 auto; }
+.chat-replybar .crb-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.chat-replybar .crb-x {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 0 2px; flex: 0 0 auto;
+}
+.chat-replybar .crb-x:hover { color: var(--text); }
+/* an @everyone announcement stands out from ordinary chatter */
+.chat-msg.chat-everyone { background: rgba(217,184,74,0.10); border-left: 2px solid var(--amber); padding-left: 8px; border-radius: 0 4px 4px 0; }
+/* brief flash when jumping to a quoted original */
+.chat-flash { background: rgba(92,158,232,0.18); transition: background 1s; }
