@@ -444,9 +444,12 @@ function drawOpenTeams(el) {
   // This mirrors finalizeOpenTeams exactly, so the display can't disagree with what start does.
   const seeded = fullTeams.some(x => x.seed);
   const entryKey = tm => (tm.entryKey != null ? tm.entryKey : (tm.createdAt || 0));
+  // Check-in deliberately does NOT reorder this list. Checking in is a confirmation that you are
+  // there, not a way to jump the queue: a waiting team that checks in used to leapfrog every
+  // participant who hadn't yet, which silently undid an organizer's swap. Check-in only decides
+  // who is dropped when the tournament is launched.
   const orderedFull = fullTeams.slice().sort((a, b) => {
     if (seeded) return (a.seed || 9999) - (b.seed || 9999);
-    if (useCheckin && !!a.checkedIn !== !!b.checkedIn) return a.checkedIn ? -1 : 1;
     return entryKey(a) - entryKey(b);
   });
   const participants = cap ? orderedFull.slice(0, cap) : orderedFull;
@@ -481,12 +484,12 @@ function drawOpenTeams(el) {
     html += '<div class="panel section"><h2>Teams</h2><div class="empty">No teams yet. Be the first to create one.</div></div>';
   } else {
     html += `<div class="panel section"><h2>Participants <span class="h2-strong">(${participants.length}${cap ? ' of ' + cap : ''}${T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>${minMaxNote}`;
-    html += participants.length ? `<p class="muted small" style="margin:-4px 0 10px">Places are <strong>first come, first served</strong> \u2014 by when a team filled up${useCheckin ? ', checked-in teams first' : ''}. The <span class="tc-seed" style="margin:0">#</span> is each team's ${seeded ? 'seed' : 'projected seed (by combined rating) — final seeds are set when the organizer locks teams' + (admin ? ', from the Bracket tab' : '')}, which affects the bracket, not who gets in.</p>` : '';
+    html += participants.length ? `<p class="muted small" style="margin:-4px 0 10px">Places are <strong>first come, first served</strong> \u2014 by when a team filled up.${useCheckin ? ' Checking in does not change this order; teams that have not checked in are dropped when the tournament starts.' : ''} The <span class="tc-seed" style="margin:0">#</span> is each team's ${seeded ? 'seed' : 'projected seed (by combined rating) — final seeds are set when the organizer locks teams' + (admin ? ', from the Bracket tab' : '')}, which affects the bracket, not who gets in.</p>` : '';
     html += participants.length ? '<div class="teamgrid">' + participants.map(teamCard).join('') + '</div>' : '<div class="empty">No full teams yet.</div>';
     html += '</div>';
     if (waitlist.length) {
       html += `<div class="panel section"><h2>Waiting list <span class="h2-strong">(${waitlist.length})</span></h2>
-        <p class="muted small" style="margin-bottom:8px">Beyond the ${cap}-team cap, in the order they filled up. If a participant drops or misses check-in, the next waiting team moves up.${admin ? ' As organizer you can swap one in directly.' : ''}</p>
+        <p class="muted small" style="margin-bottom:8px">Beyond the ${cap}-team cap, in the order they filled up. A waiting team can still check in \u2014 that keeps its place in the queue rather than moving it up. If a participant drops or misses check-in, the next waiting team takes the free slot when you start.${admin ? ' As organizer you can swap one in directly.' : ''}</p>
         <div class="teamgrid">${waitlist.map(tm => teamCard(tm) + (admin && participants.length
           ? `<div class="wl-swap"><button class="btn ghost small" data-swapin="${tm.id}">Swap in\u2026</button></div>`
           : '')).join('')}</div></div>`;
@@ -544,7 +547,7 @@ function drawOpenTeams(el) {
     const fullCount = fullTeams.length;
     const ci = fullTeams.filter(x => x.checkedIn).length;
     html += `<div class="panel section"><h2>Start</h2>
-      <p class="muted small">${fullCount} full team${fullCount === 1 ? '' : 's'}${useCheckin ? ', ' + ci + ' checked in' : ''}. ${cap ? 'Up to ' + cap + ' enter as participants' + (useCheckin ? ' (checked-in first, then signup order)' : ' (signup order)') + '; the rest' : 'Incomplete teams and extras'} become reserves you can sub in later.</p>
+      <p class="muted small">${fullCount} full team${fullCount === 1 ? '' : 's'}${useCheckin ? ', ' + ci + ' checked in' : ''}. ${cap ? 'Up to ' + cap + ' enter as participants (signup order)' + (useCheckin ? ', minus anyone who has not checked in by the time you start' : '') + '; the rest' : 'Incomplete teams and extras'} become reserves you can sub in later.</p>
       <button class="btn amber" id="otFormTeams">Close signups &amp; lock teams</button></div>`;
   }
 
