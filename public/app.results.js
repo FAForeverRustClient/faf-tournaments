@@ -1598,10 +1598,9 @@ async function drawChatTab(el) {
     ? `<div class="org-callout">
       <div class="org-callout-title">Organizer${orgs.length === 1 ? '' : 's'}</div>
       <div class="org-callout-list">${orgs.map(o => `<div class="org-row">
-        <span class="org-name">${esc(o.name)}</span>
         ${o.discord
-          ? '<span class="org-sep">\u2192 Discord</span><span class="org-discord" title="' + esc(o.name) + ' on Discord">' + esc(o.discord) + '</span>'
-          : '<span class="muted small">\u2192 no Discord listed</span>'}
+          ? '<span class="org-idpair"><span class="org-name">' + esc(o.name) + '</span><span class="org-discord" title="' + esc(o.name) + ' on Discord">' + esc(o.discord) + '</span></span>'
+          : '<span class="org-name">' + esc(o.name) + '</span><span class="muted small">no Discord listed</span>'}
       </div>`).join('')}</div>
       <div class="org-callout-hint">Type <code>!organizer</code> or press \uD83D\uDD14 to ping them in that chat.</div>
     </div>`
