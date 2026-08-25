@@ -551,10 +551,10 @@ async function renderHost() {
     }
     // veto config (not the maps themselves)
     if (t.veto) { setc('cVeto', t.veto.enabled); setv('cVetoMode', t.veto.mode || 'upfront'); setv('cVetoAb', t.veto.abMode || 'lowerA'); if (cVetoCfg) cVetoCfg.style.display = t.veto.enabled ? '' : 'none'; }
-    // streams
+    // Livestream links are deliberately NOT copied: they name the specific streamers and
+    // co-casters of that edition, so carrying them to a new tournament credits the wrong people.
     streamRows.innerHTML = '';
-    (t.streams || []).forEach(st => addStreamRow(st.url, st.info));
-    if (!streamRows.children.length) addStreamRow();
+    addStreamRow();
     // rich previews / dependent selects
     if (cDescTa) cDescTa.dispatchEvent(new Event('input'));
     syncVis();

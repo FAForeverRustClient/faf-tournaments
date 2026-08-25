@@ -1874,7 +1874,7 @@ function drawStats(el) {
   html += card(solo ? 'Individual signups' : 'Individual signups', players.length, avgSub);
   if (!solo) html += card('Players in teams', onTeams, 'actually played in the event');
   if (!solo) html += card('Teams', fullTeams.length);
-  html += card('Series played', done.length, 'matches, each a Bo1/Bo3/Bo5');
+  html += card('Series played', done.length);
   html += card('Games played', games, 'individual games across all series');
   if ((T.mapDb || []).length) html += card('Maps in the tournament', (T.mapDb || []).length);
   if (mapIds.length) html += card('Different maps played', mapIds.length);

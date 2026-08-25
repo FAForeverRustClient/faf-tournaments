@@ -97,7 +97,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 ### Tournament series
 - A **series** groups editions of a recurring event (e.g. a monthly cup) purely for browsing. Editions are completely independent: no qualification, no fixed cadence, no shared state.
 - Anyone with tournament-hosting permission can create a series. Renaming or deleting one is limited to its creator, anyone who organizes a tournament in that series, directors, and site admins.
-- A series can be chosen when creating a tournament (an optional field on the host form), or set and changed later from the Admin tab. Copying an existing tournament to make the next edition inherits its series.
+- A series can be chosen when creating a tournament (an optional field on the host form), or set and changed later from the Admin tab. Copying an existing tournament to make the next edition inherits its series. Livestream links are **not** copied, since they name that edition's streamers and co-casters.
 - A series description supports the same formatting as other rich-text fields (headings, bold, lists, links) and is rendered on the series page. The series index shows a plain-text, two-line summary so a long description cannot swamp the list.
 - Each series has a **name colour** from a fixed palette (amber, blue, green, red, purple, plain). A colour is picked automatically from the name so a list of series is not a wall of identical headings, and the owner can change it with a live preview. The colour is used on the series page, the index, and the "part of the X series" block on a tournament.
 - A series can be tagged **Official** or **Community**, shown as the same green/blue badge tournaments use, with an "Official only" filter on the index.
