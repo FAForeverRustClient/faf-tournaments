@@ -970,7 +970,12 @@ body.modal-open .turnbanner { animation: none !important; }
 .replay-link:hover { color: var(--amber); text-decoration: underline; }
 /* organizers listed one per row with their discord handle */
 .org-callout-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
-.org-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* No wrapping: a handle that wraps onto its own line reads as if it belongs to the name below
+   it. Name and handle stay on one row, joined by a connector, and the handle truncates instead. */
+.org-row { display: flex; align-items: baseline; gap: 6px; flex-wrap: nowrap; min-width: 0; }
+.org-row .org-name { flex: 0 0 auto; }
+.org-row .org-sep { color: var(--muted); flex: 0 0 auto; font-size: 11px; }
+.org-row .org-discord { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .org-discord { font-family: var(--mono); font-size: 11px; color: var(--blue); background: #4c8fd41f; border: 1px solid #4c8fd444; border-radius: 3px; padding: 1px 6px; }
 /* chat notice shown before the tournament starts */
 .chat-prestart { border-color: #FFB44755; }
@@ -1072,3 +1077,57 @@ body.modal-open .turnbanner { animation: none !important; }
 .chat-msg.chat-everyone { background: rgba(217,184,74,0.10); border-left: 2px solid var(--amber); padding-left: 8px; border-radius: 0 4px 4px 0; }
 /* brief flash when jumping to a quoted original */
 .chat-flash { background: rgba(92,158,232,0.18); transition: background 1s; }
+
+/* ---------- veto: make BAN vs PICK unmissable, and confirm before committing ---------- */
+.veto-act {
+  display: inline-block; padding: 1px 7px; border-radius: 3px;
+  font-weight: 800; letter-spacing: .06em; font-size: 12px;
+}
+.veto-act-ban  { color: #ff6b63; }
+.veto-act-pick { color: #5fd177; }
+span.veto-act-ban  { background: rgba(217,83,79,0.18);  border: 1px solid rgba(217,83,79,0.55); }
+span.veto-act-pick { background: rgba(87,196,106,0.15); border: 1px solid rgba(87,196,106,0.5); }
+.veto-head-ban  { border-left: 3px solid #d9534f; padding-left: 8px; }
+.veto-head-pick { border-left: 3px solid #57c46a; padding-left: 8px; }
+/* the "your turn" line under the header */
+.veto-yourturn {
+  margin: 6px 0 10px; padding: 6px 10px; border-radius: 4px; font-size: 12px;
+  background: #16202c; border-left: 3px solid currentColor;
+}
+/* a map armed by the first click, waiting for the second */
+.veto-map.armed { outline: 2px solid var(--amber); outline-offset: 1px; position: relative; }
+.veto-map .vm-confirm {
+  display: block; margin-top: 2px; font-size: 10px; font-weight: 700;
+  letter-spacing: .04em; color: var(--amber); text-transform: uppercase;
+}
+.veto-map.act-ban.armed  { outline-color: #d9534f; }
+.veto-map.act-ban.armed  .vm-confirm { color: #ff6b63; }
+.veto-map.act-pick.armed { outline-color: #57c46a; }
+.veto-map.act-pick.armed .vm-confirm { color: #5fd177; }
+.veto-map[disabled] { opacity: .5; cursor: default; }
+/* armed faction chip, awaiting its confirming second click */
+.fchip.armed { outline: 2px solid var(--amber); outline-offset: 1px; }
+.fchip.armed .fchip-name { font-weight: 700; }
+.fchip[disabled].armed { opacity: 1; }
+
+/* your own matches, tinted in every Matches-tab section */
+tr.mt-mine > td { background: rgba(217,164,74,0.07); }
+tr.mt-mine > td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+tr.mt-mine:hover > td { background: rgba(217,164,74,0.12); }
+/* replay links inside the match details popup */
+.md-replays { margin: 10px 0 0; font-size: 12px; text-align: center; }
+.md-replays a { margin-right: 2px; }
+/* the speaker's Discord handle, attached to their own message so it is never ambiguous */
+.chat-dc {
+  font-family: var(--mono); font-size: 10px; color: var(--blue);
+  background: #4c8fd41f; border: 1px solid #4c8fd444; border-radius: 3px;
+  padding: 0 5px; margin-left: 6px; vertical-align: baseline;
+}
+
+/* "How the veto will run" preview, shown on a map pool before any of it happens */
+.vp-title { margin: 14px 0 6px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.vp-steps { display: flex; flex-direction: column; gap: 3px; }
+.vp-step { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 6px; border-radius: 3px; background: #16202c; }
+.vp-step.decider { background: #1d2b1f; }
+.vp-n { min-width: 18px; text-align: right; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.vp-team { color: var(--text); }

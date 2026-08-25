@@ -18,9 +18,37 @@ function showPoolPopup(pool) {
       <span class="pool-thumb-name">${esc(mo.name)}</span>
     </div>`;
   }).join('');
+  // Spell out exactly how the veto will run, in plain order, so captains aren't seeing the
+  // sequence for the first time when it is their turn to act.
+  const seq = (pool.sequence || []);
+  const vetoPlan = (() => {
+    if (!(T.veto && T.veto.enabled)) return '<p class="muted small">Map vetoes are off for this tournament \u2014 the organizer sets the maps directly.</p>';
+    if (!seq.length) return '<p class="muted small">No ban/pick order set for this pool yet.</p>';
+    const abNote = {
+      lowerA: 'the lower rated team is <strong>Team A</strong> and acts first',
+      lowerB: 'the higher rated team is <strong>Team A</strong> and acts first',
+      random: '<strong>Team A</strong> is picked at random per match',
+      manual: '<strong>Team A</strong> is set by the organizer per match'
+    }[(T.veto && T.veto.abMode) || 'lowerA'];
+    const rows = seq.map((st, i) => `<div class="vp-step">
+        <span class="vp-n">${i + 1}</span>
+        <span class="veto-act veto-act-${st.action === 'ban' ? 'ban' : 'pick'}">${st.action === 'ban' ? 'BAN' : 'PICK'}</span>
+        <span class="vp-team">Team ${esc(st.team)}</span>
+      </div>`).join('');
+    const bans = seq.filter(x => x.action === 'ban').length;
+    const picks = seq.filter(x => x.action === 'pick').length;
+    return `<div class="veto-plan">
+      <p class="muted small" style="margin:0 0 6px">${ids.length} maps \u2014 ${bans} ban${bans === 1 ? '' : 's'} and ${picks} pick${picks === 1 ? '' : 's'}, then the single map left over is the decider. Rating decides sides: ${abNote}.</p>
+      <div class="vp-steps">${rows}<div class="vp-step decider"><span class="vp-n">\u2605</span><span class="veto-act veto-act-pick">DECIDER</span><span class="vp-team">last map standing</span></div></div>
+      <p class="muted small" style="margin:6px 0 0">${(T.veto && T.veto.timing === 'continuous') ? 'Steps are revealed as games are played.' : 'The whole sequence is completed before game 1.'}</p>
+    </div>`;
+  })();
+
   modal(`<div class="pool-card" style="border:none;padding:0">
     <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}</span><span class="muted small">Bo${bo} &middot; ${ids.length} map${ids.length === 1 ? '' : 's'}</span></div>
     <div class="pool-card-maps pool-thumbs" style="margin-top:10px">${thumbs || '<span class="muted small">no maps</span>'}</div>
+    <h4 class="vp-title">How the veto will run</h4>
+    ${vetoPlan}
     <div class="actions"><button class="btn ghost" id="ppClose">Close</button></div>
   </div>`, root => {
     root.querySelectorAll('[data-map-info]').forEach(t => t.onclick = () => showMapInfo(t.dataset.mapInfo));
@@ -344,7 +372,10 @@ function matchBox(m) {
       const veto = masked ? '' : vetoLinkHTML(m);
       return (chat || veto) ? '<div class="mlinks">' + chat + veto + '</div>' : '';
     })() +
-    ((!masked && m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
+    // Show replays as soon as games are confirmed, not only once the series ends. A Bo3 sitting
+    // at 1-0 already has a replay worth watching, and casters need it while the match is live.
+    // `masked` still hides them in streamer mode until the result is revealed.
+    ((!masked && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
       ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(replayLink).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(replayLink).join(', ') : '') + '</div>' : '') +
     ((streamerMode && m.status === 'done')
       ? `<div class="bfoot"><button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? '\u25C9 Hide result' : '\u25CB Reveal result'}</button></div>` : '') +
@@ -1308,7 +1339,13 @@ function vetoHTML(m) {
   const canActNow = (myTeamId && turnTeam === myTeamId) || isOrg;
   const stepsLeft = v.sequence.length - v.stepIndex;
 
-  h += `<div class="veto-head">Step ${v.stepIndex + 1} of ${v.sequence.length} · <strong>${esc(turnName)}</strong> to ${actionWord} <span class="muted">(${stepsLeft} left, then decider)</span></div>`;
+  // BAN vs PICK is the thing captains misread, so it gets its own colour-coded badge rather than
+  // being one lowercase word buried in a sentence.
+  const actBadge = `<span class="veto-act veto-act-${actionWord}">${actionWord.toUpperCase()}</span>`;
+  h += `<div class="veto-head veto-head-${actionWord}">Step ${v.stepIndex + 1} of ${v.sequence.length} · <strong>${esc(turnName)}</strong> to ${actBadge} <span class="muted">(${stepsLeft} left, then decider)</span></div>`;
+  if (canActNow) {
+    h += `<div class="veto-yourturn veto-act-${actionWord}">${myTeamId && turnTeam === myTeamId ? 'Your turn' : 'Acting for ' + esc(turnName)} \u2014 choose a map to <strong>${actionWord.toUpperCase()}</strong>. You'll be asked to confirm.</div>`;
+  }
 
   // history so far: bans struck, picks as games
   if (banned.length || picks.length) {
@@ -1349,16 +1386,49 @@ function wireVeto(box, m) {
   const step = v.sequence ? v.sequence[v.stepIndex] : null;
   const turnTeam = step ? (step.team === 'A' ? v.teamA : v.teamB) : null;
 
-  box.querySelectorAll('[data-veto-map]').forEach(btn => {
+  // Two-step confirm, inline rather than a modal: the first click arms that map and turns it into
+  // a "Confirm ban/pick" button, a second click commits. A misclick costs nothing - clicking any
+  // other map moves the arming, and Cancel or Escape clears it. Deliberately not a popup, since a
+  // dialog on every one of a dozen steps would be worse than the misclick it prevents.
+  const actionWord = step ? (step.action === 'ban' ? 'ban' : 'pick') : '';
+  const btns = Array.from(box.querySelectorAll('[data-veto-map]'));
+  const label = (b) => {
+    const tag = document.createElement('span');
+    tag.className = 'vm-confirm';
+    tag.textContent = 'Confirm ' + actionWord + '?';
+    b.appendChild(tag);
+  };
+  const paint = () => {
+    for (const b of btns) {
+      const on = _vetoArmed && _vetoArmed.matchId === m.id && _vetoArmed.map === b.dataset.vetoMap;
+      b.classList.toggle('armed', !!on);
+      const lbl = b.querySelector('.vm-confirm');
+      if (on && !lbl) label(b);
+      if (!on && lbl) lbl.remove();
+    }
+  };
+  const disarm = () => { _vetoArmed = null; paint(); };
+  const commit = async (btn) => {
+    const map = btn.dataset.vetoMap;
+    btns.forEach(b => { b.disabled = true; });
+    const body = { matchId: m.id, map: map, token: myToken() };
+    // organizer acting on behalf of the team whose turn it is
+    if (viewerIsOrganizer() && (!T.viewer || T.viewer.teamId !== turnTeam)) body.asTeam = turnTeam;
+    try { _vetoArmed = null; await api('/api/t/' + T.id + '/veto_action', body); await refresh(); }
+    catch (e) { toast(e.message, true); btns.forEach(b => { b.disabled = false; }); disarm(); }
+  };
+  for (const btn of btns) {
     btn.onclick = async () => {
-      const map = btn.dataset.vetoMap;
-      const body = { matchId: m.id, map: map, token: myToken() };
-      // organizer acting on behalf of the team whose turn it is
-      if (viewerIsOrganizer() && (!T.viewer || T.viewer.teamId !== turnTeam)) body.asTeam = turnTeam;
-      try { await api('/api/t/' + T.id + '/veto_action', body); await refresh(); }
-      catch (e) { toast(e.message, true); }
+      const on = _vetoArmed && _vetoArmed.matchId === m.id && _vetoArmed.map === btn.dataset.vetoMap;
+      if (on) return commit(btn);
+      _vetoArmed = { matchId: m.id, map: btn.dataset.vetoMap };
+      paint();
     };
-  });
+  }
+  paint();
+  // Escape or a click anywhere else clears the arming.
+  box.addEventListener('keydown', e => { if (e.key === 'Escape') disarm(); });
+  box.addEventListener('click', e => { if (!e.target.closest('[data-veto-map]')) disarm(); });
   box.querySelectorAll('[data-veto-seta]').forEach(btn => {
     btn.onclick = async () => {
       const teamA = btn.dataset.team;
@@ -2188,7 +2258,11 @@ function drawMatchesTab(el) {
     }
     const revealBtn = (streamerMode && m.status === 'done')
       ? `<button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? 'Hide' : 'Reveal'}</button>` : '';
-    return `<tr data-mrow="${m.id}">
+    // A row you are in is tinted and marked, in every section - "My matches" only groups them at
+    // the top, so without this your later-round matches were indistinguishable further down.
+    const myTid = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
+    const isMine = myTid && (m.team1 === myTid || m.team2 === myTid);
+    return `<tr data-mrow="${m.id}"${isMine ? ' class="mt-mine" title="You are in this match"' : ''}>
       <td class="mono small muted mt-fixed">${esc(mLabel(m))}</td>
       <td class="mt-teamcell">${nameFor(m.team1, 1)}</td>
       <td class="mt-teamcell">${nameFor(m.team2, 2)}</td>
@@ -2255,6 +2329,15 @@ function showMatchDetails(m) {
         : '<div class="muted small">No players listed.</div>'}</div>
     </div>`;
   };
+  // Replays belong here too: casters and players open Details far more often than the bracket.
+  const replayBlock = (!masked && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
+    ? '<div class="md-replays"><span class="muted small">Replays</span> '
+      + ((m.replayIds && m.replayIds.length) ? m.replayIds.map(replayLink).join(', ') : '')
+      + ((m.drawReplayIds && m.drawReplayIds.length)
+          ? ((m.replayIds && m.replayIds.length) ? ' &middot; ' : '') + '<span class="muted small">draws</span> ' + m.drawReplayIds.map(replayLink).join(', ')
+          : '')
+      + '</div>'
+    : '';
   const s1 = (m.forfeit === m.team1 && m.score1 < 0) ? 'FF' : (m.score1 != null && m.score1 >= 0 ? m.score1 : 0);
   const s2 = (m.forfeit === m.team2 && m.score2 < 0) ? 'FF' : (m.score2 != null && m.score2 >= 0 ? m.score2 : 0);
   const scoreLine = masked
@@ -2272,6 +2355,7 @@ function showMatchDetails(m) {
       <div class="md-mid">${scoreLine}<div class="muted small">vs</div></div>
       ${teamCol(m.team2, m.score2)}
     </div>
+    ${replayBlock}
     <div id="mdVeto"></div>
     <div class="md-foot">
       ${chatOk ? '<a href="#" id="mdChat" class="veto-mini-link">\u{1F4AC} Match chat' + unreadDot('match:' + m.id) + '</a>' : ''}
@@ -2305,6 +2389,11 @@ function showMatchDetails(m) {
 // Rendered per game slot, to the right of the map that game will be played on. Runs in parallel
 // with the map veto and independently of it: your own choices are the only ones you can ever see,
 // because the server strips the opponent's out of the payload until both sides are finished.
+// Pending "click again to confirm" state. Held at module level rather than inside the wiring
+// functions so the 4-second poll redraw re-applies it instead of silently cancelling it.
+let _vetoArmed = null;    // { matchId, map }
+let _fvetoArmed = null;   // { matchId, game, faction }
+
 const FACTION_META = {
   uef:      { label: 'UEF',      short: 'U', cls: 'uef' },
   aeon:     { label: 'Aeon',     short: 'A', cls: 'aeon' },
@@ -2394,14 +2483,52 @@ function factionGameHTML(m, gameNum) {
 
 // Wire the faction buttons inside a card body.
 function wireFactionVeto(root) {
-  root.querySelectorAll('[data-fpick]').forEach(b => b.onclick = async () => {
-    b.disabled = true;
-    try {
-      await api('/api/t/' + T.id + '/fveto_action', {
-        matchId: b.dataset.fmatch, game: parseInt(b.dataset.fgame, 10),
-        faction: b.dataset.fpick, token: viewToken()
-      });
-      await refresh();
-    } catch (e) { b.disabled = false; toast(e.message, true); }
-  });
+  const chips = Array.from(root.querySelectorAll('[data-fpick]'));
+  if (!chips.length) return;
+  // Same two-click confirm as the map veto. A faction choice is irreversible for the player
+  // (only an organizer can reset it), so a stray click matters more here, not less.
+  const paint = () => {
+    for (const b of chips) {
+      const armed = _fvetoArmed && _fvetoArmed.matchId === b.dataset.fmatch
+        && _fvetoArmed.game === b.dataset.fgame && _fvetoArmed.faction === b.dataset.fpick;
+      b.classList.toggle('armed', !!armed);
+    }
+    // The chips are too small for an inline label, so the prompt above them does the talking.
+    const col = root.querySelector('.fveto-col.active .fveto-prompt');
+    if (!col) return;
+    if (!col.dataset.orig) col.dataset.orig = col.innerHTML;
+    if (_fvetoArmed && chips.some(b => b.dataset.fmatch === _fvetoArmed.matchId && b.dataset.fgame === _fvetoArmed.game)) {
+      const meta = FACTION_META[_fvetoArmed.faction];
+      col.innerHTML = 'Click <strong>' + esc(meta ? meta.label : _fvetoArmed.faction) + '</strong> again to confirm'
+        + ' <span class="muted small">(or pick another / press Esc)</span>';
+    } else {
+      col.innerHTML = col.dataset.orig;
+    }
+  };
+  for (const b of chips) {
+    b.onclick = async () => {
+      const same = _fvetoArmed && _fvetoArmed.matchId === b.dataset.fmatch
+        && _fvetoArmed.game === b.dataset.fgame && _fvetoArmed.faction === b.dataset.fpick;
+      if (!same) {
+        _fvetoArmed = { matchId: b.dataset.fmatch, game: b.dataset.fgame, faction: b.dataset.fpick };
+        paint();
+        return;
+      }
+      chips.forEach(x => { x.disabled = true; });
+      try {
+        await api('/api/t/' + T.id + '/fveto_action', {
+          matchId: b.dataset.fmatch, game: parseInt(b.dataset.fgame, 10),
+          faction: b.dataset.fpick, token: viewToken()
+        });
+        _fvetoArmed = null;
+        await refresh();
+      } catch (e) {
+        chips.forEach(x => { x.disabled = false; });
+        _fvetoArmed = null; paint();
+        toast(e.message, true);
+      }
+    };
+  }
+  root.addEventListener('keydown', e => { if (e.key === 'Escape' && _fvetoArmed) { _fvetoArmed = null; paint(); } });
+  paint();   // survives the 4s poll redraw: re-applied from module state, not rebuilt from scratch
 }

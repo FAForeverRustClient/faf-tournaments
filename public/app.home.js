@@ -916,9 +916,9 @@ function drawTournament() {
           <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}</div>
         </div>
         <div class="headrow-right">
-          ${viewerHasRights() ? `<button class="btn ghost small streamer-toggle ${playerViewMode ? 'on' : ''}" id="playerViewToggle" title="Hide organizer &amp; admin controls and browse as a regular player.${hotkeyFor('playerview') ? ' Shortcut: ' + hotkeyFor('playerview') + '.' : ''} Doesn't change your actual permissions.">${playerViewMode ? '\u25C9 Viewing as player' : '\u25CB View as player'}</button>` : ''}
-          <button class="btn ghost small streamer-toggle ${showPlayerNames ? 'on' : ''}" id="namesToggle" title="Show each team's players in the bracket instead of the team name.${hotkeyFor('players') ? ' Shortcut: ' + hotkeyFor('players') + '.' : ''} Only affects your own screen.">${showPlayerNames ? '\u25C9 Showing players' : '\u25CB Show players'}</button>
-          <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals.${hotkeyFor('streamer') ? ' Shortcut: ' + hotkeyFor('streamer') + '.' : ''} Only affects your own screen.">${streamerMode ? '\u25C9 Streamer mode: ON' : '\u25CB Streamer mode'}</button>
+          ${viewerHasRights() ? `<button class="btn ghost small streamer-toggle ${playerViewMode ? 'on' : ''}" id="playerViewToggle" title="Hide organizer &amp; admin controls and browse as a regular player.${hotkeyFor('playerview') ? ' Shortcut: ' + hotkeyFor('playerview') + '.' : ''} Doesn't change your actual permissions.">${playerViewMode ? '\u25C9' : '\u25CB'} View as player</button>` : ''}
+          <button class="btn ghost small streamer-toggle ${showPlayerNames ? 'on' : ''}" id="namesToggle" title="Show each team's players in the bracket instead of the team name.${hotkeyFor('players') ? ' Shortcut: ' + hotkeyFor('players') + '.' : ''} Only affects your own screen.">${showPlayerNames ? '\u25C9' : '\u25CB'} Show players</button>
+          <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals.${hotkeyFor('streamer') ? ' Shortcut: ' + hotkeyFor('streamer') + '.' : ''} Only affects your own screen.">${streamerMode ? '\u25C9' : '\u25CB'} Streamer mode</button>
           <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
         </div>
       </div>
@@ -1310,12 +1310,12 @@ function drawOverview(el) {
       .sort((a, b) => brOrder(a) - brOrder(b) || a.round - b.round || a.index - b.index);
     const done = T.matches.filter(m => m.status === 'done')
       .sort((a, b) => b.round - a.round || a.index - b.index).slice(0, 8);
-    html += `<div class="panel section"><h2>Launch <span class="h2-strong">Queue</span> — up next</h2><div class="queue" id="q1">
-      ${open.length ? '' : '<div class="empty">Nothing waiting — all caught up.</div>'}</div></div>`;
+    // The "up next" queue was removed: the Matches tab lists every match with far more detail,
+    // filtered into My matches / ongoing / undecided / concluded, so this duplicated it.
     html += `<div class="panel section"><h2>Recent results</h2><div class="queue" id="q2">
-      ${done.length ? '' : '<div class="empty">No results yet.</div>'}</div></div>`;
+      ${done.length ? '' : '<div class="empty">No results yet.</div>'}</div>
+      <p class="muted small" style="margin:10px 0 0">Every match, including what is coming up, is on the <a href="#" data-goto="matches">Matches</a> tab.</p></div>`;
     el.innerHTML = html;
-    fillQueue(document.getElementById('q1'), open, true);
     fillQueue(document.getElementById('q2'), done, false);
   } else {
     el.innerHTML = html || '<div class="panel"><div class="empty">Nothing here yet.</div></div>';

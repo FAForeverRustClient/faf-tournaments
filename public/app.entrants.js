@@ -476,6 +476,8 @@ function drawOpenTeams(el) {
         ? `<div class="tc-pending"><span class="muted small">Request pending</span> <button class="btn ghost small" data-cancel-join="${tm.id}">Cancel</button></div>`
         : `<button class="btn amber small tc-join" data-request-join="${tm.id}">Request to join (${openSlots} open)</button>`) : ''}
       ${(((myPlayer && tm.captainId === myPlayer.id) || admin) && (tm.joinRequests || []).length) ? `<div class="tc-requests">${tm.joinRequests.map(r => `<div class="tc-req"><span>${esc(r.name)} wants to join</span><span class="tc-req-btns"><button class="btn primary small" data-approve="${tm.id}:${r.playerId}">Accept</button> <button class="btn ghost small" data-decline="${tm.id}:${r.playerId}">Decline</button></span></div>`).join('')}</div>` : ''}
+      ${((admin || (myPlayer && tm.captainId === myPlayer.id)) && tm.playerIds.length > 1)
+        ? `<div class="tc-cap"><button class="btn ghost small" data-setcap="${tm.id}">Change captain</button></div>` : ''}
       ${admin ? `<div class="tc-admin">${full ? `<button class="btn ghost small" data-checkin="${tm.id}" data-val="${tm.checkedIn ? 0 : 1}">${tm.checkedIn ? 'Un-check' : 'Check in'}</button>` : ''}<button class="btn ghost small" data-arename="${tm.id}">Rename</button><button class="btn danger small" data-adisband="${tm.id}">Disband</button></div>` : ''}
     </div>`;
   };
@@ -484,7 +486,7 @@ function drawOpenTeams(el) {
     html += '<div class="panel section"><h2>Teams</h2><div class="empty">No teams yet. Be the first to create one.</div></div>';
   } else {
     html += `<div class="panel section"><h2>Participants <span class="h2-strong">(${participants.length}${cap ? ' of ' + cap : ''}${T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>${minMaxNote}`;
-    html += participants.length ? `<p class="muted small" style="margin:-4px 0 10px">Places are <strong>first come, first served</strong> \u2014 by when a team filled up.${useCheckin ? ' Checking in does not change this order; teams that have not checked in are dropped when the tournament starts.' : ''} The <span class="tc-seed" style="margin:0">#</span> is each team's ${seeded ? 'seed' : 'projected seed (by combined rating) — final seeds are set when the organizer locks teams' + (admin ? ', from the Bracket tab' : '')}, which affects the bracket, not who gets in.</p>` : '';
+    html += participants.length ? `<p class="muted small" style="margin:-4px 0 10px">Places are <strong>first come, first served</strong> \u2014 by when a team filled up.${cap ? ' <strong>Sign up even if it looks full:</strong> anyone beyond the cap joins the waiting list, and teams that drop out or fail to check in are replaced from it, so waiting teams regularly get in.' : ''} The <span class="tc-seed" style="margin:0">#</span> is each team's ${seeded ? 'seed' : 'projected seed (by combined rating) — final seeds are set when the organizer locks teams' + (admin ? ', from the Bracket tab' : '')}, which affects the bracket, not who gets in.</p>` : '';
     html += participants.length ? '<div class="teamgrid">' + participants.map(teamCard).join('') + '</div>' : '<div class="empty">No full teams yet.</div>';
     html += '</div>';
     if (waitlist.length) {
@@ -580,6 +582,30 @@ function drawOpenTeams(el) {
     if (name && name.trim()) call('/rename_team', { teamId: myTeam.id, name: name.trim(), admin: adminToken() }, 'Renamed');
   };
   // Organizer: swap a waiting team in for one that is currently entering.
+  // Hand the captaincy to another member. Real transfer: captain rights everywhere (invites,
+  // approvals, veto actions, score reporting, the captains chat room) read team.captainId.
+  el.querySelectorAll('[data-setcap]').forEach(b => b.onclick = () => {
+    const tm = T.teams.find(x => x.id === b.dataset.setcap);
+    if (!tm) return;
+    const mems = (tm.playerIds || []).map(pid => T.players.find(p => p.id === pid)).filter(Boolean);
+    const others = mems.filter(p => p.id !== tm.captainId);
+    if (!others.length) return toast('No one else on this team', true);
+    const curName = (mems.find(p => p.id === tm.captainId) || {}).name || '\u2014';
+    modal(`<h3>Change captain of ${esc(tm.name)}</h3>
+      <p class="muted small">Current captain: <strong>${esc(curName)}</strong>. The new captain takes over invites, approvals, map and faction vetoes, score reporting and the captains chat straight away.</p>
+      <label>New captain</label>
+      <select id="scWho">${others.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select>
+      <div class="actions"><button class="btn ghost" id="scCancel">Cancel</button><button class="btn primary" id="scGo">Make captain</button></div>`, root => {
+      root.querySelector('#scCancel').onclick = closeModal;
+      root.querySelector('#scGo').onclick = async () => {
+        try {
+          await api('/api/t/' + T.id + '/set_captain', { teamId: tm.id, playerId: root.querySelector('#scWho').value, admin: adminToken() });
+          closeModal(); toast('Captain changed'); await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+    });
+  });
+
   el.querySelectorAll('[data-swapin]').forEach(b => b.onclick = () => {
     const inTeam = T.teams.find(x => x.id === b.dataset.swapin);
     if (!inTeam) return;

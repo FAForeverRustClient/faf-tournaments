@@ -891,12 +891,18 @@ function viewerTeamIds(t, req) {
   }
   return ids;
 }
-// Who may read/write the staff room: organizers, casters, and team captains. Intended for
-// official decisions without fifty players joining in. In a 1v1 tournament every entrant is
-// their own captain, so this is only meaningfully narrower in team events.
-function isStaffRoomMember(t, req, token) {
+// Two private rooms:
+//   `captains` - organizers, casters and team captains. Coordinating a round without fifty
+//                players joining in.
+//   `staff`    - organizers and casters ONLY. For decisions the captains shouldn't be in on.
+// In a 1v1 tournament every entrant is their own captain, so `captains` is effectively everyone
+// there; `staff` stays genuinely private either way.
+function isTournamentStaff(t, req, token) {
   if (isAdmin(t, token, req) || isOrganizer(t, req)) return true;
-  if (isCaster(t, req)) return true;
+  return isCaster(t, req);
+}
+function isCaptainsRoomMember(t, req, token) {
+  if (isTournamentStaff(t, req, token)) return true;
   const sess = currentSession(req);
   if (!sess || !sess.fafId) return false;
   return (t.teams || []).some(tm => {
@@ -909,7 +915,8 @@ function isStaffRoomMember(t, req, token) {
 // Can this request read/write the given room? organizer => everything.
 function chatAccess(t, req, room, token) {
   if (isAdmin(t, token, req) || isOrganizer(t, req)) return true;
-  if (room === 'staff') return isStaffRoomMember(t, req, token);
+  if (room === 'captains') return isCaptainsRoomMember(t, req, token);
+  if (room === 'staff') return isTournamentStaff(t, req, token);
   if (isCaster(t, req)) return room === 'global' || (room.indexOf('match:') === 0 && !!matchById(t, room.slice(6)));
   const sess = currentSession(req);
   if (!sess || !sess.fafId) return false;
@@ -952,7 +959,8 @@ function chatRoomsFor(t, req, token) {
     push('global', 'Global \u2014 everyone', false);
   }
   // Staff room, straight after Global so it is easy to find. Only listed for people who may use it.
-  if (isStaffRoomMember(t, req, token)) push('staff', 'Staff \u2014 organizers, casters & captains', false);
+  if (isCaptainsRoomMember(t, req, token)) push('captains', 'Captains \u2014 organizers, casters & captains', false);
+  if (isTournamentStaff(t, req, token)) push('staff', 'Staff \u2014 organizers & casters only', false);
   const mine = (organizer || streamer) ? null : viewerTeamIds(t, req);
   for (const m of (t.matches || [])) {
     // a match chat exists only once BOTH sides are known, real teams (not empty, BYE, or an
@@ -3422,15 +3430,29 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
-    // organizer: set a specific member as the team captain
+    // Hand the captaincy to another member of the team. An organizer may do this for any team;
+    // the current captain may do it for their own. This is a real transfer, not a label: captain
+    // rights are looked up from team.captainId everywhere (drafting, invites, veto actions, score
+    // reporting, the captains chat room), so they all follow immediately.
     if (sub === 'set_captain') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const team = teamById(t, b.teamId);
       if (!team) return bad(res, 'Team not found');
+      const organizer = canOrganize(t, req, b);
+      // Resolve the ACTING player from the session only. Passing `b` here would let
+      // actingPlayer fall back to b.playerId, which in this action is the incoming captain.
+      const me = actingPlayer({});
+      const isCap = !!(me && team.captainId === me.id);
+      if (!organizer && !isCap) return json(res, 403, { error: 'Only the current captain or an organizer can hand over the captaincy' });
+      if (t.status !== 'signup' && !organizer) return bad(res, 'The bracket has started \u2014 ask an organizer to change the captain');
       if (team.playerIds.indexOf(b.playerId) < 0) return bad(res, 'That player is not on this team');
+      if (team.captainId === b.playerId) return bad(res, 'They are already the captain');
+      const nextCap = playerById(t, b.playerId);
+      const prevCap = team.captainId ? playerById(t, team.captainId) : null;
       team.captainId = b.playerId;
       saveDB();
-      return json(res, 200, { ok: true });
+      tlog(t, req, b.admin, 'made ' + ((nextCap && nextCap.name) || b.playerId) + ' captain of "' + team.name + '"'
+        + (prevCap ? ' (was ' + prevCap.name + ')' : ''));
+      return json(res, 200, { ok: true, captainId: team.captainId });
     }
 
     // Manual matchup override: put a specific team (or BYE/empty) into a match slot.
@@ -4020,9 +4042,12 @@ async function handleAPI(req, res, url) {
           // clear. In the staff room that means captains; in a match room, the two teams.
           const canSeeRoom = (p) => {
             if (room === 'global') return true;
-            if (room === 'staff') {
+            if (room === 'captains') {
               return (t.teams || []).some(tm => tm.captainId === p.id);
             }
+            // `staff` is organizers + casters, who are not necessarily signed-up players at all;
+            // there is nobody in t.players to ping, so @everyone there pings no one.
+            if (room === 'staff') return false;
             if (room.indexOf('match:') === 0) {
               const mm = matchById(t, room.slice(6));
               return !!(mm && p.teamId && (p.teamId === mm.team1 || p.teamId === mm.team2));
@@ -4038,7 +4063,7 @@ async function handleAPI(req, res, url) {
             t.userPings[p.fafId][room] = now();
             pinged++;
           }
-          tlog(t, req, b.admin || b.token, who + ' used @everyone in ' + (room === 'global' ? 'the global chat' : room === 'staff' ? 'the staff chat' : 'a match chat') + ' (' + pinged + ' pinged)');
+          tlog(t, req, b.admin || b.token, who + ' used @everyone in ' + (room === 'global' ? 'the global chat' : room === 'staff' ? 'the staff chat' : room === 'captains' ? 'the captains chat' : 'a match chat') + ' (' + pinged + ' pinged)');
         }
         // @mention pings: resolve @name tokens to signed-up FAF players/captains and flag a
         // per-user, per-room ping. The mentioned person sees a red badge until they open the room.

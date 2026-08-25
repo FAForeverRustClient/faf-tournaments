@@ -1078,8 +1078,8 @@ async function drawAdmin(el) {
     const vtAb = document.getElementById('vtAb');
     const abNote = () => {
       const notes = {
-        lowerA: 'The lower rated captain is Team A and takes the first step. Rating comes from the captain, not the team average.',
-        lowerB: 'The lower rated captain is Team B, so the higher rated captain takes the first step. Rating comes from the captain, not the team average.',
+        lowerA: 'The lower rated team is Team A and takes the first step. Rating is the team\u2019s combined rating \u2014 the same number shown on the Teams tab.',
+        lowerB: 'The lower rated team is Team B, so the higher rated team takes the first step. Rating is the team\u2019s combined rating \u2014 the same number shown on the Teams tab.',
         random: 'A coin flip per match, decided when the match is ready.',
         manual: 'Nobody can start their veto until you set Team A on that match (Vetoes tab). Use this when you want full control.'
       };
@@ -1379,7 +1379,10 @@ function renderChatMessages(container) {
       <span class="cq-who">${esc(m.replyTo.who)}</span><span class="cq-text">${esc(m.replyTo.text)}</span></div>` : '';
     return divider + `<div class="chat-msg${m.everyone ? ' chat-everyone' : ''}" data-mid="${esc(m.id)}">
       ${quote}
-      <span class="chat-who">${esc(m.who)}</span>
+      <span class="chat-who">${esc(m.who)}</span>${(() => {
+        const who = m.fafId && (T.players || []).find(p => p.fafId === m.fafId);
+        return (who && who.discord) ? '<span class="chat-dc" title="' + esc(who.name) + ' on Discord">' + esc(who.discord) + '</span>' : '';
+      })()}
       <span class="chat-time" title="${esc(full)}">${esc(time)}</span>
       <span class="chat-mod"><a href="#" data-chatreply="${esc(m.id)}" data-replywho="${esc(m.who)}" data-replytext="${esc(String(m.text || '').slice(0, 140))}" title="Reply to this message">reply</a>${org && m.fafId ? ` <a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a>` : ''}</span>
       <div class="chat-text">${highlightMentions(m.text)}</div>
@@ -1596,7 +1599,9 @@ async function drawChatTab(el) {
       <div class="org-callout-title">Organizer${orgs.length === 1 ? '' : 's'}</div>
       <div class="org-callout-list">${orgs.map(o => `<div class="org-row">
         <span class="org-name">${esc(o.name)}</span>
-        ${o.discord ? '<span class="org-discord" title="Discord handle">' + esc(o.discord) + '</span>' : '<span class="muted small">no Discord listed</span>'}
+        ${o.discord
+          ? '<span class="org-sep">\u2192 Discord</span><span class="org-discord" title="' + esc(o.name) + ' on Discord">' + esc(o.discord) + '</span>'
+          : '<span class="muted small">\u2192 no Discord listed</span>'}
       </div>`).join('')}</div>
       <div class="org-callout-hint">Type <code>!organizer</code> or press \uD83D\uDD14 to ping them in that chat.</div>
     </div>`
@@ -1837,7 +1842,8 @@ function drawStats(el) {
   const fullTeams = teams.filter(t => (t.playerIds || []).length);
   const teamTotals = fullTeams.map(t => ({ t, r: teamRating(t) })).sort((a, b) => b.r - a.r);
 
-  // longest series (most games in one match)
+  // (the old "longest series" panel was removed: with several series tied on length it silently
+  // showed just one of them, which read as if it were the only one)
   let longest = null, longestN = 0;
   for (const m of done) {
     const n = ((m.score1 > 0 ? m.score1 : 0) + (m.score2 > 0 ? m.score2 : 0));
@@ -1858,16 +1864,22 @@ function drawStats(el) {
     html += `<div class="panel section st-champ"><div class="st-champ-lbl">Champion</div><h1 style="margin:4px 0 0">${esc(champ)}</h1></div>`;
   }
 
+  // Everyone who signed up, versus everyone who actually ended up on a team that played. In a
+  // team event those differ whenever people sign up solo and never find a team, and conflating
+  // them under one "Players" number was misleading.
+  const onTeams = players.filter(p => p.teamId && fullTeams.some(tm => tm.id === p.teamId)).length;
+  const avgSub = avgRating != null ? 'avg rating ' + avgRating + ' across ' + rated.length + ' rated' : '';
+
   html += '<div class="panel section"><h2>By the numbers</h2><div class="st-grid">';
-  html += card(solo ? 'Entrants' : 'Players', players.length);
+  html += card(solo ? 'Individual signups' : 'Individual signups', players.length, avgSub);
+  if (!solo) html += card('Players in teams', onTeams, 'actually played in the event');
   if (!solo) html += card('Teams', fullTeams.length);
-  html += card('Matches played', done.length);
+  html += card('Series played', done.length, 'matches, each a Bo1/Bo3/Bo5');
   html += card('Games played', games, 'individual games across all series');
   if ((T.mapDb || []).length) html += card('Maps in the tournament', (T.mapDb || []).length);
   if (mapIds.length) html += card('Different maps played', mapIds.length);
   if (vetoesDone) html += card('Vetoes completed', vetoesDone);
   if (forfeits) html += card('Forfeits', forfeits, decidedByFf ? decidedByFf + ' with no games played' : '');
-  if (avgRating != null) html += card('Average rating', avgRating, rated.length + ' rated ' + (solo ? 'entrants' : 'players'));
   html += '</div></div>';
 
   // podium / final standings, if the bracket produced them
@@ -1913,12 +1925,6 @@ function drawStats(el) {
           <span class="st-num mono">${n || '\u2014'}</span></div>`;
       }).join('') +
       `</div></div>`;
-  }
-
-  if (longest && longestN > 1) {
-    html += `<div class="panel section"><h2>Longest series</h2>
-      <p>${esc(mLabel(longest))} — <strong>${esc(teamName(longest.team1))}</strong> vs <strong>${esc(teamName(longest.team2))}</strong>
-      went ${longestN} games (${(longest.score1 > 0 ? longest.score1 : 0)}\u2013${(longest.score2 > 0 ? longest.score2 : 0)}).</p></div>`;
   }
 
   el.innerHTML = html || '<div class="panel"><div class="empty">No statistics available.</div></div>';
