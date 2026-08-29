@@ -1703,6 +1703,8 @@ async function handleAPI(req, res, url) {
       eventDate: cleanDate(b.eventDate),
       signupOpensAt: cleanDate(b.signupOpensAt),
       signupClosesAt: cleanDate(b.signupClosesAt),
+      // Check-in deadline is stored as epoch ms (unlike the ISO date fields around it).
+      checkInDeadline: (() => { const d = cleanDate(b.checkInDeadline); const ms = d ? new Date(d).getTime() : NaN; return isNaN(ms) ? null : ms; })(),
       minTeams: intIn(b.minTeams, 0, 128, 0),
       status: 'signup', createdAt: now(),
       minRating: (parseInt(b.minRating, 10) >= 0) ? parseInt(b.minRating, 10) : null,

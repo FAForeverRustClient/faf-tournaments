@@ -146,6 +146,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - **View as player** (shown only to organizers/admins) hides the organizer and admin controls on your screen so you can browse a tournament as a regular participant. It is a display filter only and does not change your actual permissions.
 
 ### Drafts and scheduled publishing
+- The home page lists **Ongoing** first, then **Upcoming / Open** sorted by whichever starts soonest (undated events last). **Completed** is collapsed by default, split into years automatically, and paged 50 at a time, so an archive of thousands stays usable.
 - Unpublished tournaments are listed in a **My drafts** section at the top of the home page, visible only to their organizers and site admins.
 - A draft can be published immediately or **scheduled**: enter a UTC date and time and it publishes itself. There is no background timer - the schedule is applied whenever tournaments are listed, which covers every way a tournament becomes visible. A pending schedule is shown on the draft banner and can be cancelled.
 
@@ -153,6 +154,7 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - An optional **overall cash prize** (currency plus a number, USD/EUR/RUB) is stored separately from the free-text Rewards and shown as its own box at the top of them, so it reads at a glance and can be reused in listings. The amount accepts digits only. It also appears on every home-page listing, so a prize no longer has to be written into the tournament name.
 - Description, Rewards, Sponsors and Lobby options accept **pasted screenshots and inserted images at creation time**, not only when editing later. There is no tournament to attach an image to until it exists, so images pasted on the host form are held in the browser and uploaded the moment the tournament is created.
 - Event date, signup open/close and the **check-in deadline** are all set together on the Admin tab, in UTC. The Teams tab shows the deadline read-only to players.
+- The **check-in deadline** can be set when creating a tournament as well as afterwards on the Admin tab.
 - Optional event date and time (entered in UTC) per tournament, editable any time. When an event date is set, **check-in only opens on the day of the event** - trying earlier tells the player exactly when it opens rather than just failing. Organizers can always check a team in.
 - Stored in UTC, displayed in each viewer's chosen time zone (remembered per browser). The Completed list is ordered most-recent-first.
 - Display settings (the gear icon) also choose the **date format** (`7 Jul 2026`, `07/07/2026`, or `2026-07-07`) and the **time format** (24-hour or 12-hour). These are per browser. Note that the placeholder inside a native date-picker field follows the browser's own locale and cannot be overridden by the site.

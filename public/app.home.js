@@ -23,6 +23,11 @@ function maybeAutoStreamerMode() {
   } catch (e) {}
 }
 
+// Home page: whether the completed archive is expanded, and how many rows are shown per year.
+// Module level so a re-render (poll, delete, publish) doesn't collapse it under the user.
+let completedOpen = false;
+let completedShown = {};
+
 // Images pasted into the host form before the tournament exists. Uploaded on create.
 let _pendingCreateImages = [];
 
@@ -52,9 +57,18 @@ async function renderHome() {
 
   const completed = live.filter(t => t.status === 'finished' || t.abandoned)
     .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
+  // Upcoming is sorted by how soon it starts, soonest first, so the next thing to sign up for is
+  // at the top. Anything with no date set sorts to the bottom rather than jumping the queue.
+  const upcoming = live.filter(t => t.status === 'signup' && !t.abandoned).sort((a, b) => {
+    const am = tourneyDateMs(a), bm = tourneyDateMs(b);
+    if (!am && !bm) return (b.createdAt || 0) - (a.createdAt || 0);
+    if (!am) return 1;
+    if (!bm) return -1;
+    return am - bm;
+  });
   const groups = [
-    ['Upcoming / Open', live.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing upcoming right now.'],
     ['Ongoing', live.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0 && !t.abandoned), 'No tournaments running.'],
+    ['Upcoming / Open', upcoming, 'Nothing upcoming right now.'],
     ['Completed', completed, 'No finished tournaments yet.']
   ];
   // drafts get their own section, shown first and only when the viewer actually has one
@@ -72,12 +86,47 @@ async function renderHome() {
     return parts.join(', ');
   };
 
-  app.innerHTML = '<div class="page page-wide">' + loginPanel + groups.map((g, i) => `
-    <div class="panel section${g[0] === 'My drafts' ? ' draft-panel' : ''}">
+  // Completed is collapsed by default and split by year, then paged. With years of archived and
+  // imported events an open list would be thousands of rows nobody can scroll through.
+  const COMPLETED_PAGE = 50;
+  const yearOf = (t) => { const ms = tourneyDateMs(t); return ms ? new Date(ms).getUTCFullYear() : 0; };
+  const completedYears = [];
+  {
+    const byYear = new Map();
+    for (const t of completed) {
+      const y = yearOf(t);
+      if (!byYear.has(y)) byYear.set(y, []);
+      byYear.get(y).push(t);
+    }
+    // newest year first; undated events last under their own heading
+    for (const y of Array.from(byYear.keys()).sort((a, b) => (b || -1) - (a || -1))) {
+      completedYears.push({ year: y, items: byYear.get(y) });
+    }
+  }
+
+  app.innerHTML = '<div class="page page-wide">' + loginPanel + groups.map((g, i) => {
+    if (g[0] === 'Completed') {
+      return `<div class="panel section">
+        <h2 class="collapsy" id="cmpToggle" role="button" tabindex="0" aria-expanded="${completedOpen ? 'true' : 'false'}">
+          <span class="collapsy-caret">${completedOpen ? '\u25BE' : '\u25B8'}</span> ${esc(g[0])} <span class="h2-strong">(${g[1].length})</span>
+          <span class="muted small" style="font-weight:400">${completedOpen ? '' : ' \u2014 click to show'}</span>
+        </h2>
+        <div id="cmpBody" style="${completedOpen ? '' : 'display:none'}">
+          ${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}
+          ${completedYears.map((yg, yi) => `<div class="cmp-year">
+            <h3 class="cmp-year-head">${yg.year ? yg.year : 'No date set'} <span class="muted small">(${yg.items.length})</span></h3>
+            <div id="tlistC${yi}"></div>
+            <div class="cmp-more" id="cmpMore${yi}"></div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }
+    return `<div class="panel section${g[0] === 'My drafts' ? ' draft-panel' : ''}">
       <h2>${esc(g[0])} <span class="h2-strong">(${g[1].length})</span></h2>
       ${g[0] === 'My drafts' ? '<p class="muted small" style="margin:-4px 0 10px">Not published yet \u2014 only you (and site admins) can see these. Publish one from its Admin tab, or schedule a publish date there.</p>' : ''}
       <div id="tlist${i}">${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}</div>
-    </div>`).join('') + '</div>';
+    </div>`;
+  }).join('') + '</div>';
 
   const hlFaf = document.getElementById('homeLgFaf');
   if (hlFaf) hlFaf.onclick = () => {
@@ -85,9 +134,8 @@ async function renderHome() {
     location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
   };
 
-  groups.forEach((g, i) => {
-    const tl = document.getElementById('tlist' + i);
-    for (const t of g[1]) {
+  // One card builder, used for the flat sections and for each year of the completed archive.
+  const buildCard = (t) => {
       const div = document.createElement('div');
       div.className = 'tlist-item';
       const kind = t.competition === 'ffa' ? 'FFA' :
@@ -137,9 +185,53 @@ async function renderHome() {
           };
         });
       };
-      tl.appendChild(div);
-    }
+    return div;
+  };
+
+  // flat sections (drafts / ongoing / upcoming)
+  groups.forEach((g, i) => {
+    if (g[0] === 'Completed') return;
+    const tl = document.getElementById('tlist' + i);
+    if (!tl) return;
+    for (const t of g[1]) tl.appendChild(buildCard(t));
   });
+
+  // completed: one paged list per year, rendered lazily so a huge archive costs nothing until
+  // the section is opened and nothing beyond the first page until "show more" is pressed.
+  const paintYear = (yi) => {
+    const yg = completedYears[yi];
+    const tl = document.getElementById('tlistC' + yi);
+    const more = document.getElementById('cmpMore' + yi);
+    if (!yg || !tl) return;
+    const shown = completedShown[yi] || COMPLETED_PAGE;
+    tl.innerHTML = '';
+    for (const t of yg.items.slice(0, shown)) tl.appendChild(buildCard(t));
+    if (more) {
+      const left = yg.items.length - shown;
+      more.innerHTML = left > 0
+        ? '<button class="btn ghost small" data-cmpmore="' + yi + '">Show ' + Math.min(left, COMPLETED_PAGE) + ' more of ' + yg.items.length + '</button>'
+        : '';
+      const btn = more.querySelector('[data-cmpmore]');
+      if (btn) btn.onclick = () => { completedShown[yi] = shown + COMPLETED_PAGE; paintYear(yi); };
+    }
+  };
+  const paintCompleted = () => { completedYears.forEach((_, yi) => paintYear(yi)); };
+  if (completedOpen) paintCompleted();
+
+  const cmpToggle = document.getElementById('cmpToggle');
+  if (cmpToggle) {
+    const flip = () => {
+      completedOpen = !completedOpen;
+      const body = document.getElementById('cmpBody');
+      const caret = cmpToggle.querySelector('.collapsy-caret');
+      if (body) body.style.display = completedOpen ? '' : 'none';
+      if (caret) caret.textContent = completedOpen ? '\u25BE' : '\u25B8';
+      cmpToggle.setAttribute('aria-expanded', completedOpen ? 'true' : 'false');
+      if (completedOpen) paintCompleted();
+    };
+    cmpToggle.onclick = flip;
+    cmpToggle.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } };
+  }
 }
 
 async function renderHost() {
@@ -166,6 +258,8 @@ async function renderHost() {
         <div style="display:flex;gap:8px"><input type="date" id="cSuDate" style="flex:1"><input type="time" id="cSuTime" style="width:130px"></div>
         <label>Signups close at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 after this, signups auto-close; team forming &amp; captain picks still work. Leave empty to close manually)</span></label>
         <div style="display:flex;gap:8px"><input type="date" id="cScDate" style="flex:1"><input type="time" id="cScTime" style="width:130px"></div>
+        <label>Check-in deadline (UTC) <span class="muted" style="font-weight:400">(optional \u2014 teams that have not checked in by then are dropped when you start. Leave empty for no check-in)</span></label>
+        <div style="display:flex;gap:8px"><input type="date" id="cCiDate" style="flex:1"><input type="time" id="cCiTime" style="width:130px"></div>
         <label>Description (rules, schedule)</label>
         <span class="muted small">Paste a screenshot straight in, or <a href="#" id="cDescImgBtn">insert an image</a>.</span>
         <input type="file" id="cDescImgFile" accept="image/*" style="display:none">
@@ -608,6 +702,7 @@ async function renderHost() {
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime')),
         signupOpensAt: combineDateTimeUTC(document.getElementById('cSuDate'), document.getElementById('cSuTime')),
         signupClosesAt: combineDateTimeUTC(document.getElementById('cScDate'), document.getElementById('cScTime')),
+        checkInDeadline: combineDateTimeUTC(document.getElementById('cCiDate'), document.getElementById('cCiTime')),
         minRating: document.getElementById('cMinRating').value,
         maxRating: document.getElementById('cMaxRating').value,
         maxTeamRating: document.getElementById('cMaxTeamRating').value,

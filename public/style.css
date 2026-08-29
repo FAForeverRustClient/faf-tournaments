@@ -1135,3 +1135,15 @@ tr.mt-mine:hover > td { background: rgba(217,164,74,0.12); }
 .vp-step.decider { background: #1d2b1f; }
 .vp-n { min-width: 18px; text-align: right; color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .vp-team { color: var(--text); }
+
+/* home: collapsible completed archive, split by year */
+h2.collapsy { cursor: pointer; user-select: none; }
+h2.collapsy:hover { color: var(--amber); }
+.collapsy-caret { display: inline-block; width: 12px; color: var(--muted); font-size: 11px; }
+.cmp-year { margin-top: 14px; }
+.cmp-year:first-child { margin-top: 4px; }
+.cmp-year-head {
+  margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--amber); border-bottom: 1px solid #2a3d55; padding-bottom: 4px;
+}
+.cmp-more { margin-top: 8px; }

@@ -153,10 +153,22 @@ function openPlayerSubmit(m, mine) {
     const drawCb = root.querySelector('#psDraw');
     drawCb.onchange = () => { root.querySelector('#psDrawWrap').style.display = drawCb.checked ? '' : 'none'; };
     const wrap = root.querySelector('#psReplays');
+    // `max` on a number input only constrains the spinner - typing 1000 sails straight past it,
+    // and the old code then built 1000 replay fields and hung the browser. Clamp the values
+    // themselves, and bound the field count by what the series can actually contain: draws are
+    // recorded separately and score nothing, so wins per side can never exceed ceil(bo/2) and the
+    // two together can never exceed bo.
+    const clampInput = (el, lo, hi) => {
+      const raw = parseInt(el.value, 10);
+      if (!isFinite(raw)) return lo;
+      const v = Math.max(lo, Math.min(hi, raw));
+      if (String(v) !== el.value) el.value = String(v);
+      return v;
+    };
     const redraw = () => {
-      const s1 = parseInt(root.querySelector('#ps1').value, 10) || 0;
-      const s2 = parseInt(root.querySelector('#ps2').value, 10) || 0;
-      const n = Math.max(0, (s1 + s2) - (cur1 + cur2));
+      const s1 = clampInput(root.querySelector('#ps1'), m.hcap ? 1 : 0, maxW);
+      const s2 = clampInput(root.querySelector('#ps2'), 0, maxW);
+      const n = Math.max(0, Math.min(m.bo, (s1 + s2) - (cur1 + cur2)));
       wrap.innerHTML = n ? '<label>Replay ID' + (n === 1 ? '' : 's') + ' <span class="muted small">(one per new game, from the FAF client or replay vault)</span></label>' +
         Array.from({ length: n }, (_, i) => '<input type="text" class="psRid" maxlength="24" placeholder="Replay ID for game ' + (cur1 + cur2 + i + 1) + '" autocomplete="off" style="margin-bottom:6px">').join('')
         : '<p class="muted small">Raise a score to report new games.</p>';
