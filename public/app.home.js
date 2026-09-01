@@ -160,13 +160,11 @@ async function renderHome() {
         ? '<span class="countchip">Signups start in: ' + esc(signupEta) + '</span>'
         : (eventEta ? '<span class="countchip">Event starts in: ' + esc(eventEta) + '</span>' : '');
       const closeChip = closeEta ? '<span class="countchip countchip-close">Signups close in: ' + esc(closeEta) + '</span>' : '';
-      const pill = t.abandoned
-        ? '<span class="pill abandoned">ABANDONED</span>'
-        : '<span class="pill ' + t.status + '">' + esc(statusLabel(t.status)) + '</span>';
+      const pill = '<span class="pill ' + statusPillClass(t) + '">' + esc(statusPillLabel(t)) + '</span>';
       div.innerHTML = `
         <div>
           <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a>${t.category ? ' <span class="catbox ' + (t.category === 'official' ? 'official' : 'community') + '">' + (t.category === 'official' ? 'OFFICIAL' : 'COMMUNITY') + '</span>' : ''}</div>
-          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}${teamsLine ? ' \u00b7 ' + esc(teamsLine) : ''}${t.prize ? ' \u00b7 <span class="tprize">' + esc(formatPrize(t.prize)) + '</span>' : ''}</div>
+          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${eventDaysLabel(t) ? ' <span class="tdays" title="This event runs on ' + esc(eventDaysLabel(t)) + '">' + esc(eventDaysCountLabel(t)) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}${teamsLine ? ' \u00b7 ' + esc(teamsLine) : ''}${t.prize ? ' \u00b7 <span class="tprize">' + esc(formatPrize(t.prize)) + '</span>' : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
           ${t.published === 0 ? '<span class="idbadge late" title="Draft — only you can see this until you publish it">draft</span>' : ''}
@@ -254,6 +252,7 @@ async function renderHost() {
         <input type="text" id="cName" maxlength="60" placeholder="e.g. EPIC 3v3 double elim">
         <label>Event date &amp; time (UTC) <span class="muted" style="font-weight:400">(optional)</span></label>
         <div style="display:flex;gap:8px"><input type="date" id="cDate" style="flex:1"><input type="time" id="cTime" style="width:130px"></div>
+        <div id="cDayPick" class="dp-host"></div>
         <label>Signups open at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 before this, only organizers can add players)</span></label>
         <div style="display:flex;gap:8px"><input type="date" id="cSuDate" style="flex:1"><input type="time" id="cSuTime" style="width:130px"></div>
         <label>Signups close at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 after this, signups auto-close; team forming &amp; captain picks still work. Leave empty to close manually)</span></label>
@@ -654,6 +653,21 @@ async function renderHost() {
     syncVis();
   }
 
+  // Multi-day picker, two-way bound to the native date input above it: typing a date there
+  // makes that the single selected day, and picking days here writes the earliest back.
+  let _cDayPick = null;
+  {
+    const dateEl = document.getElementById('cDate');
+    const host = document.getElementById('cDayPick');
+    if (dateEl && host) {
+      _cDayPick = mountDayPicker(host, {
+        days: dateEl.value ? [dateEl.value] : [],
+        onChange: (days) => { if (days.length) dateEl.value = days[0]; }
+      });
+      dateEl.addEventListener('change', () => _cDayPick.setSingle(dateEl.value));
+    }
+  }
+
   document.getElementById('cGo').onclick = async () => {
     const name = document.getElementById('cName').value.trim();
     if (!name) return toast('Give the tournament a name', true);
@@ -700,6 +714,7 @@ async function renderHost() {
         streams: Array.from(document.querySelectorAll('#cStreamRows .stream-row')).map(r => ({ url: r.querySelector('.stUrl').value.trim(), info: r.querySelector('.stInfo').value.trim() })).filter(x => x.url),
         veto: { enabled: document.getElementById('cVeto').checked, mode: document.getElementById('cVetoMode').value, abMode: document.getElementById('cVetoAb').value },
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime')),
+        eventDays: _cDayPick ? _cDayPick.get() : [],
         signupOpensAt: combineDateTimeUTC(document.getElementById('cSuDate'), document.getElementById('cSuTime')),
         signupClosesAt: combineDateTimeUTC(document.getElementById('cScDate'), document.getElementById('cScTime')),
         checkInDeadline: combineDateTimeUTC(document.getElementById('cCiDate'), document.getElementById('cCiTime')),
@@ -844,6 +859,9 @@ async function renderTournament() {
   maybeAutoStreamerMode();
   lastSnapshot = JSON.stringify(T);
   drawTournament();
+  // A chat pinned before a reload comes back only now, with T loaded, so a match that finished
+  // in the meantime is dropped instead of being restored as a dead panel.
+  if (typeof restorePinnedChat === 'function') restorePinnedChat();
   maybePromptOrganizerClaim();
   maybePromptLateSignup();
   stopPoll();
@@ -864,6 +882,9 @@ async function pollOnce() {
     if (snap === lastSnapshot) return;                           // nothing changed
     T = fresh;
     lastSnapshot = snap;
+    // Fresh data may mean the pinned match just finished. Check before the early return below,
+    // which would otherwise leave the rail open on the chat tab until the next tab switch.
+    if (typeof syncPinnedChat === 'function') syncPinnedChat();
     // The chat tab manages its own live updates and remembers the open room; a full redraw here
     // would rebuild the room list and yank the user back to Global. Keep data fresh, don't repaint.
     if (currentTab === 'chat') return;
@@ -949,6 +970,24 @@ function myTurnInfo() {
       };
     }
   }
+  // 3. faction veto choices. Ranked just under the map veto because the map veto blocks the
+  // whole match while a faction choice blocks one game, but it belongs here for the same
+  // reason: only that player can do it, and until now literally nothing told them so.
+  if (myTeam && T.matches && typeof myFactionTurnsAll === 'function') {
+    const owed = myFactionTurnsAll();
+    if (owed.length) {
+      const steps = owed.reduce((n, x) => n + x.ft.games, 0);
+      const m = owed[0].m;
+      const opp = teamName(m.team1 === myTeam ? m.team2 : m.team1);
+      const verb = owed[0].ft.next.action === 'ban' ? 'ban' : 'pick';
+      return {
+        text: steps === 1
+          ? "It's your turn to " + verb + ' a faction vs ' + opp + '.'
+          : 'You still need to set your factions for ' + steps + ' games' + (owed.length === 1 ? ' vs ' + opp : '') + '.',
+        tab: 'vetoes', cta: 'Go to the faction veto'
+      };
+    }
+  }
   return null;
 }
 
@@ -973,8 +1012,15 @@ function drawTournament() {
   const steps = ['Signups', midStep, lastStep, 'Results'];
 
   const tabs = ['overview', 'news', 'chat', 'players', 'teams', 'bracket'];
-  // Vetoes tab appears once the bracket is running and vetoes are enabled
-  const vetoActive = T.veto && T.veto.enabled && (T.status === 'running' || T.status === 'finished') && T.matches.some(m => m.veto);
+  // Vetoes tab appears once the bracket is running and vetoes are enabled - EITHER kind.
+  // Faction vetoes are configured independently of map vetoes (`fveto_config` never looks at
+  // `t.veto`), so a 1v1 with faction vetoes on and map vetoes off used to render no Vetoes tab
+  // at all: the players had nowhere to go and no idea they owed anything.
+  const vetoRunning = (T.status === 'running' || T.status === 'finished');
+  const vetoActive = vetoRunning && (
+    (T.veto && T.veto.enabled && T.matches.some(m => m.veto)) ||
+    (T.fveto && T.fveto.enabled && T.matches.some(m => m.fveto))
+  );
   if (!(T.viewer && (T.viewer.organizer || T.viewer.signedUpPlayerId || T.viewer.memberTeamId || T.viewer.caster))) {
     const ci = tabs.indexOf('chat'); if (ci >= 0) tabs.splice(ci, 1);
   }
@@ -1008,13 +1054,13 @@ function drawTournament() {
       <div class="headrow">
         <div>
           <h1>${esc(T.name)}</h1>
-          <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}</div>
+          <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}${eventDaysLabel(T) ? ' \u00b7 <span class="tdays" title="Days this event runs on">' + esc(eventDaysLabel(T)) + '</span>' : ''}</div>
         </div>
         <div class="headrow-right">
           ${viewerHasRights() ? `<button class="btn ghost small streamer-toggle ${playerViewMode ? 'on' : ''}" id="playerViewToggle" title="Hide organizer &amp; admin controls and browse as a regular player.${hotkeyFor('playerview') ? ' Shortcut: ' + hotkeyFor('playerview') + '.' : ''} Doesn't change your actual permissions.">${playerViewMode ? '\u25C9' : '\u25CB'} View as player</button>` : ''}
           <button class="btn ghost small streamer-toggle ${showPlayerNames ? 'on' : ''}" id="namesToggle" title="Show each team's players in the bracket instead of the team name.${hotkeyFor('players') ? ' Shortcut: ' + hotkeyFor('players') + '.' : ''} Only affects your own screen.">${showPlayerNames ? '\u25C9' : '\u25CB'} Show players</button>
           <button class="btn ghost small streamer-toggle ${streamerMode ? 'on' : ''}" id="streamerToggle" title="Hide match results and who's eliminated, for on-stream reveals.${hotkeyFor('streamer') ? ' Shortcut: ' + hotkeyFor('streamer') + '.' : ''} Only affects your own screen.">${streamerMode ? '\u25C9' : '\u25CB'} Streamer mode</button>
-          <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
+          <span class="pill ${statusPillClass(T)}"${signupsNotOpenYet(T) ? ' title="Signups open ' + esc(fmtDateTime(T.signupOpensAt)) + '"' : ''}>${esc(statusPillLabel(T))}</span>
         </div>
       </div>
       <div class="stepper" title="The tournament's progress through its stages">
@@ -1027,6 +1073,14 @@ function drawTournament() {
           if (tb === 'chat' && tb !== currentTab && (T.myUnreadCount || 0) > 0) badge = { quiet: T.myUnreadCount };
           if (tb === 'chat' && tb !== currentTab && (T.myMentionCount || 0) > 0) badge = T.myMentionCount;
           if (tb === 'chat' && viewerIsOrganizer() && (T.chatPingCount || 0) > 0) badge = '\uD83D\uDD14' + T.chatPingCount;
+          // Veto steps waiting on YOU, of either kind. Deliberately shown even while the tab is
+          // open, unlike the unread badges: opening the tab reads a chat, but it does not do a
+          // veto. The "(n)" in the label counts everyone's outstanding map vetoes; this counts
+          // only what you personally still owe, which is the number a player actually needs.
+          if (tb === 'vetoes' && typeof myVetoStepCount === 'function') {
+            const owed = myVetoStepCount();
+            if (owed > 0) badge = owed;
+          }
           const badgeHtml = !badge ? ''
             : (typeof badge === 'object'
                 ? '<span class="tab-badge quiet">' + (badge.quiet > 9 ? '9+' : badge.quiet) + '</span>'
@@ -1115,6 +1169,10 @@ function drawTournament() {
   else if (currentTab === 'maps') drawMaps(body);
   else if (currentTab === 'standings') drawStandings(body);
   else if (currentTab === 'admin') drawAdmin(body);
+
+  // The redraw has just rebuilt every pin button on the page; repaint them from the pin state,
+  // and drop the rail if this redraw is the one that finished the pinned match.
+  if (typeof syncPinnedChat === 'function') syncPinnedChat();
 }
 
 // ----- overview -----
@@ -1122,23 +1180,38 @@ function drawTournament() {
 function gameInfoPanel() {
   // Type + rating are one-liners: fixed text above the boxes, not boxes of their own.
   const typeTxt = T.category ? (T.category === 'official' ? 'Official' : 'Community') + ' tournament' : '';
-  const ratingTxt = (T.ratingType && T.ratingType !== 'none')
-    ? 'Rating: ' + ratingTypeLabel(T.ratingType) + (T.ratingDate ? ', taken as of ' + new Date(T.ratingDate).toLocaleDateString() : ', taken at signup time') + ' — pulled from FAF'
-    : 'Rating: entered by players';
-  const headline = [typeTxt, ratingTxt].filter(Boolean).join(' · ');
+  // The rating source used to live only in this grey headline, where it read as boilerplate.
+  // It is now the first line of the Rating requirements cell instead - see ratingReqHtml below.
+  const headline = typeTxt;
   // Format + rating requirements are always short — put them in a compact top row of their
   // own so they don't get stretched by a long Lobby options block underneath.
+  // Entries are [label, HTML] - each pusher escapes its own text. They used to be plain strings
+  // escaped at render time, which left nowhere to put the bold rating source.
   const topCells = [];
-  topCells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
-  if (T.minRating != null || T.maxRating != null || T.maxTeamRating != null || T.ratingCap != null) {
+  topCells.push(['Format', esc(typeLine(T)) + '\n' + esc(planSummary(T))]);
+  // Multi-day events: spell the days out. Advertising a two-weekend event as one 9-day block
+  // reads as "we play midweek too" and puts entrants off, which is why this exists.
+  if (eventDaysLabel(T)) {
+    topCells.push(['Schedule', '<strong>' + esc(eventDaysLabel(T)) + '</strong>\n'
+      + esc(eventDaysCountLabel(T)) + ' \u2014 no play on the days in between'
+      + (T.eventDate ? '\nStarts ' + esc(fmtDateTime(T.eventDate)) : '')]);
+  }
+  // Rating requirements. Shown whenever a rating is involved at all, not only when a min/max is
+  // set, because WHICH rating counts and AS OF WHEN is itself a requirement players must know.
+  {
     const parts = [];
     if (T.minRating != null && T.maxRating != null) parts.push('Player rating ' + T.minRating + '\u2013' + T.maxRating);
     else if (T.minRating != null) parts.push('Player rating ' + T.minRating + ' or higher');
     else if (T.maxRating != null) parts.push('Player rating up to ' + T.maxRating);
     if (T.maxTeamRating != null) parts.push('Max combined team rating ' + T.maxTeamRating);
     if (T.ratingCap != null) parts.push('Ratings above ' + T.ratingCap + ' count as ' + T.ratingCap + ' (capped)');
-    // the exemption note is an organizer detail; players just see the requirement
-    topCells.push(['Rating requirements', parts.join('\n') + (viewerIsOrganizer() ? '\n(organizer invites/adds are exempt from min/max)' : '')]);
+    if (viewerIsOrganizer() && (T.minRating != null || T.maxRating != null)) parts.push('(organizer invites/adds are exempt from min/max)');
+    const src = ratingSourceHtml(T);
+    if (src || parts.length) {
+      topCells.push(['Rating requirements',
+        (src ? '<div class="rating-source">' + src + '</div>' : '')
+        + (parts.length ? '<div' + (src ? ' style="margin-top:8px"' : '') + '>' + parts.map(esc).join('<br>') + '</div>' : '')]);
+    }
   }
   // Lobby options and mods can be long and support formatting — their own row, rendered rich.
   const richCells = [];
@@ -1152,7 +1225,7 @@ function gameInfoPanel() {
   return `<div class="panel section"><h2>Game <span class="h2-strong">Setup</span></h2>
     ${headline ? '<p class="setup-headline">' + esc(headline) + '</p>' : ''}
     <div class="infogrid infogrid-top">
-    ${topCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${esc(c[1])}</div></div>`).join('')}
+    ${topCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${c[1]}</div></div>`).join('')}
   </div>
     ${richCells.length ? '<div class="infogrid">' + richCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${c[1]}</div></div>`).join('') + '</div>' : ''}
     ${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}${gallery}</div>`

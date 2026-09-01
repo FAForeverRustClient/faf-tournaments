@@ -418,6 +418,39 @@ function noteFinished(t) {
   if (t && t.status === 'finished' && !t.finishedAt) { t.finishedAt = now(); return true; }
   return false;
 }
+// ---- multi-day events ----
+// Events used to be a single moment. A weekend cup, or one spanning two weekends, could only be
+// advertised as one day or as the whole block - which reads as "we also play midweek" and puts
+// people off. `eventDays` lists the days it ACTUALLY runs; `eventDate` stays exactly what it
+// always was, the single start moment everything sorts, counts down and gates check-in by, so
+// nothing that reads it needs to change. Empty or one day behaves precisely as before.
+function cleanEventDays(v) {
+  if (!Array.isArray(v)) return null;
+  const seen = {}, out = [];
+  for (const raw of v.slice(0, 80)) {
+    const d = String(raw || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (isNaN(Date.parse(d + 'T00:00:00Z'))) continue;
+    if (seen[d]) continue;
+    seen[d] = 1; out.push(d);
+  }
+  out.sort();
+  return out.slice(0, 31);
+}
+// Keep the pair consistent no matter what a client sends: the EARLIEST selected day is the event
+// date's day, keeping whatever time was set. Without this the countdown and the check-in window
+// could point at a day the event does not run on.
+function applyEventDays(t, days) {
+  const clean = cleanEventDays(days);
+  if (clean === null) return;                 // field absent: leave the schedule alone
+  if (!clean.length) { t.eventDays = null; return; }
+  t.eventDays = clean;
+  const cur = t.eventDate ? String(t.eventDate) : '';
+  const time = (cur.length > 10) ? cur.slice(10) : 'T00:00:00.000Z';
+  const rebuilt = clean[0] + time;
+  t.eventDate = isNaN(Date.parse(rebuilt)) ? (clean[0] + 'T00:00:00.000Z') : new Date(rebuilt).toISOString();
+}
+
 // Midnight UTC on the tournament's event date - check-in can't happen before this. Null when no
 // event date is set, in which case check-in is open whenever the organizer allows it.
 function checkInOpensAt(t) {
@@ -1032,6 +1065,7 @@ function publicView(t) {
     veto: t.veto || { enabled: false, mode: 'upfront' },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
+    eventDays: (t.eventDays && t.eventDays.length) ? t.eventDays.slice() : null,
     challongeDate: t.challongeDate || null,
     rounds: t.rounds || 0,
     maps: t.maps || {},
@@ -1442,6 +1476,33 @@ async function fafLookupById(fafId, token) {
   } catch (e) { return null; }
 }
 
+// A FAF display name is stamped onto a player at signup and was then never looked at again, so
+// anyone who renamed on FAF afterwards kept appearing under their old name - in the player list,
+// the bracket, the 1v1 team that was named after them, and every organizer's view. There is no
+// rename webhook from FAF, so we resync opportunistically from the live session: whenever that
+// account touches a tournament they are signed up to. Returns true if anything changed (the
+// caller saves), so a normal request writes nothing.
+function syncFafName(t, req) {
+  const sess = currentSession(req);
+  if (!t || !sess || !sess.fafId || !sess.fafName) return false;
+  const p = (t.players || []).find(x => x.fafId === sess.fafId);
+  if (!p || !p.name || p.name === sess.fafName) return false;
+  const old = p.name;
+  p.name = sess.fafName;
+  // A solo team is named after its player (and a draft team "Team <player>"). Follow the rename,
+  // but never touch a name the captain has spent their one rename on - that name is theirs now.
+  for (const team of (t.teams || [])) {
+    if (team.captainId !== p.id || team.captainRenamed) continue;
+    if (team.name === old) team.name = p.name;
+    else if (team.name === 'Team ' + old) team.name = 'Team ' + p.name;
+  }
+  // organizer display names are a snapshot too
+  if (t.organizerNames && t.organizerNames[p.fafId] === old) t.organizerNames[p.fafId] = p.name;
+  // Chat history is deliberately NOT rewritten: each message records who said it at the time.
+  tpush(t, 'system', old + ' is now known as ' + p.name + ' (renamed on FAF)');
+  return true;
+}
+
 // Best-effort display name for a FAF id from data we already hold (no network): a linked profile,
 // any tournament they've played in, or a live session.
 function knownNameFor(fafId) {
@@ -1489,6 +1550,28 @@ function computeRC(boards) {
   }
   // fewer than 300 total games: average over the history that exists
   return Math.round(sum / used);
+}
+
+// Every leaderboard at once, for the organizer-only "all ratings" breakdown. This is COSMETIC:
+// nothing here feeds entry checks, the rating cap or seeding - only t.ratingType's board does,
+// and that is fetched separately by the signup path. Failures are therefore never fatal; a board
+// the player has never played simply comes back null.
+const ALL_RATING_BOARDS = ['global', '1v1', '2v2', '3v3', '4v4'];
+async function fafAllRatings(fafId, asOfMs, token) {
+  const out = {};
+  if (!fafId || !token) return out;
+  const cutoffIso = fafDayEndIso(asOfMs || Date.now());
+  // In parallel: five boards run sequentially would add several seconds to a signup.
+  const results = await Promise.all(ALL_RATING_BOARDS.map(async key => {
+    try {
+      const lb = FAF_LEADERBOARD_NAME[key];
+      let a = await fafJournalRating('gamePlayerStats.player.id==' + fafId, lb, cutoffIso, token);
+      if (a.rating == null && a.status !== 200) a = await fafJournalRating('player.id==' + fafId, lb, cutoffIso, token);
+      return { key, rating: a.rating, games: (a.games != null && isFinite(a.games)) ? a.games : null };
+    } catch (e) { return { key, rating: null, games: null }; }
+  }));
+  for (const r of results) out[r.key] = { rating: r.rating, games: r.games };
+  return { boards: out, at: Date.now(), asOf: asOfMs || null };
 }
 
 async function fafRcProbe(fafId, asOfMs, token) {
@@ -1701,6 +1784,7 @@ async function handleAPI(req, res, url) {
       invites: [],
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
+      eventDays: cleanEventDays(b.eventDays) || null,
       signupOpensAt: cleanDate(b.signupOpensAt),
       signupClosesAt: cleanDate(b.signupClosesAt),
       // Check-in deadline is stored as epoch ms (unlike the ISO date fields around it).
@@ -2304,7 +2388,7 @@ async function handleAPI(req, res, url) {
         published: t.published !== false ? 1 : 0,
         competition: t.competition, bracketType: t.bracketType, teamSize: t.teamSize,
         players: (t.players || []).length, teams: (t.teams || []).length,
-        eventDate: t.eventDate || null, abandoned: t.abandoned ? 1 : 0,
+        eventDate: t.eventDate || null, eventDays: (t.eventDays && t.eventDays.length) ? t.eventDays.slice() : null, abandoned: t.abandoned ? 1 : 0,
         championTeamId: t.championTeamId || null,
         champion: t.championTeamId ? ((t.teams || []).find(x => x.id === t.championTeamId) || {}).name || null : null
       }));
@@ -2384,6 +2468,7 @@ async function handleAPI(req, res, url) {
         teams: t.teams.length, createdAt: t.createdAt,
         imported: t.imported || false,
         eventDate: t.eventDate || null,
+        eventDays: (t.eventDays && t.eventDays.length) ? t.eventDays.slice() : null,
         signupClosesAt: t.signupClosesAt || null,
         minTeams: t.minTeams || 0,
         challongeDate: t.challongeDate || null,
@@ -2459,6 +2544,9 @@ async function handleAPI(req, res, url) {
     if (sess && sess.fafId) {
       for (const t of Object.values(db.tournaments)) {
         if (t.archived || t.published === false) continue;
+        // this loop already visits every tournament, so it is the cheapest place to catch a
+        // FAF rename across all of them rather than only the one being viewed
+        if (syncFafName(t, req)) saveDB();
         const meP = (t.players || []).find(p => p.fafId === sess.fafId);
         // invited but not signed up yet
         if (!meP && t.status === 'signup' && (t.invites || []).some(i => i.fafId === sess.fafId)) {
@@ -2503,6 +2591,23 @@ async function handleAPI(req, res, url) {
             const turn = step.team === 'A' ? v.teamA : v.teamB;
             if (turn === capTeam.id) { out.push({ tId: t.id, tName: t.name, type: 'veto', tab: 'vetoes', text: 'Your turn to ' + (step.action === 'ban' ? 'ban' : 'pick') + ' a map' }); break; }
           }
+        }
+        // faction-veto choices (1v1). Same reasoning as the map veto above - only this player
+        // can make them, an organizer deliberately cannot do it for them, and nothing else in
+        // the product told them it was outstanding.
+        if (capTeam && factionVetoOn(t) && Array.isArray(t.matches)) {
+          let owed = 0;
+          for (const m of t.matches) {
+            if (m.status === 'done' || !m.fveto || !m.fveto.games) continue;
+            const side = factionSideKey(m, capTeam.id);
+            if (!side) continue;
+            for (const g of Object.keys(m.fveto.games)) {
+              const mine = m.fveto.games[g][side];
+              if (mine && !mine.done && factionNextStep(m.fveto, mine)) owed++;
+            }
+          }
+          if (owed) out.push({ tId: t.id, tName: t.name, type: 'fveto', tab: 'vetoes',
+            text: owed === 1 ? 'Set your factions for a game' : 'Set your factions for ' + owed + ' games' });
         }
         // check-in before the deadline (any member of a full, unchecked team)
         if (myTeam && t.status === 'signup' && t.checkInDeadline && Date.now() < t.checkInDeadline && myTeam.playerIds.length >= t.teamSize && !myTeam.checkedIn) {
@@ -2556,6 +2661,7 @@ async function handleAPI(req, res, url) {
       sweepQualifications();   // opening a parent applies any qualifier whose child just finished
       let dirty = noteFinished(t);          // record when it ended (starts the chat-lock clock)
       if (sweepPoolPublishes(t)) dirty = true;   // reveal any pool whose scheduled time has passed
+      if (syncFafName(t, req)) dirty = true;     // they renamed on FAF since signing up
       if (dirty) saveDB();
       const view = publicView(t);
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
@@ -2606,6 +2712,9 @@ async function handleAPI(req, res, url) {
         .filter(p => !p.pending || organizer || (sess && p.fafId === sess.fafId))   // pending requests: organizer + the requester only
         .map(p => {
           const c = Object.assign({}, p);
+          // Organizer-only, and served solely by /player_ratings. Never ship it in the tournament
+          // payload: it would be readable by every viewer and would bloat the response.
+          delete c.allRatings;
           if (canSeeContacts && p.fafId && db.profiles[p.fafId] && db.profiles[p.fafId].discord) c.discord = db.profiles[p.fafId].discord;
           return c;
         });
@@ -2691,6 +2800,66 @@ async function handleAPI(req, res, url) {
     }
 
     // ---- chat: list rooms, read a room, post, moderate ----
+    // Organizer-only rating breakdown for one player. Returns what was stored at signup, or
+    // fetches it live (using the ASKING organizer's FAF token) when it is missing or a refresh
+    // is asked for. Purely informational - it never writes p.rating, so it cannot change who is
+    // in, what the cap did, or the seeding.
+    if (sub === 'player_ratings' && method === 'GET') {
+      const tok = url.searchParams.get('token') || url.searchParams.get('admin');
+      if (!(isAdmin(t, tok, req) || isOrganizer(t, req))) {
+        return json(res, 403, { error: 'Organizer rights required' });
+      }
+      const p = (t.players || []).find(x => x.id === url.searchParams.get('playerId'));
+      if (!p) return json(res, 404, { error: 'Player not found' });
+      const wantFresh = url.searchParams.get('refresh') === '1';
+      if (!p.allRatings || wantFresh) {
+        if (!p.fafId) return json(res, 200, { playerId: p.id, name: p.name, counts: t.ratingType || 'none', allRatings: null, reason: 'This player has no FAF account linked (added manually).' });
+        const tk = await fafValidToken(currentSession(req));
+        if (!tk) return json(res, 409, { error: 'Log out and log back in (top-right) so the site can query FAF on your behalf, then try again.' });
+        try {
+          const fresh = await fafAllRatings(p.fafId, t.ratingDate, tk);
+          if (fresh && fresh.boards) { p.allRatings = fresh; saveDB(); }
+        } catch (e) { return json(res, 200, { playerId: p.id, name: p.name, counts: t.ratingType || 'none', allRatings: null, reason: 'FAF could not be reached just now.' }); }
+      }
+      return json(res, 200, {
+        playerId: p.id, name: p.name,
+        counts: t.ratingType || 'none',          // which board actually decided their entry
+        countsRating: p.ratingActual != null ? p.ratingActual : p.rating,
+        capped: (t.ratingCap != null && p.ratingActual != null && p.ratingActual > t.ratingCap) ? t.ratingCap : null,
+        ratingDate: t.ratingDate || null,
+        allRatings: p.allRatings || null
+      });
+    }
+
+    // Re-pull every signed-up player's rating onto whatever board currently counts. Needed after
+    // changing ratingType or ratingDate, which deliberately do not rewrite history on their own.
+    // Uses the requesting organizer's FAF token; a player whose rating cannot be fetched keeps
+    // the one they have rather than being wiped to null.
+    if (sub === 'repull_ratings') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!t.ratingType || t.ratingType === 'none') return bad(res, 'This tournament does not pull ratings from FAF');
+      const tk = await fafValidToken(currentSession(req));
+      if (!tk) return json(res, 409, { error: 'Log out and log back in (top-right) so the site can query FAF on your behalf, then try again.' });
+      let done = 0, failed = [];
+      for (const p of (t.players || [])) {
+        if (!p.fafId) { failed.push(p.name + ' (no FAF account)'); continue; }
+        let r = null;
+        try {
+          r = (t.ratingType === 'rc')
+            ? (await fafRcProbe(p.fafId, t.ratingDate, tk)).rating
+            : (await fafRatingProbe(p.fafId, t.ratingType, t.ratingDate, tk)).rating;
+        } catch (e) { r = null; }
+        if (r == null) { failed.push(p.name); continue; }
+        p.rating = r; p.ratingActual = r;
+        applyRatingCap(t, p);
+        try { p.allRatings = await fafAllRatings(p.fafId, t.ratingDate, tk); } catch (e) {}
+        done++;
+      }
+      tlog(t, req, b.admin, 're-pulled ratings for ' + done + ' player' + (done === 1 ? '' : 's') + ' on the ' + t.ratingType + ' board' + (failed.length ? ' (' + failed.length + ' could not be fetched)' : ''));
+      saveDB();
+      return json(res, 200, { ok: true, updated: done, failed });
+    }
+
     if (sub === 'chat_rooms' && method === 'GET') {
       const tok = url.searchParams.get('token');
       return json(res, 200, { rooms: chatRoomsFor(t, req, tok), muted: chatMuted(t, (currentSession(req) || {}).fafId) ? 1 : 0 });
@@ -2759,6 +2928,7 @@ async function handleAPI(req, res, url) {
     if (sub === 'edit_date') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       t.eventDate = cleanDate(b.eventDate); // null clears it
+      if (b.eventDays !== undefined) applyEventDays(t, b.eventDays);
       if (b.signupOpensAt !== undefined) t.signupOpensAt = cleanDate(b.signupOpensAt);
       if (b.signupClosesAt !== undefined) t.signupClosesAt = cleanDate(b.signupClosesAt);
       if (b.name !== undefined) { const nm = cleanName(b.name, 60); if (nm) t.name = nm; }
@@ -2989,6 +3159,15 @@ async function handleAPI(req, res, url) {
       };
       if (t.signupMode === 'request' && !canOrganize(t, req, b)) p.pending = 1;
       applyRatingCap(t, p);
+      // Organizer-only extra: every board's rating as of the same cutoff. Deliberately AFTER all
+      // the entry checks and wrapped so it can never refuse or delay a signup - `p.rating` above
+      // is the only number that decides anything.
+      if (fafId && t.ratingType && t.ratingType !== 'none') {
+        try {
+          const tk = await fafValidToken(sess);
+          if (tk) p.allRatings = await fafAllRatings(fafId, t.ratingDate, tk);
+        } catch (e) { /* cosmetic only */ }
+      }
       t.players.push(p);
       tlog(t, req, b.admin, (adminAdding && p.name !== (actorOf(req, b.admin).name) ? 'added player ' + p.name : p.name + ' signed up') + (p.rating != null ? ' (rating ' + p.rating + ')' : '') + (p.pending ? ' \u2014 awaiting approval' : '') + (p.late ? ' \u2014 late signup' : ''));
       saveDB();
@@ -4144,12 +4323,23 @@ async function handleAPI(req, res, url) {
       if (b.maxTeamRating !== undefined) t.maxTeamRating = (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null;
       if (b.ratingCap !== undefined) { t.ratingCap = (parseInt(b.ratingCap, 10) > 0) ? parseInt(b.ratingCap, 10) : null; recomputeAllRatings(t); }
       if (b.ratingDate !== undefined) t.ratingDate = b.ratingDate ? (new Date(b.ratingDate).getTime() || null) : null;
+      // Which board counts was fixed at creation, which meant an organizer who picked the wrong
+      // one had to recreate the tournament. Changing it does NOT retroactively re-pull anyone -
+      // existing signups keep the rating they were admitted on until `repull_ratings` is run.
+      if (b.ratingType !== undefined && ['global', '1v1', '2v2', '3v3', '4v4', 'rc', 'none'].indexOf(b.ratingType) >= 0) {
+        if (t.ratingType !== b.ratingType) {
+          const was = t.ratingType || 'global';
+          t.ratingType = b.ratingType;
+          tlog(t, req, b.admin, 'changed the counting rating from ' + was + ' to ' + b.ratingType);
+        }
+      }
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 20000);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;
       if (b.playerReporting !== undefined) t.playerReporting = !!b.playerReporting;
       if (b.name !== undefined) { const nm = cleanName(b.name, 60); if (nm) t.name = nm; }
       if (b.eventDate !== undefined) t.eventDate = cleanDate(b.eventDate);
+      if (b.eventDays !== undefined) applyEventDays(t, b.eventDays);
       if (b.signupOpensAt !== undefined) t.signupOpensAt = cleanDate(b.signupOpensAt);
       if (b.signupClosesAt !== undefined) t.signupClosesAt = cleanDate(b.signupClosesAt);
       if (b.minTeams !== undefined) t.minTeams = intIn(b.minTeams, 0, 128, 0);

@@ -421,8 +421,9 @@ async function drawAdmin(el) {
       <p class="muted small">Times are in <strong>UTC</strong> and display in each viewer's own time zone. All editable at any time.</p>
       <label>Tournament name</label>
       <input type="text" id="td_name" maxlength="60" value="${esc(T.name || '')}">
-      ${T.imported ? '' : `<label style="margin-top:12px">Event date &amp; time</label>
+      ${T.imported ? '' : `<label style="margin-top:12px">Event date &amp; time <span class="muted small">(pick more than one day below for an event that spans a weekend, or two)</span></label>
       <div style="display:flex;gap:8px"><input type="date" id="td_date" value="${esc(dv.date)}" style="flex:1"><input type="time" id="td_time" value="${esc(dv.time)}" style="width:130px"></div>
+      <div id="td_dayPick" class="dp-host"></div>
       <label style="margin-top:12px">Signups open at <span class="muted small">(before this, only organizers can add players)</span></label>
       <div style="display:flex;gap:8px"><input type="date" id="td_sudate" value="${esc(su.date)}" style="flex:1"><input type="time" id="td_sutime" value="${esc(su.time)}" style="width:130px"></div>
       <label style="margin-top:12px">Signups close at <span class="muted small">(auto-closes signups; team forming &amp; picks still work. Empty = manual)</span></label>
@@ -706,6 +707,20 @@ async function drawAdmin(el) {
       <div style="flex:1;min-width:140px"><label>Rating cap (clamp)</label><input type="number" id="aiCapR" min="0" max="4000" value="${T.ratingCap != null ? T.ratingCap : ''}" placeholder="off"></div>
     </div>
     <div style="margin-top:12px"><button class="btn" id="aiRatSave">Save rating limits</button></div>
+
+    <div style="border-top:1px solid var(--line-solid);margin-top:16px;padding-top:14px">
+      <label>Which rating counts <span class="muted small">(entry checks, the cap and seeding all use this board)</span></label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="aiRatingType" style="flex:1;min-width:220px">
+          ${[['global', 'Global (fetched from FAF)'], ['1v1', '1v1 / ladder (fetched)'], ['2v2', '2v2 (fetched)'], ['3v3', '3v3 (fetched)'], ['4v4', '4v4 (fetched)'],
+             ['rc', "Fearghal's RC \u2014 best of 2v2/3v3/4v4/Global, blended to 300 games (fetched)"], ['none', 'None \u2014 players enter their own rating']]
+            .map(o => '<option value="' + o[0] + '"' + ((T.ratingType || 'global') === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('')}
+        </select>
+        <button class="btn" id="aiRatingTypeSave">Save</button>
+      </div>
+      <p class="muted small" style="margin-top:6px">Changing this does <strong>not</strong> re-pull anyone already signed up \u2014 they keep the rating they were admitted on until you re-pull below. New signups use the new board immediately.</p>
+    </div>
+
     ${T.ratingType && T.ratingType !== 'none' ? `<div style="border-top:1px solid var(--line-solid);margin-top:16px;padding-top:14px">
       <label>Rating source date <span class="muted small">(FAF ratings are pulled as of this day; blank = whenever the player signs up)</span></label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -713,6 +728,11 @@ async function drawAdmin(el) {
         <button class="btn" id="aiRatingDateSave">Save rating date</button>
       </div>
       <p class="muted small" style="margin-top:6px">Currently: <strong>${T.ratingDate ? new Date(T.ratingDate).toLocaleDateString() : 'taken at signup time'}</strong>. Changing this affects ratings pulled from now on; it doesn't retroactively re-pull players already signed up.</p>
+    </div>
+    <div style="border-top:1px solid var(--line-solid);margin-top:16px;padding-top:14px">
+      <label>Re-pull every signed-up player's rating</label>
+      <p class="muted small" style="margin:4px 0 8px">Fetches all <strong>${T.players.length}</strong> player${T.players.length === 1 ? '' : 's'} again on the board and date set above, and re-applies the cap. Use it after changing either. Anyone FAF can't answer for keeps the rating they already have.</p>
+      <button class="btn amber" id="aiRepull">Re-pull ${T.players.length} rating${T.players.length === 1 ? '' : 's'} now</button>
     </div>` : ''}
   </div>`;
 
@@ -811,6 +831,22 @@ async function drawAdmin(el) {
     </div></div>`;
 
   el.innerHTML = html;
+
+  // Multi-day picker, two-way bound to the native date input beside it (see mountDayPicker).
+  let _tdDayPick = null;
+  {
+    const dateEl = document.getElementById('td_date');
+    const host = document.getElementById('td_dayPick');
+    if (dateEl && host) {
+      const existing = (T.eventDays && T.eventDays.length) ? T.eventDays.slice() : (dateEl.value ? [dateEl.value] : []);
+      _tdDayPick = mountDayPicker(host, {
+        days: existing,
+        onChange: (days) => { if (days.length) dateEl.value = days[0]; }
+      });
+      dateEl.addEventListener('change', () => _tdDayPick.setSingle(dateEl.value));
+    }
+  }
+
   const tdSave = document.getElementById('td_save');
   if (tdSave) tdSave.onclick = async () => {
     try {
@@ -819,6 +855,7 @@ async function drawAdmin(el) {
       const dd = document.getElementById('td_date');
       if (dd) {
         info.eventDate = combineDateTimeUTC(dd, document.getElementById('td_time'));
+        info.eventDays = _tdDayPick ? _tdDayPick.get() : [];
         info.signupOpensAt = combineDateTimeUTC(document.getElementById('td_sudate'), document.getElementById('td_sutime'));
         info.signupClosesAt = combineDateTimeUTC(document.getElementById('td_scdate'), document.getElementById('td_sctime'));
         info.checkInDeadline = combineDateTimeUTC(document.getElementById('td_cidate'), document.getElementById('td_citime'));
@@ -1048,6 +1085,28 @@ async function drawAdmin(el) {
       toast('Rating limits saved');
       await refresh();
     } catch (e) { toast(e.message, true); }
+  };
+  const ratingTypeSave = document.getElementById('aiRatingTypeSave');
+  if (ratingTypeSave) ratingTypeSave.onclick = async () => {
+    const val = document.getElementById('aiRatingType').value;
+    if (val !== (T.ratingType || 'global') && T.players.length
+        && !confirm('Change the counting rating to "' + val + '"?\n\nThe ' + T.players.length + ' player(s) already signed up keep the rating they were admitted on until you re-pull. New signups use the new board straight away.')) return;
+    try {
+      await api('/api/t/' + T.id + '/edit_info', { ratingType: val, admin: adminToken() });
+      toast('Rating type saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const repull = document.getElementById('aiRepull');
+  if (repull) repull.onclick = async () => {
+    if (!confirm('Re-pull ratings for all ' + T.players.length + ' player(s) from FAF?\n\nThis overwrites their stored ratings with the current board and date, and re-applies the cap.')) return;
+    repull.disabled = true; const was = repull.textContent; repull.textContent = 'Asking FAF\u2026';
+    try {
+      const r = await api('/api/t/' + T.id + '/repull_ratings', { admin: adminToken() });
+      toast('Re-pulled ' + r.updated + ' rating' + (r.updated === 1 ? '' : 's') + (r.failed && r.failed.length ? ' \u2014 ' + r.failed.length + ' could not be fetched' : ''));
+      if (r.failed && r.failed.length) alert('Could not fetch a rating for:\n\n' + r.failed.join('\n') + '\n\nThey keep the rating they had.');
+      await refresh();
+    } catch (e) { toast(e.message, true); repull.disabled = false; repull.textContent = was; }
   };
   const ratingDateSave = document.getElementById('aiRatingDateSave');
   if (ratingDateSave) ratingDateSave.onclick = async () => {
@@ -1325,13 +1384,18 @@ function drawTlog(el) {
 
 // ---------- chat ----------
 // A lightweight polling chat that runs independently of the main tournament poll so
-// messages arrive quickly. One active room at a time; its own timer, torn down on close.
+// messages arrive quickly.
+//
+// Every mounted panel is its own INSTANCE: its own room, history, reply state and timer.
+// This used to be module-level state, which meant a second mount silently killed the first —
+// fine when only one chat could ever be on screen, fatal now that a chat can be pinned to the
+// right while another one is open in the tab or a popup.
 let _srOfficialOnly = false;   // series index: show only official series
 let _qlPanelOpen = false;   // Qualifiers controls revealed on the Admin tab (per session)
-let _chatRoom = null;
 let _chatActiveRoom = null;
 let _chatCompletedOpen = false;   // completed-match chats collapsed by default
-let _chatSince = 0;
+const _chatInstances = new Set();
+
 // Drop a room's unread marker from the cached view and repaint just the affected badges.
 function clearUnreadFor(room) {
   if (!T || !T.unreadByRoom) return;
@@ -1350,18 +1414,178 @@ function clearUnreadFor(room) {
   }
 }
 
-let _chatTimer = null;
-let _chatMsgs = [];
-let _chatReplyTo = null;   // id of the message the composer is replying to, or null
-
-let _chatPollNow = null;
-function stopChatPoll() { if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null; } _chatPollNow = null; }
+function destroyChat(inst) {
+  if (!inst) return;
+  inst.dead = true;
+  if (inst.timer) { clearInterval(inst.timer); inst.timer = null; }
+  _chatInstances.delete(inst);
+}
+// Kill whatever chat currently lives inside `host` (or anywhere under it).
+function destroyChatIn(host) {
+  if (!host) return;
+  for (const inst of Array.from(_chatInstances)) {
+    if (inst.host === host || host.contains(inst.host)) destroyChat(inst);
+  }
+}
+// Tear down every transient chat panel — the tab's, or one in a popup — but never the pinned
+// rail, which is the entire point of pinning. Kept under its old name because drawTournament
+// calls it on every redraw and on every tab switch.
+function stopChatPoll() {
+  for (const inst of Array.from(_chatInstances)) if (!inst.pinned) destroyChat(inst);
+}
+// Poked from app.js the instant a hidden tab becomes visible again: catch every live panel up.
+const _chatPollNow = () => { for (const inst of Array.from(_chatInstances)) inst.pollNow(); };
 
 async function chatRooms() {
   const tok = viewToken();
   const r = await api('/api/t/' + T.id + '/chat_rooms' + (tok ? '?token=' + encodeURIComponent(tok) : ''));
   return r;
 }
+
+// ---------- pinned chat ----------
+// One chat can be pinned to a rail on the right of the screen. It lives outside #app so a
+// tournament redraw, a tab switch or a popup never disturbs it, and it survives everything
+// except the four things that should genuinely end it (see syncPinnedChat).
+let _pinnedChat = null;   // { tid, room, label }
+
+function pinStoreKey() { const id = tourneyId(); return id ? 'faf_pinchat_' + id : null; }
+
+// Is this room one of the "Completed matches" chats? Those are read-only history in practice:
+// pinning one would be a dead end, since the rail closes itself the moment a match finishes.
+// A room whose match has vanished entirely (bracket regenerated, tournament reset) counts too.
+function chatRoomIsDone(room) {
+  if (!room || room.indexOf('match:') !== 0) return false;   // global / captains / staff never complete
+  if (!T || !T.matches) return false;                        // no data yet: don't guess, don't close
+  const m = T.matches.find(x => x.id === room.slice(6));
+  if (!m) return true;
+  return m.status === 'done';
+}
+function chatRoomPinnable(room) { return !!room && !!tourneyId() && !chatRoomIsDone(room); }
+
+// `prev` is the record being cleared. Keying off it rather than off tourneyId() matters when
+// the pin is dropped BECAUSE the viewer has navigated to a different tournament: keying off the
+// current page would clear the wrong tournament's stored pin.
+function savePinned(prev) {
+  const rec = _pinnedChat || prev;
+  const tid = rec ? rec.tid : tourneyId();
+  if (!tid) return;
+  const key = 'faf_pinchat_' + tid;
+  try {
+    if (_pinnedChat) sessionStorage.setItem(key, JSON.stringify(_pinnedChat));
+    else sessionStorage.removeItem(key);
+  } catch (e) {}
+}
+
+// The rail is fixed to the viewport, so it has to start below the sticky top bar. offsetHeight
+// (not getBoundingClientRect) because body carries a `zoom` from the UI-scale setting and both
+// elements live in that same scaled coordinate space.
+function positionPinRail() {
+  const bar = document.querySelector('.topbar');
+  // A zero reading means we were called before layout settled — fall back rather than tucking
+  // the rail up underneath the bar.
+  const h = (bar && bar.offsetHeight) ? bar.offsetHeight : 56;
+  document.documentElement.style.setProperty('--pin-top', h + 'px');
+}
+
+function pinChat(room, label) {
+  if (!room) return;
+  if (!chatRoomPinnable(room)) { toast('That match is finished — its chat can’t be pinned.', true); return; }
+  if (_pinnedChat && _pinnedChat.room === room) return;      // already there: don't remount and lose scroll
+  _pinnedChat = { tid: tourneyId(), room, label: label || room };
+  savePinned();
+  renderPinRail();          // replaces whatever was pinned before
+  refreshPinButtons();
+}
+
+function unpinChat(note) {
+  if (!_pinnedChat) return;
+  const prev = _pinnedChat;
+  _pinnedChat = null;
+  savePinned(prev);
+  const el = document.getElementById('pinRail');
+  if (el) { destroyChatIn(el); el.remove(); }
+  document.body.classList.remove('chat-pinned');
+  refreshPinButtons();
+  if (note) toast(note);
+}
+
+function renderPinRail() {
+  if (!_pinnedChat) return;
+  let el = document.getElementById('pinRail');
+  if (!el) {
+    el = document.createElement('aside');
+    el.id = 'pinRail';
+    el.className = 'pin-rail';
+    document.body.appendChild(el);
+  }
+  destroyChatIn(el);
+  el.innerHTML = '<div class="pin-rail-body"></div>';
+  document.body.classList.add('chat-pinned');
+  positionPinRail();
+  mountChat(el.querySelector('.pin-rail-body'), _pinnedChat.room, _pinnedChat.label, { pinned: true });
+}
+
+// Restore a pin after a reload. Called once the tournament data is in, so chatRoomIsDone can
+// actually judge the room; a stored pin for a match that finished meanwhile is simply dropped.
+function restorePinnedChat() {
+  const key = pinStoreKey();
+  if (!key) return;
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (e) { saved = null; }
+  if (!saved || !saved.room) return;
+  if (saved.tid !== tourneyId() || !chatRoomPinnable(saved.room)) {
+    try { sessionStorage.removeItem(key); } catch (e) {}
+    return;
+  }
+  if (_pinnedChat && _pinnedChat.room === saved.room) return;
+  _pinnedChat = saved;
+  renderPinRail();
+  refreshPinButtons();
+}
+
+// The single guard that keeps the rail honest. Runs on every redraw, on every tournament poll
+// and on the rail's own 3.5s tick, so no route into a stale pin is left open:
+//   - navigated off the tournament (or onto a different one) -> close
+//   - the match finished, or no longer exists                -> close, and say why
+//   - a room the viewer may no longer pin                    -> the buttons for it disappear
+function syncPinnedChat() {
+  if (_pinnedChat) {
+    positionPinRail();          // the top bar wraps to two rows on narrow screens
+    const tid = tourneyId();
+    if (!tid || tid !== _pinnedChat.tid) unpinChat();
+    else if (T && T.id === tid && chatRoomIsDone(_pinnedChat.room)) {
+      unpinChat('Pinned chat closed — that match is complete.');
+    }
+  }
+  refreshPinButtons();
+}
+
+// Repaint every pin control on screen from the one source of truth. Cheap, and it means no
+// caller has to remember which buttons it just rendered.
+function refreshPinButtons() {
+  const pinnedRoom = _pinnedChat ? _pinnedChat.room : null;
+  document.querySelectorAll('[data-pinbtn]').forEach(b => {
+    const room = b.dataset.pinbtn;
+    // a match that finished while this panel was open loses the button entirely
+    if (!chatRoomPinnable(room)) { b.style.display = 'none'; return; }
+    b.style.display = '';
+    const on = room === pinnedRoom;
+    b.classList.toggle('on', on);
+    b.textContent = on ? '\u{1F4CC} Pinned on the right' : '\u{1F4CC} Pin this chat on the right';
+    b.title = on ? 'Click to unpin it' : 'Keep this chat open in a panel on the right of the screen';
+  });
+  document.querySelectorAll('[data-pinroom]').forEach(b => {
+    const room = b.dataset.pinroom;
+    if (!chatRoomPinnable(room)) { b.style.display = 'none'; return; }
+    b.style.display = '';
+    const on = room === pinnedRoom;
+    b.classList.toggle('on', on);
+    b.title = on ? 'Unpin this chat' : 'Pin this chat on the right';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+window.addEventListener('resize', positionPinRail);
 
 // Escape text, then visually highlight @mentions (word-initial @ followed by a name run).
 // Purely cosmetic — matches loosely so "@Deli" or "@deli7961" both light up.
@@ -1370,13 +1594,13 @@ function highlightMentions(text) {
   return safe.replace(/(^|\s)@([^\s@]{1,40})/g, (whole, pre, name) => pre + '<span class="chat-ping">@' + name + '</span>');
 }
 
-function renderChatMessages(container) {
+function renderChatMessages(container, msgs) {
   const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
   // Timestamps used to be raw browser-local hours, which ignored the viewer's chosen time zone
   // and gave no clue what DAY a message was from. Now: a divider whenever the day changes, and
   // the full date/time on hover, both honouring the viewer's tz and format settings.
   let lastDay = '';
-  container.innerHTML = _chatMsgs.map(m => {
+  container.innerHTML = msgs.map(m => {
     const iso = new Date(m.at).toISOString();
     const time = fmtTimePart(new Date(m.at), resolvedTZ());
     const full = fmtDateTime(iso);
@@ -1396,82 +1620,140 @@ function renderChatMessages(container) {
         return (who && who.discord) ? '<span class="chat-dc" title="' + esc(who.name) + ' on Discord">' + esc(who.discord) + '</span>' : '';
       })()}
       <span class="chat-time" title="${esc(full)}">${esc(time)}</span>
-      <span class="chat-mod"><a href="#" data-chatreply="${esc(m.id)}" data-replywho="${esc(m.who)}" data-replytext="${esc(String(m.text || '').slice(0, 140))}" title="Reply to this message">reply</a>${org && m.fafId ? ` <a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a>` : ''}</span>
+      <span class="chat-mod"><a href="#" data-chatreply="${esc(m.id)}" data-replywho="${esc(m.who)}" data-replytext="${esc(String(m.text || '').slice(0, 140))}" title="Reply to this message">reply</a>${org && m.fafId ? ` <a href="#" data-chatdel="${esc(m.id)}" title="Delete message">✕</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a>` : ''}</span>
       <div class="chat-text">${highlightMentions(m.text)}</div>
     </div>`;
   }).join('') || '<div class="empty">No messages yet. Say hi, or type <code>!roll</code>.</div>';
   if (nearBottom) container.scrollTop = container.scrollHeight;
 }
 
-// Build a chat panel into `host` for the given room. Reusable by the tab and the match modal.
-async function mountChat(host, room, label) {
-  stopChatPoll();
-  _chatRoom = room; _chatSince = 0; _chatMsgs = []; _chatReplyTo = null;
-  host.innerHTML = `<div class="chat-panel">
-    <div class="chat-head">${esc(label)}</div>
-    <div class="chat-log" id="chatLog"><div class="empty">Loading\u2026</div></div>
-    <div class="chat-replybar" id="chatReplyBar" style="display:none">
-      <span class="crb-label">Replying to</span> <span class="crb-who" id="chatReplyWho"></span>
-      <span class="crb-text" id="chatReplyText"></span>
-      <button type="button" class="crb-x" id="chatReplyCancel" title="Cancel reply">\u00D7</button>
+// Build a chat panel into `host` for the given room. Reusable by the tab, the match popup and
+// the pinned rail. Everything inside is addressed by CLASS, not id: two panels can be on screen
+// at once and duplicate ids would have them fighting over the same nodes.
+// opts: { pinned }      this panel IS the rail — offer a close X instead of a pin button
+//       { closeOnPin }  pinning from here should dismiss the popup the panel sits in
+async function mountChat(host, room, label, opts) {
+  opts = opts || {};
+  destroyChatIn(host);
+  const inst = {
+    host, room, label, pinned: !!opts.pinned,
+    since: 0, msgs: [], replyTo: null, timer: null, dead: false,
+    pollNow: () => {}
+  };
+  _chatInstances.add(inst);
+
+  const headRight = inst.pinned
+    ? `<span class="ch-actions">
+         <button type="button" class="ch-icon" data-chatexpand title="Open this chat in the Chat tab">⤢</button>
+         <button type="button" class="ch-icon ch-close" data-chatunpin title="Unpin and close this chat">✕</button>
+       </span>`
+    : (chatRoomPinnable(room)
+        ? `<span class="ch-actions"><button type="button" class="chat-pin-btn" data-pinbtn="${esc(room)}">\u{1F4CC} Pin this chat on the right</button></span>`
+        : '');
+
+  host.innerHTML = `<div class="chat-panel${inst.pinned ? ' chat-panel-pinned' : ''}">
+    <div class="chat-head">${inst.pinned ? '<span class="ch-pin-mark" title="Pinned chat">\u{1F4CC}</span>' : ''}<span class="ch-label" title="${esc(label)}">${esc(label)}</span>${headRight}</div>
+    <div class="chat-log js-chatlog"><div class="empty">Loading…</div></div>
+    <div class="chat-replybar js-replybar" style="display:none">
+      <span class="crb-label">Replying to</span> <span class="crb-who js-replywho"></span>
+      <span class="crb-text js-replytext"></span>
+      <button type="button" class="crb-x js-replycancel" title="Cancel reply">×</button>
     </div>
     <div class="chat-input">
-      <div class="chat-inwrap"><input type="text" id="chatText" maxlength="500" placeholder="${viewerIsOrganizer() ? 'Message\u2026 (@everyone to ping all entrants, @name to mention, !roll for 1\u2013100)' : 'Message\u2026 (!roll for 1\u2013100, !organizer to ping the organizers, @name to mention)'}" autocomplete="off"><div class="chat-mentions" id="chatMentions" style="display:none"></div></div>
-      <button class="btn primary small" id="chatSend">Send</button>
-      ${viewerIsOrganizer() ? '' : '<button class="btn ghost small" id="chatPing" title="Flags this chat for the organizers so they know you need help">\uD83D\uDD14 Ping organizer</button>'}
+      <div class="chat-inwrap"><input type="text" class="js-chattext" maxlength="500" placeholder="${viewerIsOrganizer() ? 'Message… (@everyone to ping all entrants, @name to mention, !roll for 1–100)' : 'Message… (!roll for 1–100, !organizer to ping the organizers, @name to mention)'}" autocomplete="off"><div class="chat-mentions js-mentions" style="display:none"></div></div>
+      <button class="btn primary small js-chatsend">Send</button>
+      ${viewerIsOrganizer() ? '' : '<button class="btn ghost small js-chatping" title="Flags this chat for the organizers so they know you need help">🔔 Ping organizer</button>'}
     </div>
-    <div class="muted small" id="chatNote" style="margin-top:4px"></div>
+    <div class="muted small js-chatnote" style="margin-top:4px"></div>
   </div>`;
-  const logEl = host.querySelector('#chatLog');
-  const inp = host.querySelector('#chatText');
-  const note = host.querySelector('#chatNote');
+  const logEl = host.querySelector('.js-chatlog');
+  const inp = host.querySelector('.js-chattext');
+  const note = host.querySelector('.js-chatnote');
+
+  // ---- pin / unpin controls in the header ----
+  const pinBtn = host.querySelector('[data-pinbtn]');
+  if (pinBtn) pinBtn.onclick = (e) => {
+    e.preventDefault();
+    if (_pinnedChat && _pinnedChat.room === room) { unpinChat(); return; }
+    pinChat(room, label);
+    if (opts.closeOnPin && _pinnedChat && _pinnedChat.room === room) { destroyChat(inst); closeModal(); }
+  };
+  const unpinBtn = host.querySelector('[data-chatunpin]');
+  if (unpinBtn) unpinBtn.onclick = (e) => { e.preventDefault(); unpinChat(); };
+  const expandBtn = host.querySelector('[data-chatexpand]');
+  if (expandBtn) expandBtn.onclick = (e) => {
+    e.preventDefault();
+    // Only meaningful while the tournament page with a Chat tab is on screen.
+    if (!document.querySelector('.tab[data-tab="chat"]')) { toast('The Chat tab isn’t open right now'); return; }
+    _chatActiveRoom = room;
+    currentTab = 'chat';
+    syncTabURL();
+    drawTournament();
+  };
 
   const load = async (incremental) => {
+    if (inst.dead) return;
+    // The panel was torn out of the DOM (redraw, popup dismissed by Escape or a backdrop click).
+    // Self-heal rather than polling forever against a detached node.
+    if (!document.body.contains(host)) { destroyChat(inst); return; }
     try {
       const tok = viewToken();
-      const r = await api('/api/t/' + T.id + '/chat_read?room=' + encodeURIComponent(room) + (_chatSince ? '&since=' + _chatSince : '') + (tok ? '&token=' + encodeURIComponent(tok) : ''));
-      if (r.muted) note.textContent = 'You are muted by an organizer \u2014 you can read but not post.';
+      const r = await api('/api/t/' + T.id + '/chat_read?room=' + encodeURIComponent(room) + (inst.since ? '&since=' + inst.since : '') + (tok ? '&token=' + encodeURIComponent(tok) : ''));
+      if (inst.dead) return;
+      if (r.muted) note.textContent = 'You are muted by an organizer — you can read but not post.';
       const incoming = r.messages || [];
       if (incoming.length) {
-        if (incremental) _chatMsgs = _chatMsgs.concat(incoming);
-        else _chatMsgs = incoming;
-        _chatSince = _chatMsgs[_chatMsgs.length - 1].at;
-        renderChatMessages(logEl);
+        if (incremental) inst.msgs = inst.msgs.concat(incoming);
+        else inst.msgs = incoming;
+        inst.since = inst.msgs[inst.msgs.length - 1].at;
+        renderChatMessages(logEl, inst.msgs);
       } else if (!incremental) {
-        _chatMsgs = []; renderChatMessages(logEl);
+        inst.msgs = []; renderChatMessages(logEl, inst.msgs);
       }
       // Reading the room clears its unread server-side, but the badges come from the cached
       // tournament view, and the poll deliberately doesn't redraw while you're in chat. Clear
       // them locally so the marker disappears as you read instead of on the next tab switch.
       clearUnreadFor(room);
-    } catch (e) { note.textContent = e.message; stopChatPoll(); }
+    } catch (e) {
+      note.textContent = e.message;
+      // Losing access (dropped from the team, caster role revoked, room gone) must not leave a
+      // dead panel bolted to the screen. Anything else is a network blip: say so, keep the
+      // panel up and let the next poll recover it.
+      if (/no access/i.test(e.message || '')) {
+        if (inst.pinned) unpinChat('Pinned chat closed — you no longer have access to it.');
+        else destroyChat(inst);
+      }
+    }
   };
   await load(false);
+  // Torn down while that first load was in flight (panel replaced, popup dismissed, access
+  // lost). Stop here rather than wiring handlers and starting a timer on a dead instance.
+  if (inst.dead) return inst;
 
   // ---- reply / quote ----
-  const replyBar = host.querySelector('#chatReplyBar');
-  const replyWho = host.querySelector('#chatReplyWho');
-  const replyText = host.querySelector('#chatReplyText');
-  const clearReply = () => { _chatReplyTo = null; if (replyBar) replyBar.style.display = 'none'; };
+  const replyBar = host.querySelector('.js-replybar');
+  const replyWho = host.querySelector('.js-replywho');
+  const replyText = host.querySelector('.js-replytext');
+  const clearReply = () => { inst.replyTo = null; if (replyBar) replyBar.style.display = 'none'; };
   const setReply = (id, who, text) => {
-    _chatReplyTo = id;
+    inst.replyTo = id;
     if (replyWho) replyWho.textContent = who || '';
     if (replyText) replyText.textContent = text || '';
     if (replyBar) replyBar.style.display = '';
     inp.focus();
   };
   clearReply();
-  const rc = host.querySelector('#chatReplyCancel');
+  const rc = host.querySelector('.js-replycancel');
   if (rc) rc.onclick = clearReply;
   // Escape cancels a reply before it does anything else.
   inp.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && _chatReplyTo) { ev.stopPropagation(); clearReply(); }
+    if (ev.key === 'Escape' && inst.replyTo) { ev.stopPropagation(); clearReply(); }
   });
 
   const send = async () => {
     const text = inp.value.trim();
     if (!text) return;
-    const replyTo = _chatReplyTo;
+    const replyTo = inst.replyTo;
     inp.value = '';
     try {
       await api('/api/t/' + T.id + '/chat_post', { room, text, replyTo: replyTo || undefined, token: viewToken() });
@@ -1479,12 +1761,12 @@ async function mountChat(host, room, label) {
       await load(true);
     } catch (e) { toast(e.message, true); inp.value = text; }
   };
-  host.querySelector('#chatSend').onclick = send;
+  host.querySelector('.js-chatsend').onclick = send;
 
   // ---- @mention autocomplete (Discord-style) ----
   // Suggest from everyone signed up (players) plus team names, deduped. Typing "@" opens the
   // list; more letters filter it. Enter/Tab/click completes the current highlight.
-  const mentionBox = host.querySelector('#chatMentions');
+  const mentionBox = host.querySelector('.js-mentions');
   const nameList = (() => {
     const set = new Map();
     // Organizers only: @everyone pings every signed-up account. Offered first so it is easy to
@@ -1546,7 +1828,7 @@ async function mountChat(host, room, label) {
     if (e.key === 'Enter') { e.preventDefault(); send(); }
   };
   inp.addEventListener('blur', () => setTimeout(closeMentions, 120));
-  const pingBtn = host.querySelector('#chatPing');
+  const pingBtn = host.querySelector('.js-chatping');
   if (pingBtn) pingBtn.onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/chat_post', { room, text: '!organizer ' + (inp.value.trim() || ''), token: viewToken() });
@@ -1588,18 +1870,23 @@ async function mountChat(host, room, label) {
     }
   };
 
-  _chatPollNow = () => { if (_chatRoom === room) load(true); };
-  _chatTimer = setInterval(() => {
+  inst.pollNow = () => { if (!inst.dead) load(true); };
+  inst.timer = setInterval(() => {
+    if (inst.dead) { clearInterval(inst.timer); return; }
+    if (!document.body.contains(host)) { destroyChat(inst); return; }   // panel is gone
+    // The rail is the only panel that outlives a redraw, so it is also the one that has to keep
+    // checking whether it still has any business being on screen.
+    if (inst.pinned) syncPinnedChat();
     if (document.hidden) return;                       // tab in the background
-    if (_chatRoom !== room) { stopChatPoll(); return; }
-    if (document.activeElement === inp && inp.value) { /* still poll, just don't steal focus */ }
     load(true);
   }, 3500);
+  refreshPinButtons();
+  return inst;
 }
 
 async function drawChatTab(el) {
   stopChatPoll();
-  el.innerHTML = '<div class="panel section"><div class="empty">Loading chats\u2026</div></div>';
+  el.innerHTML = '<div class="panel section"><div class="empty">Loading chats…</div></div>';
   let data;
   try { data = await chatRooms(); } catch (e) { el.innerHTML = '<div class="panel section"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
   const rooms = data.rooms || [];
@@ -1614,7 +1901,7 @@ async function drawChatTab(el) {
           ? '<span class="org-idpair"><span class="org-name">' + esc(o.name) + '</span><span class="org-discord" title="' + esc(o.name) + ' on Discord">' + esc(o.discord) + '</span></span>'
           : '<span class="org-name">' + esc(o.name) + '</span><span class="muted small">no Discord listed</span>'}
       </div>`).join('')}</div>
-      <div class="org-callout-hint">Type <code>!organizer</code> or press \uD83D\uDD14 to ping them in that chat.</div>
+      <div class="org-callout-hint">Type <code>!organizer</code> or press 🔔 to ping them in that chat.</div>
     </div>`
     : '';
 
@@ -1625,13 +1912,20 @@ async function drawChatTab(el) {
         <p class="muted small" style="margin:6px 0 0">Chat here is mostly between players until the event begins. If you need something answered sooner, message an organizer on Discord${orgs.some(o => o.discord) ? ' (' + orgs.filter(o => o.discord).map(o => esc(o.discord)).join(', ') + ')' : ''}.</p>
       </div>`
     : '';
+  // A room and, beside it, a pin toggle. The pin is a SIBLING of the room button, not a child:
+  // nesting a button inside a button is invalid and swallows the click. Completed rooms get no
+  // pin at all — there is nothing live left to follow.
   const roomBtn = (r) => {
     const badges = [];
     if (r.mention) badges.push('<span class="chat-mention-badge">1</span>');       // you were @mentioned
     else if (r.unread) badges.push('<span class="unread-dot">' + (r.unread > 9 ? '9+' : r.unread) + '</span>');
-    if (r.ping && viewerIsOrganizer()) badges.push('\uD83D\uDD14');                  // organizer attention
+    if (r.ping && viewerIsOrganizer()) badges.push('🔔');                  // organizer attention
     const cnt = r.count ? ' <span class="muted small">(' + r.count + ')</span>' : '';
-    return `<button class="chat-room ${r.mention ? 'mentioned' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${badges.length ? '<span class="chat-room-badges">' + badges.join(' ') + '</span> ' : ''}${esc(r.label)}${cnt}</button>`;
+    const pin = r.done ? '' : `<button type="button" class="chat-pin-mini" data-pinroom="${esc(r.id)}" data-pinlabel="${esc(r.label)}" title="Pin this chat on the right">\u{1F4CC}</button>`;
+    return `<div class="chat-room-row">
+      <button class="chat-room ${r.mention ? 'mentioned' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${badges.length ? '<span class="chat-room-badges">' + badges.join(' ') + '</span> ' : ''}${esc(r.label)}${cnt}</button>
+      ${pin}
+    </div>`;
   };
   const active = rooms.filter(r => !r.done);
   const completed = rooms.filter(r => r.done);
@@ -1640,7 +1934,7 @@ async function drawChatTab(el) {
   const listHtml = active.map(roomBtn).join('')
     + (completed.length
         ? `<button class="chat-room-group chat-group-toggle ${_chatCompletedOpen ? 'open' : ''}" id="chatCompletedToggle">
-             <span class="cg-caret">${_chatCompletedOpen ? '\u25BE' : '\u25B8'}</span> Completed matches <span class="muted small">(${completed.length})</span>${completedMention && !_chatCompletedOpen ? ' <span class="chat-mention-badge">!</span>' : ''}
+             <span class="cg-caret">${_chatCompletedOpen ? '▾' : '▸'}</span> Completed matches <span class="muted small">(${completed.length})</span>${completedMention && !_chatCompletedOpen ? ' <span class="chat-mention-badge">!</span>' : ''}
            </button>
            <div class="chat-completed" id="chatCompletedWrap" style="display:${_chatCompletedOpen ? '' : 'none'}">${completed.map(roomBtn).join('')}</div>`
         : '');
@@ -1650,6 +1944,7 @@ async function drawChatTab(el) {
       ${orgLine}
       ${data.muted ? '<div class="warn small" style="margin-bottom:8px">You are muted.</div>' : ''}
       <div class="chat-roomlist">${listHtml}</div>
+      <p class="muted small chat-pin-hint">\u{1F4CC} keeps a chat open on the right while you browse the bracket, matches and vetoes. One at a time.</p>
     </div>
     <div class="chat-host" id="chatHost"></div>
   </div>`;
@@ -1661,6 +1956,11 @@ async function drawChatTab(el) {
     mountChat(host, btn.dataset.room, btn.dataset.label);
   };
   el.querySelectorAll('.chat-room').forEach(b => b.onclick = () => pick(b));
+  el.querySelectorAll('[data-pinroom]').forEach(b => b.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (_pinnedChat && _pinnedChat.room === b.dataset.pinroom) unpinChat();
+    else pinChat(b.dataset.pinroom, b.dataset.pinlabel);
+  });
   const cToggle = el.querySelector('#chatCompletedToggle');
   if (cToggle) cToggle.onclick = () => {
     _chatCompletedOpen = !_chatCompletedOpen;
@@ -1668,21 +1968,25 @@ async function drawChatTab(el) {
     if (wrap) wrap.style.display = _chatCompletedOpen ? '' : 'none';
     cToggle.classList.toggle('open', _chatCompletedOpen);
     const caret = cToggle.querySelector('.cg-caret');
-    if (caret) caret.textContent = _chatCompletedOpen ? '\u25BE' : '\u25B8';
+    if (caret) caret.textContent = _chatCompletedOpen ? '▾' : '▸';
   };
   // Re-select the room the user was already in (if it still exists), not always Global — a
   // background refresh must not yank them back to the global chat.
   const prev = _chatActiveRoom && el.querySelector('.chat-room[data-room="' + (window.CSS && CSS.escape ? CSS.escape(_chatActiveRoom) : _chatActiveRoom) + '"]');
   pick(prev || el.querySelector('.chat-room'));
+  refreshPinButtons();
 }
 
 function openMatchChat(m) {
-  const label = mLabel(m) + ' \u2014 ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
+  const label = mLabel(m) + ' — ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
+  const room = 'match:' + m.id;
   modal(`<h3>Match chat</h3><div id="mcHost" class="chat-compact"></div>
     <div class="actions"><button class="btn ghost" id="mcClose">Close</button></div>`, root => {
-    root.querySelector('#mcClose').onclick = () => { stopChatPoll(); closeModal(); };
-    mountChat(root.querySelector('#mcHost'), 'match:' + m.id, label);
-  });
+    const mcHost = root.querySelector('#mcHost');
+    root.querySelector('#mcClose').onclick = () => { destroyChatIn(mcHost); closeModal(); };
+    // Pinning from the popup puts the chat on the right, so the popup has done its job.
+    mountChat(mcHost, room, label, { closeOnPin: true });
+  }, { mid: true });
 }
 
 // ---------- routing ----------
@@ -1705,6 +2009,9 @@ function setTitle(name) {
 }
 
 function route() {
+  // A pinned chat belongs to one tournament. Leaving it (home, series, another event) closes
+  // the rail before the new page draws, so it can never hang around over unrelated content.
+  syncPinnedChat();
   if (location.pathname === '/series') renderSeriesIndex();
   else if (location.pathname.startsWith('/series/')) renderSeries(location.pathname.slice(8));
   else if (location.pathname === '/host') renderHost();

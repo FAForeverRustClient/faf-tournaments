@@ -75,6 +75,18 @@ function tourneyId() {
   return m ? m[1] : null;
 }
 
+// "Which rating counts, and as of when" - the two things a player most needs before signing up
+// and most easily missed. One helper so the Game Setup box, the signup panel and the players tab
+// can never drift apart. Returns '' when the tournament has no FAF-pulled rating.
+function ratingSourceHtml(t) {
+  const T2 = t || (typeof T !== 'undefined' ? T : null);
+  if (!T2 || !T2.ratingType || T2.ratingType === 'none') return '';
+  const when = T2.ratingDate
+    ? 'as of ' + esc(fmtDate(new Date(T2.ratingDate).toISOString()))
+    : 'at signup time';
+  return 'Uses your <strong>' + esc(ratingTypeLabel(T2.ratingType)) + '</strong> rating, taken <strong>'
+    + when + '</strong><span class="muted"> \u2014 pulled from FAF automatically</span>';
+}
 function ratingTypeLabel(rt) {
   return rt === 'global' ? 'Global' : rt === '1v1' ? '1v1 / ladder'
        : rt === 'rc' ? "Fearghal's RC (best of 2v2/3v3/4v4/Global, blended to 300 games)"
@@ -439,6 +451,162 @@ function fmtDate(v) {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return d.getUTCDate() + ' ' + months[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
 }
+// ---- multi-day events ----
+// `eventDays` is a sorted list of 'YYYY-MM-DD'. One day (or none) means a normal single-day
+// event and every label below returns '' so nothing changes on screen.
+function eventDayList(t) {
+  const d = (t && t.eventDays) || [];
+  return Array.isArray(d) && d.length > 1 ? d.slice().sort() : [];
+}
+function dayAddUTC(ymd, n) {
+  const p = String(ymd).split('-');
+  const d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2]));
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// Group a sorted day list into contiguous runs, so "two weekends" reads as two ranges rather
+// than four loose dates - which is the whole point of the feature.
+function dayRuns(days) {
+  const runs = [];
+  for (const d of days) {
+    const last = runs[runs.length - 1];
+    if (last && dayAddUTC(last[last.length - 1], 1) === d) last.push(d);
+    else runs.push([d]);
+  }
+  return runs;
+}
+// "12-13 Sep 2026" / "12-13 & 19-20 Sep 2026" / "31 Dec 2026-1 Jan 2027". '' when single-day.
+// Each endpoint carries only as much as it needs: the last always shows month and year, and any
+// earlier one shows the month (and year) only when the NEXT endpoint differs. That is what keeps
+// "30 Sep-1 Oct 2026" from reading "30 Sep-1 Oct Oct 2026".
+function eventDaysLabel(t) {
+  const days = eventDayList(t);
+  if (!days.length) return '';
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const runs = dayRuns(days);
+  // flatten to the endpoints actually printed, in order
+  const ends = [];
+  for (const run of runs) {
+    ends.push(run[0]);
+    if (run.length > 1) ends.push(run[run.length - 1]);
+  }
+  const fmt = (ymd, i) => {
+    const [y, m, d] = String(ymd).split('-');
+    const next = ends[i + 1];
+    const isLast = i === ends.length - 1;
+    const needYear = isLast || (next && next.slice(0, 4) !== y);
+    const needMon = isLast || needYear || (next && next.slice(5, 7) !== m);
+    return (+d) + (needMon ? ' ' + MON[+m - 1] : '') + (needYear ? ' ' + y : '');
+  };
+  let i = 0;
+  return runs.map(run => {
+    if (run.length === 1) return fmt(run[0], i++);
+    const a = fmt(run[0], i++), b = fmt(run[run.length - 1], i++);
+    return a + '\u2013' + b;
+  }).join(' & ');
+}
+function eventDaysCountLabel(t) {
+  const days = eventDayList(t);
+  return days.length ? days.length + ' days' : '';
+}
+
+// A month calendar for picking the days an event runs on. Standard multi-select semantics, the
+// ones people already know from a file manager:
+//   click        - select just that day (and set it as the anchor)
+//   shift+click  - select the whole range from the anchor to that day
+//   ctrl/cmd+click - add or remove that one day, keeping the rest
+// It is wired two-way to the existing native date input, which stays the accessible way to type
+// a start date: typing there re-selects that single day, and the earliest day picked here is
+// written back as the start date. All dates are handled in UTC, like the rest of the site.
+function mountDayPicker(host, opts) {
+  const o = opts || {};
+  let days = (o.days || []).slice().sort();
+  let anchor = days[0] || o.startDay || new Date().toISOString().slice(0, 10);
+  let view = (days[0] || anchor).slice(0, 7);            // 'YYYY-MM' currently on screen
+  const fire = () => { if (o.onChange) o.onChange(days.slice()); };
+
+  const draw = () => {
+    const [vy, vm] = view.split('-').map(Number);
+    const first = new Date(Date.UTC(vy, vm - 1, 1));
+    const monthName = ['January','February','March','April','May','June','July','August','September','October','November','December'][vm - 1];
+    // Monday-first grid
+    const lead = (first.getUTCDay() + 6) % 7;
+    const nDays = new Date(Date.UTC(vy, vm, 0)).getUTCDate();
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    let cells = '';
+    for (let i = 0; i < lead; i++) cells += '<span class="dp-cell dp-empty"></span>';
+    for (let d = 1; d <= nDays; d++) {
+      const ymd = vy + '-' + String(vm).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+      const on = days.indexOf(ymd) >= 0;
+      const cls = ['dp-cell'];
+      if (on) cls.push('on');
+      if (on && days[0] === ymd) cls.push('first');
+      if (ymd === todayYmd) cls.push('today');
+      cells += '<button type="button" class="' + cls.join(' ') + '" data-dp="' + ymd + '">' + d + '</button>';
+    }
+    host.innerHTML = `<div class="daypicker">
+      <div class="dp-head">
+        <button type="button" class="dp-nav" data-dpmove="-1" title="Previous month">\u2039</button>
+        <span class="dp-title">${esc(monthName)} ${vy}</span>
+        <button type="button" class="dp-nav" data-dpmove="1" title="Next month">\u203A</button>
+      </div>
+      <div class="dp-grid dp-dow">${['Mo','Tu','We','Th','Fr','Sa','Su'].map(x => '<span class="dp-cell dp-dowc">' + x + '</span>').join('')}</div>
+      <div class="dp-grid">${cells}</div>
+      <div class="dp-foot">
+        <span class="dp-sum">${days.length > 1
+          ? esc(eventDaysLabel({ eventDays: days })) + ' <span class="muted">(' + days.length + ' days)</span>'
+          : (days.length ? esc(fmtDate(days[0])) + ' <span class="muted">(single day)</span>' : '<span class="muted">No day selected</span>')}</span>
+        ${days.length > 1 ? '<button type="button" class="dp-clear" data-dpclear>Just the first day</button>' : ''}
+      </div>
+      <div class="dp-hint muted small">Click a day \u00b7 <strong>Shift</strong>+click for a range \u00b7 <strong>Ctrl</strong>/<strong>Cmd</strong>+click to add single days</div>
+    </div>`;
+    host.querySelectorAll('[data-dpmove]').forEach(b => b.onclick = (e) => {
+      e.preventDefault();
+      const n = +b.dataset.dpmove;
+      const d = new Date(Date.UTC(vy, vm - 1 + n, 1));
+      view = d.toISOString().slice(0, 7);
+      draw();
+    });
+    const clr = host.querySelector('[data-dpclear]');
+    if (clr) clr.onclick = (e) => { e.preventDefault(); days = days.slice(0, 1); draw(); fire(); };
+    host.querySelectorAll('[data-dp]').forEach(b => b.onclick = (e) => {
+      e.preventDefault();
+      const ymd = b.dataset.dp;
+      if (e.shiftKey && anchor) {
+        const lo = anchor <= ymd ? anchor : ymd, hi = anchor <= ymd ? ymd : anchor;
+        const range = [];
+        for (let cur = lo; cur <= hi; cur = dayAddUTC(cur, 1)) {
+          range.push(cur);
+          if (range.length > 31) break;              // hard cap, matching the server
+        }
+        days = range;
+      } else if (e.ctrlKey || e.metaKey) {
+        const i = days.indexOf(ymd);
+        if (i >= 0) { if (days.length > 1) days.splice(i, 1); }   // never leave zero days
+        else days.push(ymd);
+        days.sort();
+        anchor = ymd;
+      } else {
+        days = [ymd];
+        anchor = ymd;
+      }
+      draw();
+      fire();
+    });
+  };
+
+  draw();
+  return {
+    get: () => days.slice(),
+    // called when the native date input changes: that day becomes the whole selection
+    setSingle: (ymd) => {
+      if (!ymd) return;
+      days = [ymd]; anchor = ymd; view = ymd.slice(0, 7); draw();
+    },
+    showMonthOf: (ymd) => { if (ymd) { view = ymd.slice(0, 7); draw(); } }
+  };
+}
+
 // the date to display + sort by for a tournament (imported: challonge date; else event date)
 function tourneyDate(t) {
   return t.imported ? (t.challongeDate || t.eventDate) : (t.eventDate || null);
@@ -492,6 +660,24 @@ function formatPrize(p) {
 
 function statusLabel(s) {
   return { signup: 'Signups open', draft: 'Drafting', drafted: 'Teams locked', running: 'In progress', finished: 'Finished' }[s] || s;
+}
+// `status` is 'signup' from the moment a tournament is created, including while it is waiting for
+// a scheduled opening time - so the pill claimed "Signups open" when the server would in fact
+// refuse a signup. Anything drawing the status pill should use these two, not statusLabel alone.
+function signupsNotOpenYet(t) {
+  return !!(t && t.status === 'signup' && !t.abandoned && t.signupOpensAt
+            && new Date(t.signupOpensAt).getTime() > Date.now());
+}
+function statusPillLabel(t) {
+  if (!t) return '';
+  if (t.abandoned) return 'ABANDONED';
+  if (signupsNotOpenYet(t)) return 'Signups not open yet';
+  return statusLabel(t.status);
+}
+function statusPillClass(t) {
+  if (!t) return '';
+  if (t.abandoned) return 'abandoned';
+  return signupsNotOpenYet(t) ? 'presignup' : t.status;
 }
 
 function typeLine(t) {

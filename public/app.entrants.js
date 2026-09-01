@@ -31,9 +31,22 @@ function drawPlayers(el) {
             : (T.formation === 'premade' && T.teamSize > 1) ? 'Sign up and enter your team name. Teammates enter the exact same name to be grouped together. You can also set or change it later on the Teams tab.'
             : 'Solo bracket — every signup is an entrant.';
       const suNotOpen = T.signupOpensAt && new Date(T.signupOpensAt).getTime() > Date.now();
-      const ratReq = (T.minRating != null || T.maxRating != null)
-        ? '<p class="muted small">Rating requirement: ' + (T.minRating != null && T.maxRating != null ? T.minRating + '\u2013' + T.maxRating : T.minRating != null ? T.minRating + ' or higher' : 'up to ' + T.maxRating) + '. Signups outside the range are refused (organizer invites are exempt).</p>'
-        : '';
+      // Which rating counts, as of when, and whether you qualify - as one bordered callout rather
+      // than three grey sentences competing with the Discord help text. Players were missing it.
+      const ratingCalloutHTML = () => {
+        const src = ratingSourceHtml(T);
+        const req = (T.minRating != null || T.maxRating != null)
+          ? 'Rating requirement: <strong>' + (T.minRating != null && T.maxRating != null
+              ? T.minRating + '\u2013' + T.maxRating
+              : T.minRating != null ? T.minRating + ' or higher' : 'up to ' + T.maxRating)
+            + '</strong>. Signups outside the range are refused (organizer invites are exempt).'
+          : '';
+        if (!src && !req) return '';
+        return '<div class="rating-callout">'
+          + (src ? '<div class="rc-src">' + src + '</div>' : '')
+          + (req ? '<div class="rc-req muted small">' + req + '</div>' : '')
+          + '</div>';
+      };
       if (T.viewer && T.viewer.invited && !viewerSignedUp() && !admin) {
         html += `<div class="panel section" style="border-left:3px solid var(--amber)"><h2>You're invited</h2>
           <p class="muted small">The organizer invited you to this tournament. Sign up below, or decline so they can plan around it.</p>
@@ -42,7 +55,7 @@ function drawPlayers(el) {
       if (suNotOpen && !admin && !viewerSignedUp()) {
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="muted small">Signups haven\u2019t opened yet \u2014 they open <strong>${esc(fmtDateTime(T.signupOpensAt))}</strong>.</p>
-          ${ratReq}</div>`;
+          ${ratingCalloutHTML()}</div>`;
       } else if (viewerSignedUp() && (() => { const mine = T.players.find(pl => pl.id === T.viewer.signedUpPlayerId); return mine && mine.pending; })()) {
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="signed-in-note">Your signup request is <strong>waiting for organizer approval</strong>. You'll appear in the player list once accepted.</p>
@@ -66,13 +79,11 @@ function drawPlayers(el) {
           <div class="grid2">
             <div>
               ${fafAuth.enabled ? '<p class="muted small">Signing up as <strong>' + esc(me()) + '</strong> (your FAF account).</p>' : '<label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">'}
+              ${ratingCalloutHTML()}
               ${(T.formation === 'premade' && T.teamSize > 1) ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Your team name" autocomplete="off">' : ''}
               ${fafAuth.enabled ? '<label>Discord handle <span class="muted small">(optional \u2014 so the organizer and teammates can reach you)</span></label><p class="muted small" style="margin:4px 0 6px">Your Discord <strong>username</strong> \u2014 the unique all-lowercase handle from Settings \u2192 My Account \u2014 not your display name. Saved to your account for all tournaments.</p><input type="text" id="sDiscord" maxlength="40" autocomplete="off" value="' + esc((fafAuth.user && fafAuth.user.discord) || '') + '">' : ''}
-              ${(T.ratingType && T.ratingType !== 'none')
-                ? '<p class="muted small">Rating for this tournament: <strong>' + esc(ratingTypeLabel(T.ratingType)) + '</strong>, taken <strong>' + (T.ratingDate ? 'as of ' + new Date(T.ratingDate).toLocaleDateString() : 'at signup time') + '</strong>. It is pulled from FAF automatically \u2014 you don\u2019t enter it.</p>'
-                : '<label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">'}
+              ${(T.ratingType && T.ratingType !== 'none') ? '' : '<label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">'}
               ${T.signupMode === 'request' && !admin ? '<p class="muted small">This tournament is <strong>request only</strong>: an organizer approves your signup before you appear in the list.</p>' : ''}
-              ${ratReq}
               <div style="margin-top:16px"><button class="btn primary" id="sGo">${T.signupMode === 'request' && !admin ? 'Request to sign up' : 'Sign up'}${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
             </div>
             <div class="muted small" style="align-self:end">${esc(helpText)}</div>
@@ -136,9 +147,12 @@ function drawPlayers(el) {
       <td class="mono">${p.rating != null ? p.rating : '<span class="muted">—</span>'}</td>
       ${T.teamSize > 1 ? `<td class="small muted" style="white-space:nowrap">${esc(inTeam)}</td>` : ''}
       ${admin ? `<td style="text-align:right;white-space:nowrap">
+        <button class="btn ghost small" data-allrat="${p.id}" title="Show this player's rating on every leaderboard (organizers only)">Ratings</button>
         ${canReplace ? `<button class="btn ghost small" data-replace="${p.id}">Replace</button>` : ''}
         <button class="btn ghost small" data-edit="${p.id}">Edit</button>
         ${T.status === 'signup' || ((T.status === 'draft' || T.status === 'drafted') && !p.teamId) ? `<button class="btn danger small" data-del="${p.id}">${T.status === 'signup' && T.formation === 'premade' && T.teamSize > 1 ? 'Remove team' : 'Remove'}</button>` : ''}</td>` : ''}`;
+    const arb = tr.querySelector('[data-allrat]');
+    if (arb) arb.onclick = () => showAllRatings(p);
     const eb = tr.querySelector('[data-edit]');
     if (eb) eb.onclick = () => editPlayer(p);
     const rb = tr.querySelector('[data-replace]');
@@ -324,6 +338,56 @@ function replacePlayer(outP) {
       } catch (e) { toast(e.message, true); }
     };
   });
+}
+
+// Organizer-only: every leaderboard rating for one player. It is INFORMATION, nothing more -
+// only the tournament's configured rating decided their entry, their cap and their seed, and the
+// modal says so plainly so nobody mistakes a higher board for a problem.
+const RAT_BOARDS = [
+  ['global', 'Global'], ['1v1', '1v1 / ladder'],
+  ['2v2', '2v2 (TMM)'], ['3v3', '3v3 (TMM)'], ['4v4', '4v4 (TMM)']
+];
+async function showAllRatings(p, refresh) {
+  const load = async (root, doRefresh) => {
+    const body = root.querySelector('#arBody');
+    body.innerHTML = '<div class="empty">Asking FAF\u2026</div>';
+    let d;
+    try {
+      const at = adminToken();
+      d = await api('/api/t/' + T.id + '/player_ratings?playerId=' + encodeURIComponent(p.id)
+        + (at ? '&admin=' + encodeURIComponent(at) : '') + (doRefresh ? '&refresh=1' : ''));
+    } catch (e) { body.innerHTML = '<div class="warn small">' + esc(e.message) + '</div>'; return; }
+    if (!d.allRatings || !d.allRatings.boards) {
+      body.innerHTML = '<div class="empty">' + esc(d.reason || 'No ratings available for this player.') + '</div>';
+      return;
+    }
+    const b = d.allRatings.boards;
+    const counts = d.counts;
+    const asOf = d.ratingDate ? fmtDate(new Date(d.ratingDate).toISOString()) : 'their signup time';
+    body.innerHTML = `<p class="muted small" style="margin:0 0 10px">As of <strong>${esc(asOf)}</strong>.
+        Only <strong>${esc(ratingTypeLabel(counts))}</strong> counted for entry, the rating cap and seeding \u2014
+        everything else here is for your information only.</p>
+      <table class="ar-table"><thead><tr><th>Leaderboard</th><th>Rating</th><th>Games</th></tr></thead><tbody>
+      ${RAT_BOARDS.map(([k, label]) => {
+        const row = b[k] || {};
+        const isCounted = counts === k;
+        return `<tr class="${isCounted ? 'ar-counted' : ''}">
+          <td>${esc(label)}${isCounted ? ' <span class="ar-chip">counts</span>' : ''}</td>
+          <td class="mono">${row.rating != null ? row.rating : '<span class="muted">\u2014</span>'}</td>
+          <td class="mono muted">${row.games != null ? row.games : '\u2014'}</td>
+        </tr>`;
+      }).join('')}
+      </tbody></table>
+      ${counts === 'rc' ? '<p class="muted small" style="margin-top:8px">This tournament uses <strong>Fearghal\u2019s RC</strong>, a blend of the 2v2/3v3/4v4/Global boards above rather than any single one.</p>' : ''}
+      ${d.capped != null ? '<p class="muted small" style="margin-top:8px">Their ' + esc(ratingTypeLabel(counts)) + ' of <strong>' + d.countsRating + '</strong> is above this tournament\u2019s cap, so it counts as <strong>' + d.capped + '</strong>.</p>' : ''}`;
+  };
+  modal(`<h3>${esc(p.name)} <span class="muted" style="font-weight:400">\u2014 all ratings</span></h3>
+    <div id="arBody"><div class="empty">Asking FAF\u2026</div></div>
+    <div class="actions"><button class="btn ghost" id="arRefresh">Re-pull from FAF</button><button class="btn ghost" id="arClose">Close</button></div>`, root => {
+    root.querySelector('#arClose').onclick = closeModal;
+    root.querySelector('#arRefresh').onclick = () => load(root, true);
+    load(root, !!refresh);
+  }, { mid: true });
 }
 
 function editPlayer(p) {

@@ -370,7 +370,10 @@ function matchBox(m) {
       const chat = (m.team1 && m.team2 && matchChatAllowed(m))
         ? '<a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat' + unreadDot('match:' + m.id) + '</a>' : '';
       const veto = masked ? '' : vetoLinkHTML(m);
-      return (chat || veto) ? '<div class="mlinks">' + chat + veto + '</div>' : '';
+      // Your own outstanding faction choice goes FIRST: it is the only line here that is a job
+      // rather than a link, and it only ever appears when you actually owe one.
+      const fv = masked ? '' : myFvetoLinkHTML(m);
+      return (fv || chat || veto) ? '<div class="mlinks">' + fv + chat + veto + '</div>' : '';
     })() +
     // Show replays as soon as games are confirmed, not only once the series ends. A Bo3 sitting
     // at 1-0 already has a replay worth watching, and casters need it while the match is live.
@@ -393,6 +396,8 @@ function matchBox(m) {
   if (vlink) vlink.onclick = (e) => { e.preventDefault(); showVetoPopup(m); };
   const mchat = box.querySelector('[data-matchchat]');
   if (mchat) mchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
+  const fvlink = box.querySelector('[data-fveto-link]');
+  if (fvlink) fvlink.onclick = (e) => { e.preventDefault(); showVetoPopup(m); };
   box.querySelectorAll('[data-teamid]').forEach(nameEl => {
     nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
   });
@@ -418,7 +423,9 @@ function vetoLinkHTML(m) {
 // Popup showing a single match's veto (status or final maps), plus a link to that match's chat.
 // Opened from the "See vetoed maps" link on a bracket match, so the user stays on the bracket.
 function showVetoPopup(m) {
-  if (!m || !m.veto) return;
+  // Faction-only matches have no m.veto at all. They used to fall out here, which meant the
+  // popup could not be opened for them and there was nowhere to act from the bracket.
+  if (!m || (!m.veto && !m.fveto)) return;
   const nameHtml = (tid) => {
     const real = T.teams && T.teams.some(t => t.id === tid);
     return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
@@ -429,7 +436,7 @@ function showVetoPopup(m) {
     <div class="veto-pop-foot" style="margin-top:10px">${chatLink}</div>
     <div class="actions"><button class="btn ghost" id="vpClose">Close</button></div>`, root => {
     const body = root.querySelector('#vpBody');
-    body.innerHTML = vetoHTML(m);
+    body.innerHTML = vetoHTML(m) || '<div class="muted small">Nothing to show for this match.</div>';
     wireVeto(body, m);
     wireFactionVeto(body);
     const chat = root.querySelector('#vpChat');
@@ -2210,6 +2217,9 @@ function matchStateLabel(m, masked) {
   if (!masked && m.status === 'done') return { txt: 'Concluded', cls: 'done' };
   if (masked && m.status === 'done') return { txt: 'Played', cls: 'live' };
   if (m.veto && !m.veto.done) return { txt: 'Picks & bans', cls: 'veto' };
+  // A faction veto is picks & bans too - it just isn't the map one. Saying "Ready" while two
+  // players still owe faction choices is what made the whole step easy to miss.
+  if (m.fveto && !factionAllDone(m)) return { txt: 'Picks & bans', cls: 'veto' };
   if (m.status === 'live') return { txt: 'Live', cls: 'live' };
   return { txt: 'Ready', cls: 'ready' };
 }
@@ -2268,7 +2278,7 @@ function drawMatchesTab(el) {
       <td class="mt-teamcell">${nameFor(m.team2, 2)}</td>
       <td class="mt-fixed"><span class="mt-state ${st.cls}">${esc(st.txt)}</span></td>
       <td class="mt-fixed">${result}</td>
-      <td class="mt-actions mt-fixed">${revealBtn}<button class="btn ghost small" data-mdet="${m.id}">Details</button></td>
+      <td class="mt-actions mt-fixed">${myFactionTurn(m) ? '<button class="btn amber small" data-fvgo="' + esc(m.id) + '" title="You still owe faction choices on this match">\u26A1 Faction veto</button>' : ''}${revealBtn}<button class="btn ghost small" data-mdet="${m.id}">Details</button></td>
     </tr>`;
   };
 
@@ -2290,6 +2300,10 @@ function drawMatchesTab(el) {
   el.querySelectorAll('[data-mdet]').forEach(b => b.onclick = () => {
     const m = T.matches.find(x => x.id === b.dataset.mdet);
     if (m) showMatchDetails(m);
+  });
+  el.querySelectorAll('[data-fvgo]').forEach(b => b.onclick = () => {
+    const m = T.matches.find(x => x.id === b.dataset.fvgo);
+    if (m) showVetoPopup(m);
   });
   el.querySelectorAll('[data-reveal]').forEach(b => b.onclick = () => {
     const id = b.dataset.reveal;
@@ -2415,6 +2429,63 @@ function factionChip(f, opts) {
   return `<button type="button" class="${cls.join(' ')}"${attrs}${title}${o.btn ? '' : ' disabled'}><span class="fchip-glyph">${meta.short}</span><span class="fchip-name">${esc(meta.label)}</span></button>`;
 }
 
+// Does the VIEWER still owe faction choices on this match, and what is the next one?
+// Returns { games, next:{game,action,index,of} } or null (not a competitor here, nothing left
+// to do, or the match already has a result). This is the single source of truth behind the
+// turn banner, the Vetoes tab badge, the bracket link and the Matches-tab button - before it
+// existed, a faction veto announced itself nowhere at all.
+function myFactionTurn(m) {
+  if (!m || !m.fveto || !m.fveto.games) return null;
+  if (m.status === 'done') return null;
+  const myTeamId = (T.viewer && T.viewer.teamId) || null;
+  if (!myTeamId || (myTeamId !== m.team1 && myTeamId !== m.team2)) return null;
+  let games = 0, next = null;
+  for (const k of Object.keys(m.fveto.games).sort((a, b) => Number(a) - Number(b))) {
+    const g = m.fveto.games[k];
+    // `mine` is only present for a competitor: the server strips it from everyone else.
+    if (!g || !g.mine || g.mine.done || !g.next) continue;
+    games++;
+    if (!next) next = { game: k, action: g.next.action, index: g.next.index, of: g.next.of };
+  }
+  return games ? { games, next } : null;
+}
+
+// Every faction choice the viewer owes across the whole tournament, newest match first.
+function myFactionTurnsAll() {
+  const out = [];
+  for (const m of (T && T.matches) || []) { const ft = myFactionTurn(m); if (ft) out.push({ m, ft }); }
+  return out;
+}
+function myFactionStepCount() { return myFactionTurnsAll().reduce((n, x) => n + x.ft.games, 0); }
+
+// The same question for the MAP veto: is it my team's turn on this match?
+function myMapVetoTurn(m) {
+  if (!m || !m.veto || m.veto.done || m.status === 'done') return null;
+  const myTeamId = (T.viewer && T.viewer.teamId) || null;
+  const v = m.veto;
+  if (!myTeamId || !v.teamA || !v.teamB) return null;
+  const step = v.sequence && v.sequence[v.stepIndex];
+  if (!step) return null;
+  return ((step.team === 'A' ? v.teamA : v.teamB) === myTeamId) ? step : null;
+}
+// What the Vetoes tab badge counts: everything on this viewer's plate, of either kind.
+function myVetoStepCount() {
+  let n = myFactionStepCount();
+  for (const m of (T && T.matches) || []) if (myMapVetoTurn(m)) n++;
+  return n;
+}
+
+// An amber call to action on the match itself. The map veto has had a link on the bracket box
+// since it existed; the faction veto had none, so a player whose only outstanding job was a
+// faction choice got no prompt anywhere on the page.
+function myFvetoLinkHTML(m) {
+  const ft = myFactionTurn(m);
+  if (!ft) return '';
+  const verb = ft.next.action === 'ban' ? 'ban' : 'pick';
+  const more = ft.games > 1 ? ' <span class="fv-count">' + ft.games + '</span>' : '';
+  return `<a href="#" data-fveto-link="${esc(m.id)}" class="veto-mini-link fveto-cta" title="${ft.games} game${ft.games === 1 ? '' : 's'} on this match still need your faction ban/picks">\u26A1 Your faction ${verb}${more} \u2192</a>`;
+}
+
 // The faction column for one game of one match. Returns '' when there is nothing to show.
 function factionGameHTML(m, gameNum) {
   const fv = m.fveto;
@@ -2451,7 +2522,7 @@ function factionGameHTML(m, gameNum) {
   // Mine finished, opponent not.
   if (mine.done) {
     return `<div class="fveto-col">
-      <div class="fveto-wait">${oppDone ? 'Resolving\u2026' : 'Waiting for faction ban/picks from opponent'}</div>
+      <div class="fveto-wait">${oppDone ? 'Resolving\u2026' : '\u2713 You\u2019re done \u2014 waiting on your opponent'}</div>
       <div class="fveto-mine">${mine.bans.map(f => factionChip(f, { dim: true, title: 'You banned ' + FACTION_META[f].label })).join('')}
         <span class="fv-arrow">\u2192</span>
         ${mine.picks.map((f, i) => factionChip(f, { on: true, title: 'Your pick ' + (i + 1) })).join('')}</div>
@@ -2473,8 +2544,12 @@ function factionGameHTML(m, gameNum) {
     : factionChip(f, { btn: true, game: gameNum, matchId: m.id })).join('');
   const soFar = (mine.bans.length ? '<div class="fveto-mine">' + mine.bans.map(f => factionChip(f, { dim: true, title: 'You banned ' + FACTION_META[f].label })).join('') + '</div>' : '')
     + (mine.picks.length ? '<div class="fveto-mine">' + mine.picks.map((f, i) => factionChip(f, { on: true, title: 'Your pick ' + (i + 1) })).join('') + '</div>' : '');
+  // "1st faction to ban (1/1)" read like a status line, not a job. It is now an explicit
+  // YOUR TURN pill with the same pulsing dot the tournament-wide turn banner uses, so the one
+  // thing on this screen that needs the player's hands looks like it.
   return `<div class="fveto-col active">
-    <div class="fveto-prompt">${ord(step.index)} faction to ${banning ? 'ban' : 'pick'}<span class="muted small"> (${step.index}/${step.of})</span></div>
+    <div class="fveto-turn"><span class="turn-dot"></span>Your turn</div>
+    <div class="fveto-prompt">${banning ? 'Ban a faction' : 'Pick a faction'}${step.of > 1 ? '<span class="muted small"> \u2014 ' + ord(step.index) + ' of ' + step.of + '</span>' : ''}</div>
     <div class="fveto-chips">${chips}</div>
     ${soFar}
     <div class="fveto-note muted small">${banning ? 'Bans deny that faction to your opponent.' : 'Picks are in order of preference \u2014 you get the highest one your opponent didn\u2019t ban.'} Nobody can see your choices.</div>
