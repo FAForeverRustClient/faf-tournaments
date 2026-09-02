@@ -167,7 +167,9 @@ async function renderHome() {
           <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${eventDaysLabel(t) ? ' <span class="tdays" title="This event runs on ' + esc(eventDaysLabel(t)) + '">' + esc(eventDaysCountLabel(t)) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}${teamsLine ? ' \u00b7 ' + esc(teamsLine) : ''}${t.prize ? ' \u00b7 <span class="tprize">' + esc(formatPrize(t.prize)) + '</span>' : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
-          ${t.published === 0 ? '<span class="idbadge late" title="Draft — only you can see this until you publish it">draft</span>' : ''}
+          ${t.published === 0 ? (t.canManage === 0
+            ? '<span class="idbadge late" title="Someone else\u2019s draft. You can see it as a tournament director, but you have no organizer rights on it.">draft \u00b7 view only</span>'
+            : '<span class="idbadge late" title="Draft — not listed publicly until you publish it">draft</span>') : ''}
           ${closeChip}
           ${closeChip ? pill : (countdown || pill)}
           ${siteAdmin() ? '<button class="btn danger small" data-del="' + t.id + '">Delete</button>' : ''}

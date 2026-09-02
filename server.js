@@ -645,6 +645,42 @@ function isDirector(req) {
   const sess = currentSession(req);
   return !!(sess && sess.fafId && db.directors && db.directors[sess.fafId]);
 }
+// Who may see a tournament that has not been published yet. A draft is invisible in every
+// listing, which is why a global tournament director had to be added as an organizer of an
+// official event before they could even FIND it - they always had the rights (see isOrganizer
+// below), just no way to reach the page. Directors get OFFICIAL tournaments only: a community
+// organizer's draft stays private to them.
+// Resolve the viewer once per request with draftViewerCtx and pass it in - these run inside
+// filters over every tournament in the database, and currentSession() re-parses cookies.
+function draftViewerCtx(req) {
+  const sess = currentSession(req);
+  return {
+    fid: (sess && sess.fafId) || null,
+    siteAdmin: isSiteAdmin(req),
+    director: isDirector(req)
+  };
+}
+// Organizer RIGHTS from a precomputed ctx. Mirrors isOrganizer(t, req) exactly - a director
+// counts on OFFICIAL tournaments only - without re-resolving the session, so it is safe inside a
+// filter or map over every tournament. Keep the two in step if either changes.
+function ctxCanManage(t, ctx) {
+  if (!t || !ctx) return false;
+  if (ctx.siteAdmin) return true;
+  if (ctx.director && isOfficial(t)) return true;
+  return !!(ctx.fid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(ctx.fid) >= 0);
+}
+// Draft VISIBILITY, which is deliberately WIDER than rights: a global tournament director can
+// see every draft on the site, community ones included, so they can keep an eye on what is being
+// prepared. On a community draft they get a plain viewer's page - no Admin tab, no Log, no
+// secrets, no mutations - because isOrganizer() still says no. Look, don't touch.
+function canSeeDraft(t, ctx) {
+  if (!t || !ctx) return false;
+  if (ctx.director) return true;          // any category, view only unless also official
+  return ctxCanManage(t, ctx);
+}
+// Should this tournament appear in a listing for this viewer at all?
+function listVisible(t, ctx) { return t.published !== false || canSeeDraft(t, ctx); }
+
 function isOrganizer(t, req) {
   const sess = currentSession(req);
   if (sess && Array.isArray(t.organizerFafIds) && sess.fafId && t.organizerFafIds.indexOf(sess.fafId) >= 0) return true;
@@ -2351,8 +2387,9 @@ async function handleAPI(req, res, url) {
   // Anyone can read; site admins and directors create and edit them.
   if (parts.length === 2 && parts[1] === 'series' && method === 'GET') {
     sweepScheduledPublishes();
+    const sctx = draftViewerCtx(req);
     const out = Object.values(db.series).map(s => {
-      const eds = Object.values(db.tournaments).filter(t => t.seriesId === s.id && !t.archived && t.published !== false);
+      const eds = Object.values(db.tournaments).filter(t => t.seriesId === s.id && !t.archived && listVisible(t, sctx));
       const latest = eds.slice().sort((a, c) => (tourneyMs(c) - tourneyMs(a)))[0] || null;
       const act = seriesActivity(s.id);
       return {
@@ -2376,19 +2413,22 @@ async function handleAPI(req, res, url) {
     sweepScheduledPublishes();
     const s = db.series[parts[2]];
     if (!s) return json(res, 404, { error: 'Series not found' });
-    const canSeeDrafts = isSiteAdmin(req) || isDirector(req);
-    const sess = currentSession(req);
-    const myFid = sess && sess.fafId;
+    // This used to let a director see EVERY draft in a series, community ones included.
+    const dctx = draftViewerCtx(req);
     const eds = Object.values(db.tournaments)
       .filter(t => t.seriesId === s.id && !t.archived)
-      .filter(t => t.published !== false || canSeeDrafts || (myFid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(myFid) >= 0))
+      .filter(t => listVisible(t, dctx))
       .sort((a, c) => tourneyMs(c) - tourneyMs(a))
       .map(t => ({
         id: t.id, name: t.name, status: t.status, category: t.category || null,
         published: t.published !== false ? 1 : 0,
+        canManage: ctxCanManage(t, dctx) ? 1 : 0,
         competition: t.competition, bracketType: t.bracketType, teamSize: t.teamSize,
         players: (t.players || []).length, teams: (t.teams || []).length,
         eventDate: t.eventDate || null, eventDays: (t.eventDays && t.eventDays.length) ? t.eventDays.slice() : null, abandoned: t.abandoned ? 1 : 0,
+        // needed by statusPillLabel: `status` is 'signup' from creation, including while waiting
+        // for a scheduled opening, so without this the series page says "Signups open" too early
+        signupOpensAt: t.signupOpensAt || null,
         championTeamId: t.championTeamId || null,
         champion: t.championTeamId ? ((t.teams || []).find(x => x.id === t.championTeamId) || {}).name || null : null
       }));
@@ -2452,17 +2492,16 @@ async function handleAPI(req, res, url) {
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
     sweepScheduledPublishes();   // flip any drafts whose scheduled publish time has passed
     sweepQualifications();       // invite qualifiers from any child that has finished
-    const sess = currentSession(req);
-    const myFid = sess && sess.fafId;
+    const dctx = draftViewerCtx(req);
     const list = Object.values(db.tournaments)
-      .filter(t => !t.archived && (t.published !== false
-        || isSiteAdmin(req)   // site admin sees every draft
-        || (myFid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(myFid) >= 0)))   // organizers see their own
+      .filter(t => !t.archived && listVisible(t, dctx))
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(t => ({
         id: t.id, name: t.name, status: t.status, category: t.category || null,
         published: t.published !== false ? 1 : 0,
         publishAt: t.publishAt || null,
+        // a director sees community drafts but cannot manage them - the client needs to say so
+        canManage: ctxCanManage(t, dctx) ? 1 : 0,
         competition: t.competition, bracketType: t.bracketType,
         teamSize: t.teamSize, players: t.players.length,
         teams: t.teams.length, createdAt: t.createdAt,

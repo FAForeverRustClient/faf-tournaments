@@ -2332,13 +2332,16 @@ async function renderSeries(id) {
   if (!eds.length) html += '<div class="empty">No tournaments in this series yet.</div>';
   else html += '<div class="sr-eds">' + eds.map(e => {
     const kind = e.competition === 'ffa' ? 'FFA' : (e.teamSize + 'v' + e.teamSize + ' ' + ({ single: 'SE', double: 'DE', swiss: 'Swiss' }[e.bracketType] || ''));
-    const state = e.abandoned ? 'abandoned' : e.status;
+    // statusPillLabel/Class, not statusLabel(e.status): `status` is 'signup' from creation, so
+    // building the pill by hand here claimed "Signups open" on editions that had not opened yet.
     return `<a class="sr-ed" href="/t/${esc(e.id)}" data-link>
       <div class="sr-ed-main">
-        <div class="sr-ed-name">${esc(e.name)}${e.published === 0 ? ' <span class="idbadge late">draft</span>' : ''}</div>
-        <div class="muted small">${esc(kind)}${e.eventDate ? ' \u00b7 ' + esc(fmtDate(e.eventDate)) : ''}${e.champion ? ' \u00b7 winner: ' + esc(e.champion) : ''}</div>
+        <div class="sr-ed-name">${esc(e.name)}${e.published === 0 ? (e.canManage === 0
+          ? ' <span class="idbadge late" title="Someone else\u2019s draft. Visible to you as a tournament director; you have no organizer rights on it.">draft \u00b7 view only</span>'
+          : ' <span class="idbadge late" title="Draft \u2014 not public yet">draft</span>') : ''}</div>
+        <div class="muted small">${esc(kind)}${e.eventDate ? ' \u00b7 ' + esc(fmtDate(e.eventDate)) : ''}${eventDaysLabel(e) ? ' <span class="tdays" title="Runs on ' + esc(eventDaysLabel(e)) + '">' + esc(eventDaysCountLabel(e)) + '</span>' : ''}${e.champion ? ' \u00b7 winner: ' + esc(e.champion) : ''}</div>
       </div>
-      <span class="pill ${esc(state)}">${esc(statusLabel(e.status) || state)}</span>
+      <span class="pill ${statusPillClass(e)}"${signupsNotOpenYet(e) ? ' title="Signups open ' + esc(fmtDateTime(e.signupOpensAt)) + '"' : ''}>${esc(statusPillLabel(e))}</span>
     </a>`;
   }).join('') + '</div>';
   html += '</div>';
