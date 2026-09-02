@@ -120,6 +120,14 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - `GET /api/my_tournaments` deliberately does **not** widen: it is the "tournaments you organize" source list behind map/pool import and the qualifier picker, so it tracks rights, not visibility. A director does not see community tournaments there.
 - Both listings ship a **`canManage`** flag, and a draft the viewer cannot manage is badged **"draft · view only"** with an explanation on hover. Without it a director opening someone else's community draft would just find the Admin tab missing and assume the site was broken.
 
+### The tournament-director role, in full
+A **global tournament director** is not a site admin. What the role grants:
+
+- **Organizer rights on every official tournament** (`isOrganizer`), and hosting rights.
+- **Sight of every draft on the site**, community ones included, but organizer rights only on the official ones - see Draft visibility above.
+- On the site-admin console: **Directors, Tournament bans, Logs, Archived and Articles**. Not Requests, not Site Admins - those stay site-admin only, and the console's `data` payload for a director omits host/editor/importer requests and the site-admin list rather than merely hiding the tabs.
+- **The TD team manages its own roster.** A director can appoint and remove directors, so onboarding or removing a TD no longer waits on a site admin. Guards: the **last remaining director cannot be removed** (that would leave every official tournament without its global organizers), removing yourself warns that only a site admin can put you back, and **every grant and revoke is audited with the real account name**. That last part was previously wrong - both actions hardcoded the audit actor to the string "Site admin", so the log could not tell you who appointed whom. Harmless while only one role could do it; not harmless now.
+
 ### Chat
 - Messages are grouped under a **day divider**, with the full date and time on hover. Timestamps follow the viewer's chosen time zone and time format like the rest of the site.
 - A **Staff room** for organizers, casters and team captains, for official decisions without fifty players joining in. Access is enforced server-side, not just hidden: a non-captain gets 403 on both read and post. In a 1v1 event every entrant is their own captain, so it is only meaningfully narrower in team tournaments.

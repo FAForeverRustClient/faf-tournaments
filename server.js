@@ -2021,8 +2021,11 @@ async function handleAPI(req, res, url) {
     // Editors get the articles surface and nothing else.
     const EDITOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete'];
     if (editor && EDITOR_ACTS.indexOf(act) < 0) return json(res, 403, { error: 'Site admin only' });
-    // Directors: logs, archived, articles, and tournament bans — not requests/hosts/editors/directors.
-    const DIRECTOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete', 'ban_set', 'ban_remove'];
+    // Directors: logs, archived, articles, tournament bans, and their OWN roster. The TD team
+    // manages who is a TD; everything else on this console (host/editor/importer requests, and
+    // the site-admin list) stays site-admin only.
+    const DIRECTOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete', 'ban_set', 'ban_remove',
+                           'director_grant', 'director_revoke'];
     if (director && DIRECTOR_ACTS.indexOf(act) < 0) return json(res, 403, { error: 'Directors can\u2019t do that \u2014 site admin only' });
     if (editor && act === 'data') {
       return json(res, 200, { role: 'editor', articles: (db.articles || []).slice().sort((a, c) => (a.order || 0) - (c.order || 0) || (a.createdAt || 0) - (c.createdAt || 0)).map(a => Object.assign({}, a, { archived: a.archived ? 1 : 0 })) });
@@ -2039,7 +2042,11 @@ async function handleAPI(req, res, url) {
           logs: db.auditLog.slice().reverse().slice(0, 500),
           archived: Object.values(db.tournaments).filter(t => t.archived).map(t => ({ id: t.id, name: t.name, status: t.status, at: t.archivedAt || 0, players: (t.players || []).length })).sort((x, y) => y.at - x.at),
           articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0)),
-          bans: bansList
+          bans: bansList,
+          // the TD team manages its own roster, so it needs to see it. Host/editor/importer
+          // requests and the site-admin list stay out of this payload, as they always have.
+          directors: Object.keys(db.directors || {}).map(fid => ({ fafId: fid, name: db.directors[fid].name || fid, at: db.directors[fid].at || 0, by: db.directors[fid].by || '' })).sort((x, y) => y.at - x.at),
+          me: (currentSession(req) || {}).fafId || null
         });
       }
       const allowed = Object.keys(db.hostAllowed).map(fid => ({
@@ -2287,25 +2294,33 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // Directors manage their own roster (site admins too, of course). The audit actor used to be
+    // the hardcoded string "Site admin" on both of these, so the log could not tell you WHO
+    // appointed a director - harmless while only one role could do it, wrong now that a director
+    // can. actorOf(req) names the real account.
     if (act === 'director_grant') {
-      if (!fullAdmin) return json(res, 403, { error: 'Site admin only' });
+      if (!fullAdmin && !director) return json(res, 403, { error: 'Site admin or tournament director only' });
       const fid = String(b.fafId || '').trim();
       if (!fid) return bad(res, 'FAF id required');
       if (db.directors[fid]) return bad(res, 'Already a director');
-      db.directors[fid] = { name: cleanName(b.name, 60) || ('FAF ' + fid), at: Date.now(), by: 'site admin' };
+      const actor = actorOf(req, null);
+      db.directors[fid] = { name: cleanName(b.name, 60) || ('FAF ' + fid), at: Date.now(), by: actor.name || (fullAdmin ? 'site admin' : 'director') };
       if (!db.hostAllowed[fid]) db.hostAllowed[fid] = { name: db.directors[fid].name, at: Date.now(), by: 'director grant' };
       saveDB();
-      audit(req, 'director_granted', { actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' }, detail: db.directors[fid].name + ' (' + fid + ')' });
+      audit(req, 'director_granted', { actor: actor, detail: db.directors[fid].name + ' (' + fid + ')' });
       return json(res, 200, { ok: true });
     }
     if (act === 'director_revoke') {
-      if (!fullAdmin) return json(res, 403, { error: 'Site admin only' });
+      if (!fullAdmin && !director) return json(res, 403, { error: 'Site admin or tournament director only' });
       const fid = String(b.fafId || '').trim();
       if (!db.directors[fid]) return bad(res, 'Not a director');
+      // Soft guard, mirroring the site-admin one: never let the console end up with no directors
+      // at all, which would leave every official tournament without its global organizers.
+      if (Object.keys(db.directors).length <= 1) return bad(res, 'Can\u2019t remove the last tournament director. Add another first.');
       const nm = db.directors[fid].name || fid;
       delete db.directors[fid];
       saveDB();
-      audit(req, 'director_revoked', { actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' }, detail: nm + ' (' + fid + ')' });
+      audit(req, 'director_revoked', { actor: actorOf(req, null), detail: nm + ' (' + fid + ')' });
       return json(res, 200, { ok: true });
     }
 

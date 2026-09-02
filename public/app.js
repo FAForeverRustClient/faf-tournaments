@@ -1074,17 +1074,18 @@ async function renderSiteAdmin() {
       Site admin only - use the lock button in the top right to log in.</div></div></div>`;
     return;
   }
-  // Directors see a reduced console (no Requests, no Directors management).
+  // Directors see a reduced console: no Requests and no Site Admins, but they DO manage their
+  // own roster - the TD team appoints and removes TDs without waiting on a site admin.
   const director = !siteAdmin() && isDirector;
-  const validTabs = director ? ['bans', 'logs', 'archived', 'articles'] : ['requests', 'siteadmins', 'directors', 'bans', 'logs', 'archived', 'articles'];
+  const validTabs = director ? ['directors', 'bans', 'logs', 'archived', 'articles'] : ['requests', 'siteadmins', 'directors', 'bans', 'logs', 'archived', 'articles'];
   if (validTabs.indexOf(saTab) < 0) saTab = validTabs[0];
   app.innerHTML = `<div class="page">
     <h1 style="margin:0 0 14px">Site admin${director ? ' <span class="muted" style="font-size:14px;font-weight:400">(tournament director)</span>' : ''}</h1>
-    ${director ? '<p class="muted small" style="margin:-8px 0 12px">As a tournament director you can edit the FAQ / Rules articles here under <strong>Articles</strong>.</p>' : ''}
+    ${director ? '<p class="muted small" style="margin:-8px 0 12px">As a tournament director you manage the director roster under <strong>Directors</strong>, tournament bans, and the FAQ / Rules articles under <strong>Articles</strong>.</p>' : ''}
     <div class="tabs" style="margin-bottom:14px">
       ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
       ${director ? '' : `<button class="tab ${saTab === 'siteadmins' ? 'active' : ''}" data-satab="siteadmins">Site Admins${(saData && (saData.siteAdmins || []).length) ? ' (' + saData.siteAdmins.length + ')' : ''}</button>`}
-      ${director ? '' : `<button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>`}
+      <button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>
       <button class="tab ${saTab === 'bans' ? 'active' : ''}" data-satab="bans">Tournament bans${(saData && (saData.bans || []).length) ? ' (' + saData.bans.length + ')' : ''}</button>
       <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
       <button class="tab ${saTab === 'archived' ? 'active' : ''}" data-satab="archived">Archived${(saData && (saData.archived || []).length) ? ' (' + saData.archived.length + ')' : ''}</button>
@@ -1182,13 +1183,16 @@ function drawSaSiteAdmins(el) {
 function drawSaDirectors(el) {
   const dirs = saData.directors || [];
   let html = `<div class="panel section"><h2>Global tournament directors <span class="h2-strong">(${dirs.length})</span></h2>
-    <p class="muted small">Directors get organizer rights on every <strong>official</strong> tournament (not community ones), plus this console's Logs, Archived, Articles and Tournament bans tabs (not Requests or director management).</p>
+    <p class="muted small">Directors get organizer rights on every <strong>official</strong> tournament (not community ones), can <strong>see</strong> drafts of every tournament including community ones (without organizer rights on those), and get this console's Directors, Tournament bans, Logs, Archived and Articles tabs. Not Requests, and not Site Admins.</p>
+    <p class="muted small">Directors can add and remove directors, so the team manages itself. Every change is logged with the name of whoever made it, and the last remaining director can't be removed.</p>
     <div id="dirAdd" style="margin:10px 0"></div>`;
   if (!dirs.length) html += '<div class="empty">No directors yet.</div>';
-  else html += '<div>' + dirs.map(d => `<div class="sa-req">
-    <div class="sa-req-main"><div class="sa-req-name">${esc(d.name)} <span class="muted small">FAF id ${esc(d.fafId)}</span></div><div class="muted small">Added ${esc(fmtWhen(d.at))}</div></div>
-    <div class="sa-req-act"><button class="btn danger small" data-dirrev="${esc(d.fafId)}">Remove</button></div>
-  </div>`).join('') + '</div>';
+  else html += '<div>' + dirs.map(d => {
+    const isMe = saData.me && d.fafId === saData.me;
+    return `<div class="sa-req">
+    <div class="sa-req-main"><div class="sa-req-name">${esc(d.name)} <span class="muted small">FAF id ${esc(d.fafId)}</span>${isMe ? ' <span class="idbadge verified">you</span>' : ''}</div><div class="muted small">Added ${esc(fmtWhen(d.at))}${d.by ? ' by ' + esc(d.by) : ''}</div></div>
+    <div class="sa-req-act"><button class="btn danger small" data-dirrev="${esc(d.fafId)}"${isMe ? ' data-dirself="1"' : ''}>Remove</button></div>
+  </div>`; }).join('') + '</div>';
   html += '</div>';
   el.innerHTML = html;
   adminLookupBox(el.querySelector('#dirAdd'), (found, result) => {
@@ -1199,7 +1203,11 @@ function drawSaDirectors(el) {
     };
   });
   el.querySelectorAll('[data-dirrev]').forEach(b => b.onclick = async () => {
-    if (!confirm('Remove this director? They will lose access to all official tournaments.')) return;
+    // Standing yourself down is allowed, but it takes this console away from you, so say so.
+    const msg = b.dataset.dirself
+      ? 'Remove YOURSELF as a tournament director?\n\nYou will lose organizer rights on every official tournament and this console. Only a site admin can put you back.'
+      : 'Remove this director? They will lose access to all official tournaments.';
+    if (!confirm(msg)) return;
     try { await saPost('director_revoke', { fafId: b.dataset.dirrev }); toast('Removed'); renderSiteAdmin(); }
     catch (e) { toast(e.message, true); }
   });
