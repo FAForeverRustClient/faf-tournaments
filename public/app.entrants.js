@@ -47,6 +47,19 @@ function drawPlayers(el) {
           + (req ? '<div class="rc-req muted small">' + req + '</div>' : '')
           + '</div>';
       };
+      // A banned viewer should be told before they press anything. T.myBan is set for whichever
+      // scope caught them (tournament, series or the site-wide official ban).
+      if (T.myBan && !viewerSignedUp()) {
+        const scopeTxt = T.myBan.scope === 'global' ? 'official FAF tournaments'
+          : T.myBan.scope === 'series' ? 'this series' : 'this tournament';
+        html += `<div class="panel section ban-notice"><h2>You can\u2019t sign up</h2>
+          <p>You are currently banned from <strong>${esc(scopeTxt)}</strong>.</p>
+          ${T.myBan.reason ? '<p class="muted small">Reason: ' + esc(T.myBan.reason) + '</p>' : ''}
+          <p class="muted small">${T.myBan.expires
+            ? 'This ban expires on <strong>' + esc(fmtDate(T.myBan.expires)) + '</strong>.'
+            : 'This ban has no expiry date.'}
+            ${T.myBan.scope === 'global' ? 'For more information please contact the TD team.' : 'Contact the organizers if you think this is wrong.'}</p></div>`;
+      }
       if (T.viewer && T.viewer.invited && !viewerSignedUp() && !admin) {
         html += `<div class="panel section" style="border-left:3px solid var(--amber)"><h2>You're invited</h2>
           <p class="muted small">The organizer invited you to this tournament. Sign up below, or decline so they can plan around it.</p>
@@ -150,7 +163,8 @@ function drawPlayers(el) {
         <button class="btn ghost small" data-allrat="${p.id}" title="Show this player's rating on every leaderboard (organizers only)">Ratings</button>
         ${canReplace ? `<button class="btn ghost small" data-replace="${p.id}">Replace</button>` : ''}
         <button class="btn ghost small" data-edit="${p.id}">Edit</button>
-        ${T.status === 'signup' || ((T.status === 'draft' || T.status === 'drafted') && !p.teamId) ? `<button class="btn danger small" data-del="${p.id}">${T.status === 'signup' && T.formation === 'premade' && T.teamSize > 1 ? 'Remove team' : 'Remove'}</button>` : ''}</td>` : ''}`;
+        ${T.status === 'signup' || ((T.status === 'draft' || T.status === 'drafted') && !p.teamId) ? `<button class="btn danger small" data-del="${p.id}">${T.status === 'signup' && T.formation === 'premade' && T.teamSize > 1 ? 'Remove team' : 'Remove'}</button>` : ''}
+        ${p.fafId ? `<button class="btn danger small" data-ban="${p.id}" data-banfid="${esc(p.fafId)}" data-banname="${esc(p.name)}" title="Ban from this tournament so they can't sign up again">Ban</button>` : ''}</td>` : ''}`;
     const arb = tr.querySelector('[data-allrat]');
     if (arb) arb.onclick = () => showAllRatings(p);
     const eb = tr.querySelector('[data-edit]');
@@ -162,6 +176,8 @@ function drawPlayers(el) {
       try { await api('/api/t/' + T.id + '/remove', { playerId: p.id, admin: adminToken() }); await refresh(); }
       catch (e) { toast(e.message, true); }
     };
+    const bb = tr.querySelector('[data-ban]');
+    if (bb) bb.onclick = () => banPlayerFromTournament(p);
     rows.appendChild(tr);
   });
 
@@ -387,6 +403,43 @@ async function showAllRatings(p, refresh) {
     root.querySelector('#arClose').onclick = closeModal;
     root.querySelector('#arRefresh').onclick = () => load(root, true);
     load(root, !!refresh);
+  }, { mid: true });
+}
+
+// "Remove" alone was a revolving door: the player just signed up again. This bans them from THIS
+// tournament and, where removal is still allowed, takes them out in the same action - which is
+// what an organizer actually means by "kick".
+// The ban is written FIRST on purpose: if the removal then fails, they are banned but still
+// listed, which an organizer can see and finish by hand. The other order could leave them removed
+// and un-banned, i.e. free to walk straight back in.
+function banPlayerFromTournament(p) {
+  const removable = T.status === 'signup' || ((T.status === 'draft' || T.status === 'drafted') && !p.teamId);
+  const today = new Date().toISOString().slice(0, 10);
+  modal(`<h3>Ban ${esc(p.name)} from this tournament?</h3>
+    <p class="muted small">They won't be able to sign up, be added or be invited to <strong>${esc(T.name)}</strong> again. Other tournaments are unaffected.</p>
+    <label>Reason <span class="muted small">(optional, shown to them)</span></label>
+    <input type="text" id="bpR" maxlength="300" placeholder="e.g. No show (SNO#8)">
+    <label style="margin-top:10px">Ban expires <span class="muted small">(optional \u2014 blank means no expiry)</span></label>
+    <input type="date" id="bpE" min="${today}">
+    <p class="muted small" style="margin-top:10px">${removable
+      ? 'They are signed up, so this will also <strong>remove them</strong> from the tournament.'
+      : 'The bracket has started, so they stay in it \u2014 this only stops them entering again. Use Replace on the bracket if you need them out of a match.'}</p>
+    <div class="actions"><button class="btn ghost" id="bpCancel">Cancel</button><button class="btn danger" id="bpGo">Ban${removable ? ' and remove' : ''}</button></div>`, root => {
+    root.querySelector('#bpCancel').onclick = closeModal;
+    root.querySelector('#bpGo').onclick = async () => {
+      const reason = root.querySelector('#bpR').value;
+      const expires = root.querySelector('#bpE').value || null;
+      try {
+        await api('/api/t/' + T.id + '/ban_set', { fafId: p.fafId, name: p.name, reason, expires, admin: adminToken() });
+      } catch (e) { toast(e.message, true); return; }
+      if (removable) {
+        try { await api('/api/t/' + T.id + '/remove', { playerId: p.id, admin: adminToken() }); }
+        catch (e) { toast('Banned, but removing them failed: ' + e.message, true); closeModal(); await refresh(); return; }
+      }
+      toast(removable ? 'Banned and removed' : 'Banned from this tournament');
+      closeModal();
+      await refresh();
+    };
   }, { mid: true });
 }
 

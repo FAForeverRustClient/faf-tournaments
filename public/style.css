@@ -1323,3 +1323,15 @@ button.dp-cell:hover { border-color: var(--amber); background: #1d2b3a; }
 }
 .dp-clear:hover { color: var(--amber); border-color: #ffb44766; }
 .dp-hint { margin-top: 6px; line-height: 1.4; }
+
+/* ---------------------------------------------------------------------------
+   Bans. One panel serves all three scopes (global, series, tournament).
+   --------------------------------------------------------------------------- */
+.ban-table-wrap { overflow-x: auto; }
+.ban-table { width: 100%; }
+.ban-table td, .ban-table th { padding: 7px 8px; vertical-align: top; }
+.ban-table input[type="date"] { max-width: 165px; }
+/* an expired ban keeps its row - the record of who set it and why is the point */
+.ban-table tr.ban-expired td { opacity: .55; }
+.ban-notice { border-left: 3px solid var(--red); background: #e2564a0f; }
+.ban-notice h2::before { background: var(--red); }

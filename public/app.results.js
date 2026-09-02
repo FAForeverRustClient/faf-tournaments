@@ -812,6 +812,8 @@ async function drawAdmin(el) {
     <div class="desc-gallery">${(T.descImages || []).map(f => { const used = inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) >= 0 || inlineRef.indexOf('/desc-images/' + f) >= 0; return `<div class="desc-thumb"><img src="/desc-images/${encodeURIComponent(f)}" alt="">${used ? '<div class="mono small" style="color:var(--green);text-align:center">in use</div>' : ''}<button class="btn danger small" data-descdel="${esc(f)}">Remove</button></div>`; }).join('')}</div></div>`;
   }
 
+  html += '<div class="panel section" id="tBanPanelHost"></div>';
+
   if (siteAdmin()) {
     html += `<div class="panel section"><h2>Category <span class="muted small">(site admin only)</span></h2>
       <p class="muted small">Organizers pick this once at creation; only site admins can change it afterwards.</p>
@@ -844,6 +846,24 @@ async function drawAdmin(el) {
         onChange: (days) => { if (days.length) dateEl.value = days[0]; }
       });
       dateEl.addEventListener('change', () => _tdDayPick.setSingle(dateEl.value));
+    }
+  }
+
+  // Per-tournament bans. Removing someone already worked; nothing stopped them signing back up,
+  // which is the loop this closes.
+  {
+    const host = document.getElementById('tBanPanelHost');
+    if (host) {
+      banPanel(host, {
+        title: 'Banned from this tournament',
+        blurb: 'These accounts can\u2019t sign up, be added or be invited to <strong>this tournament</strong>. Use it when removing someone isn\u2019t enough because they can just sign up again. Other tournaments are unaffected \u2014 for a whole recurring event use a series ban, and only a site admin or tournament director can ban from official tournaments site-wide.',
+        bans: T.bans || [],
+        lookup: { tournamentId: T.id },
+        addLabel: 'Ban from this tournament',
+        onSet: (r) => api('/api/t/' + T.id + '/ban_set', Object.assign({ admin: adminToken() }, r)),
+        onRemove: (fid) => api('/api/t/' + T.id + '/ban_remove', { fafId: fid, admin: adminToken() }),
+        after: () => refresh()
+      });
     }
   }
 
@@ -2355,6 +2375,7 @@ async function renderSeries(id) {
         '</div></div>';
     }
   }
+  if (data.canEdit) html += '<div class="panel section" id="srBanHost"></div>';
   if (data.canEdit) {
     html += `<div class="panel section"><h2>Manage</h2>
       <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -2379,6 +2400,23 @@ async function renderSeries(id) {
   }
   document.getElementById('srBody').innerHTML = html;
   wireSeriesLinks();
+  // Series bans: the same record as a global ban, scoped to every edition of this series - the
+  // natural unit when someone keeps turning up to a recurring event they were thrown out of.
+  {
+    const host = document.getElementById('srBanHost');
+    if (host) {
+      banPanel(host, {
+        title: 'Banned from this series',
+        blurb: 'These accounts can\u2019t sign up, be added or be invited to <strong>any tournament in this series</strong>, including future editions. Set an expiry or leave it open-ended. Organizers can also ban from a single tournament; only a site admin or tournament director can ban from official tournaments site-wide.',
+        bans: data.bans || [],
+        lookup: { seriesId: s.id },
+        addLabel: 'Ban from this series',
+        onSet: (r) => api('/api/series', Object.assign({ action: 'ban_set', id: s.id }, r)),
+        onRemove: (fid) => api('/api/series', { action: 'ban_remove', id: s.id, fafId: fid }),
+        after: () => renderSeries(s.id)
+      });
+    }
+  }
   let srColor = s.color || 'amber';
   document.querySelectorAll('[data-srcolor]').forEach(b => b.onclick = () => {
     srColor = b.dataset.srcolor;

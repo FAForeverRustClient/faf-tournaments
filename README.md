@@ -120,6 +120,24 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - `GET /api/my_tournaments` deliberately does **not** widen: it is the "tournaments you organize" source list behind map/pool import and the qualifier picker, so it tracks rights, not visibility. A director does not see community tournaments there.
 - Both listings ship a **`canManage`** flag, and a draft the viewer cannot manage is badged **"draft · view only"** with an explanation on hover. Without it a director opening someone else's community draft would just find the Admin tab missing and assume the site was broken.
 
+### Bans: three scopes, one gate
+Removing someone from a tournament was a revolving door - they just signed up again. There are now three ban scopes, sharing one record shape (`{name, reason, expires, at, by}`) and one enforcement path:
+
+| Scope | Stored on | Set by | Applies to |
+|---|---|---|---|
+| **Global** | `db.tourneyBans` | site admins, tournament directors | every **official** tournament (community ones unaffected) |
+| **Series** | `series.bans` | whoever can manage that series | every tournament carrying that `seriesId`, including future editions |
+| **Tournament** | `t.bans` | that tournament's organizers | that one tournament |
+
+- **`findEntryBan(t, fafId)` is the only thing that decides**, and every way into a tournament asks it: self-signup, the late-signup link, invite acceptance, an organizer adding by FAF name, and an organizer inviting. It checks widest scope first so the message names the broadest reason they are out. **Add any new entry path here, never re-derive it.**
+- This closed a real hole: **`org_add_player` checked no ban at all**, so an organizer could add a globally-banned account straight into an official tournament - past a ban only a site admin or director can lift. Verified against the previous build, where that add returned `{ok:true}`.
+- **Nobody can override a ban from an entry path.** An organizer who tries is told which scope caught it and where to lift it; a banned player gets a plain-English reason, an expiry if there is one, and who to contact. The tournament page also tells a banned viewer *before* they press anything (`viewer`-scoped `myBan` on the tournament GET).
+- **An expired ban stops applying but is never deleted**, so the record of who banned whom and why survives. Panels keep the row, greyed and marked `expired`, and the header counts active versus expired separately.
+- **Who set a ban is now shown** in all three panels. It was already stored on global bans and simply never displayed.
+- The Players tab has a **Ban** action that bans and, where removal is still allowed, removes in one step - that is what an organizer means by "kick". The **ban is written first on purpose**: if the removal then fails they are banned but still listed, which is visible and fixable, whereas the other order could leave them removed and free to walk back in. Once the bracket is running it only blocks re-entry and says so.
+- Only accounts with a FAF id can be banned, so a manually-added player (no `fafId`) shows no Ban button - there is nothing stable to ban.
+- One client component, `banPanel()`, renders all three; the console, the tournament Admin tab and the series page differ only in wording and in where the two actions post.
+
 ### The tournament-director role, in full
 A **global tournament director** is not a site admin. What the role grants:
 

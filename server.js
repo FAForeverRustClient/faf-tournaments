@@ -688,12 +688,101 @@ function isOrganizer(t, req) {
   return false;
 }
 // Active tournament ban for a FAF id (expired bans return null). Blocks official tournaments only.
+// ---------- bans ----------
+// Three scopes, one record shape: { name, reason, expires, at, by }.
+//   global      db.tourneyBans      - OFFICIAL tournaments only, set by site admins / directors
+//   series      series.bans         - every tournament in that series, set by its managers
+//   tournament  t.bans              - one tournament, set by its organizers
+// An expiry of null means "no expiry"; an expired record simply stops applying, it is not deleted,
+// so the history of who banned whom and why survives.
+function banActive(rec) {
+  if (!rec) return null;
+  if (rec.expires && Date.now() > new Date(rec.expires).getTime()) return null;
+  return rec;
+}
+// Build/merge one ban record. Keeps the original `at` so "banned since" doesn't reset on an edit.
+function makeBanRecord(prev, fafId, name, reason, expires, byName) {
+  return {
+    name: cleanName(name, 60) || (prev && prev.name) || ('FAF ' + fafId),
+    reason: cleanName(reason, 300) || (prev && prev.reason) || '',
+    expires: expires || null,
+    at: (prev && prev.at) || Date.now(),
+    by: byName || (prev && prev.by) || ''
+  };
+}
+function banListOf(store) {
+  return Object.keys(store || {}).map(fid => ({
+    fafId: fid,
+    name: (store[fid].name) || fid,
+    reason: store[fid].reason || '',
+    expires: store[fid].expires || null,
+    at: store[fid].at || 0,
+    by: store[fid].by || '',
+    expired: banActive(store[fid]) ? 0 : 1
+  })).sort((x, y) => y.at - x.at);
+}
+function parseBanExpiry(v) {
+  if (!v) return { ok: true, value: null };
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return { ok: false };
+  return { ok: true, value: d.toISOString() };
+}
+
 function activeBan(fafId) {
   if (!fafId || !db.tourneyBans) return null;
-  const b = db.tourneyBans[fafId];
-  if (!b) return null;
-  if (b.expires && Date.now() > new Date(b.expires).getTime()) return null;
-  return b;
+  return banActive(db.tourneyBans[fafId]);
+}
+function seriesOf(t) { return (t && t.seriesId && db.series) ? (db.series[t.seriesId] || null) : null; }
+function activeSeriesBan(t, fafId) {
+  const ser = seriesOf(t);
+  return (ser && fafId) ? banActive(ser.bans && ser.bans[fafId]) : null;
+}
+function activeTourneyBan(t, fafId) {
+  return (t && fafId) ? banActive(t.bans && t.bans[fafId]) : null;
+}
+
+// THE gate. Every way into a tournament asks this and nothing re-derives it: self-signup, the
+// late-signup link, an organizer adding by FAF name, and an organizer inviting. Checked widest
+// scope first so the message names the broadest reason they are out.
+// Returns { scope, ban } or null.
+function findEntryBan(t, fafId) {
+  if (!t || !fafId) return null;
+  if (isOfficial(t)) { const g = activeBan(fafId); if (g) return { scope: 'global', ban: g }; }
+  const s = activeSeriesBan(t, fafId); if (s) return { scope: 'series', ban: s };
+  const l = activeTourneyBan(t, fafId); if (l) return { scope: 'tournament', ban: l };
+  return null;
+}
+function banUntilText(ban) {
+  return ban.expires ? ' Expires on: ' + new Date(ban.expires).toISOString().slice(0, 10) + '.' : ' This ban has no expiry date.';
+}
+// Phrased for the banned person themselves.
+function banRefusalSelf(hit, t) {
+  const ser = seriesOf(t);
+  if (hit.scope === 'global') {
+    return 'You are currently banned from official FAF tournaments.' + banUntilText(hit.ban) +
+      ' For more information regarding your ban please contact the TD team.';
+  }
+  if (hit.scope === 'series') {
+    return 'You are currently banned from the "' + ((ser && ser.name) || 'this') + '" series.' + banUntilText(hit.ban) +
+      (hit.ban.reason ? ' Reason: ' + hit.ban.reason + '.' : '') + ' Contact the organizers if you think this is wrong.';
+  }
+  return 'You are currently banned from this tournament.' + banUntilText(hit.ban) +
+    (hit.ban.reason ? ' Reason: ' + hit.ban.reason + '.' : '') + ' Contact the organizers if you think this is wrong.';
+}
+// Phrased for an organizer trying to add or invite that person. Deliberately tells them how to
+// undo it rather than silently letting the add through - a ban nobody can see overriding is worse
+// than one with a clear escape hatch.
+function banRefusalOrganizer(hit, t, who) {
+  const ser = seriesOf(t);
+  const until = hit.ban.expires ? ' (until ' + new Date(hit.ban.expires).toISOString().slice(0, 10) + ')' : ' (no expiry)';
+  const reason = hit.ban.reason ? ' Reason: ' + hit.ban.reason + '.' : '';
+  if (hit.scope === 'global') {
+    return who + ' is banned from official tournaments' + until + '.' + reason + ' Only a site admin or tournament director can lift that.';
+  }
+  if (hit.scope === 'series') {
+    return who + ' is banned from the "' + ((ser && ser.name) || 'this') + '" series' + until + '.' + reason + ' Lift the series ban first, on the series page.';
+  }
+  return who + ' is banned from this tournament' + until + '.' + reason + ' Lift the ban first, on the Admin tab.';
 }
 // Combined check most mutating endpoints use: site-admin token OR a logged-in authorized organizer.
 function canOrganize(t, req, body) {
@@ -1988,6 +2077,11 @@ async function handleAPI(req, res, url) {
       const ot = db.tournaments[b.tournamentId];
       if (ot && isOrganizer(ot, req)) okAdmin = true;
     }
+    // ...and whoever can manage a series, so they can look someone up to ban from it
+    if (!okAdmin && b.seriesId) {
+      const os = db.series[b.seriesId];
+      if (os && canManageSeries(req, os)) okAdmin = true;
+    }
     if (!okAdmin) return json(res, 403, { error: 'Organizer, director, or site admin only' });
     const login = cleanName(b.name, 40);
     if (!login) return bad(res, 'Enter a FAF name');
@@ -2032,10 +2126,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (act === 'data') {
-      const bansList = Object.keys(db.tourneyBans || {}).map(fid => ({
-        fafId: fid, name: db.tourneyBans[fid].name || fid, reason: db.tourneyBans[fid].reason || '',
-        expires: db.tourneyBans[fid].expires || null, at: db.tourneyBans[fid].at || 0, by: db.tourneyBans[fid].by || ''
-      })).sort((x, y) => y.at - x.at);
+      const bansList = banListOf(db.tourneyBans);
       if (director) {
         return json(res, 200, {
           role: 'director', oauth: FAF_OAUTH_ON ? 1 : 0,
@@ -2328,18 +2419,12 @@ async function handleAPI(req, res, url) {
     if (act === 'ban_set') {
       const fid = String(b.fafId || '').trim();
       if (!fid) return bad(res, 'FAF id required');
-      let expires = null;
-      if (b.expires) { const d = new Date(b.expires); if (isNaN(d.getTime())) return bad(res, 'Invalid expiry date'); expires = d.toISOString(); }
+      const exp = parseBanExpiry(b.expires);
+      if (!exp.ok) return bad(res, 'Invalid expiry date');
       const existed = !!db.tourneyBans[fid];
-      db.tourneyBans[fid] = {
-        name: cleanName(b.name, 60) || (db.tourneyBans[fid] && db.tourneyBans[fid].name) || ('FAF ' + fid),
-        reason: cleanName(b.reason, 300) || (db.tourneyBans[fid] && db.tourneyBans[fid].reason) || '',
-        expires,
-        at: (db.tourneyBans[fid] && db.tourneyBans[fid].at) || Date.now(),
-        by: actorOf(req, b.password).name || 'Site admin'
-      };
+      db.tourneyBans[fid] = makeBanRecord(db.tourneyBans[fid], fid, b.name, b.reason, exp.value, actorOf(req, b.password).name || 'Site admin');
       saveDB();
-      audit(req, existed ? 'tourney_ban_updated' : 'tourney_ban_set', { actor: actorOf(req, b.password), detail: db.tourneyBans[fid].name + ' (' + fid + ')' + (expires ? ' until ' + expires.slice(0, 10) : ' (no expiry)') });
+      audit(req, existed ? 'tourney_ban_updated' : 'tourney_ban_set', { actor: actorOf(req, b.password), detail: db.tourneyBans[fid].name + ' (' + fid + ')' + (exp.value ? ' until ' + exp.value.slice(0, 10) : ' (no expiry)') });
       return json(res, 200, { ok: true });
     }
     if (act === 'ban_remove') {
@@ -2447,10 +2532,12 @@ async function handleAPI(req, res, url) {
         championTeamId: t.championTeamId || null,
         champion: t.championTeamId ? ((t.teams || []).find(x => x.id === t.championTeamId) || {}).name || null : null
       }));
+    const canEdit = canManageSeries(req, s);
     return json(res, 200, {
       series: { id: s.id, name: s.name, description: s.description || '', color: s.color || autoSeriesColor(s.name), category: s.category || null },
       editions: eds,
-      canEdit: canManageSeries(req, s)
+      canEdit,
+      bans: canEdit ? banListOf(s.bans) : undefined   // who is banned is managers' business
     });
   }
 
@@ -2479,6 +2566,36 @@ async function handleAPI(req, res, url) {
       audit(req, 'series_created', { detail: name });
       return json(res, 200, { ok: true, id });
     }
+    // ---- per-series bans (whoever can manage the series) ----
+    // Same record and the same expiry behaviour as a global ban, but scoped to every tournament
+    // carrying this seriesId - the natural unit for a recurring event with a repeat offender.
+    if (act === 'ban_set' || act === 'ban_remove') {
+      const ser = db.series[String(b.id || '')];
+      if (!ser) return bad(res, 'Series not found');
+      if (!canManage(ser)) return json(res, 403, { error: 'Only the series owner, a director or a site admin can do that' });
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      ser.bans = ser.bans || {};
+      if (act === 'ban_remove') {
+        if (!ser.bans[fid]) return bad(res, 'Not banned from this series');
+        const nm = ser.bans[fid].name || fid;
+        delete ser.bans[fid];
+        saveDB();
+        audit(req, 'series_ban_removed', { detail: nm + ' (' + fid + ') from series ' + ser.name });
+        return json(res, 200, { ok: true });
+      }
+      const exp = parseBanExpiry(b.expires);
+      if (!exp.ok) return bad(res, 'Invalid expiry date');
+      const existed = !!ser.bans[fid];
+      ser.bans[fid] = makeBanRecord(ser.bans[fid], fid, b.name, b.reason, exp.value, actorOf(req, null).name);
+      saveDB();
+      audit(req, existed ? 'series_ban_updated' : 'series_ban_set', {
+        detail: ser.bans[fid].name + ' (' + fid + ') from series ' + ser.name +
+          (exp.value ? ' until ' + exp.value.slice(0, 10) : ' (no expiry)')
+      });
+      return json(res, 200, { ok: true });
+    }
+
     if (act === 'update') {
       const s2 = db.series[String(b.id || '')];
       if (!s2) return bad(res, 'Series not found');
@@ -2781,6 +2898,16 @@ async function handleAPI(req, res, url) {
       view.tlog = organizer ? (t.log || []).slice(-300).reverse() : undefined;
       view.chatMutes = organizer ? Object.keys(t.chatMutes || {}).map(fid => ({ fafId: fid, name: (t.chatMutes[fid].name || fid), at: t.chatMutes[fid].at || 0 })) : undefined;
       view.chatMutedMe = (sess && chatMuted(t, sess.fafId)) ? 1 : 0;
+      // Who is banned from this tournament is organizer business, not a public list.
+      view.bans = organizer ? banListOf(t.bans) : undefined;
+      // ...but the person themselves must be told why they cannot sign up, so the page can say so
+      // instead of only failing at the button.
+      view.myBan = (() => {
+        const fid = sess && sess.fafId;
+        const hit = fid ? findEntryBan(t, fid) : null;
+        if (!hit) return null;
+        return { scope: hit.scope, reason: hit.ban.reason || '', expires: hit.ban.expires || null };
+      })();
       view.invites = organizer ? (t.invites || []).map(i => ({
         fafId: i.fafId, name: i.name, at: i.at,
         via: i.via || null, viaName: i.viaName || null,   // set when the invite came from a qualifier
@@ -2889,6 +3016,35 @@ async function handleAPI(req, res, url) {
     // changing ratingType or ratingDate, which deliberately do not rewrite history on their own.
     // Uses the requesting organizer's FAF token; a player whose rating cannot be fetched keeps
     // the one they have rather than being wiped to null.
+    // ---- per-tournament bans (organizers of THIS tournament) ----
+    // The gap this closes: an organizer could already remove someone, but nothing stopped them
+    // signing straight back up.
+    if (sub === 'ban_set') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      const exp = parseBanExpiry(b.expires);
+      if (!exp.ok) return bad(res, 'Invalid expiry date');
+      t.bans = t.bans || {};
+      const existed = !!t.bans[fid];
+      t.bans[fid] = makeBanRecord(t.bans[fid], fid, b.name, b.reason, exp.value, actorOf(req, b.admin).name);
+      tlog(t, req, b.admin, (existed ? 'updated the tournament ban on ' : 'banned ') + t.bans[fid].name +
+        ' from this tournament' + (exp.value ? ' until ' + exp.value.slice(0, 10) : ' (no expiry)') +
+        (t.bans[fid].reason ? ' - ' + t.bans[fid].reason : ''));
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+    if (sub === 'ban_remove') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const fid = String(b.fafId || '').trim();
+      if (!t.bans || !t.bans[fid]) return bad(res, 'Not banned from this tournament');
+      const nm = t.bans[fid].name || fid;
+      delete t.bans[fid];
+      tlog(t, req, b.admin, 'lifted the tournament ban on ' + nm);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'repull_ratings') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (!t.ratingType || t.ratingType === 'none') return bad(res, 'This tournament does not pull ratings from FAF');
@@ -3185,16 +3341,12 @@ async function handleAPI(req, res, url) {
       }
       // Rating requirements apply to self-signups only. Organizer adds and invited
       // accounts bypass them (an invite IS the organizer's decision).
-      // Tournament ban blocks official tournaments on every path (self-signup, organizer add,
-      // invite acceptance). Organizers cannot override; only lifting/expiring the ban helps.
-      if (isOfficial(t)) {
+      // Bans block every path in (self-signup, organizer add, invite acceptance, late link).
+      // Nobody can override one from here; the ban has to be lifted at whichever scope set it.
+      {
         const banFid = manual ? null : (fafId || (sess && sess.fafId));
-        const ban = banFid ? activeBan(banFid) : null;
-        if (ban) {
-          return bad(res, 'You are currently banned from official FAF tournaments.' +
-            (ban.expires ? ' Expires on: ' + new Date(ban.expires).toISOString().slice(0, 10) + '.' : ' This ban has no expiry date.') +
-            ' For more information regarding your ban please contact the TD team.');
-        }
+        const hit = banFid ? findEntryBan(t, banFid) : null;
+        if (hit) return bad(res, adminAdding ? banRefusalOrganizer(hit, t, name) : banRefusalSelf(hit, t));
       }
       const invitedHere = !!(sess && (t.invites || []).some(i => i.fafId === sess.fafId));
       if (!adminAdding && !invitedHere && rating != null) {
@@ -3956,6 +4108,12 @@ async function handleAPI(req, res, url) {
       if (found && found.error) return bad(res, found.error);
       if (!found) return bad(res, 'No FAF player named \u201c' + login + '\u201d \u2014 names are exact');
       if (t.players.some(x => x.fafId === found.fafId)) return bad(res, found.name + ' is already signed up');
+      // This path checked no ban at all, so an organizer could add someone straight past a ban
+      // the site had deliberately placed on them - including a global one they cannot lift.
+      {
+        const hit = findEntryBan(t, found.fafId);
+        if (hit) return bad(res, banRefusalOrganizer(hit, t, found.name));
+      }
       let rating;
       if (t.ratingType && t.ratingType !== 'none') {
         rating = await ratingPerSettings(t, found.fafId, token);
@@ -3982,7 +4140,10 @@ async function handleAPI(req, res, url) {
       if (!found) return bad(res, 'No FAF player named \u201c' + login + '\u201d \u2014 names are exact');
       t.invites = t.invites || [];
       if (t.invites.some(i => i.fafId === found.fafId)) return bad(res, found.name + ' is already invited');
-      if (isOfficial(t) && activeBan(found.fafId)) return bad(res, found.name + ' is banned from official tournaments and can\u2019t be invited.');
+      {
+        const hit = findEntryBan(t, found.fafId);
+        if (hit) return bad(res, banRefusalOrganizer(hit, t, found.name));
+      }
       t.invites.push({ fafId: found.fafId, name: found.name, at: now() });
       tlog(t, req, b.admin, 'invited ' + found.name);
       saveDB();

@@ -1137,6 +1137,7 @@ function adminLookupBox(container, onPick, opts) {
     try {
       const payload = { name: v };
       if (opts.tournamentId) payload.tournamentId = opts.tournamentId;
+      if (opts.seriesId) payload.seriesId = opts.seriesId;
       const rr = await fetch('/api/admin_lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const d = await rr.json().catch(() => ({}));
       if (!rr.ok) throw new Error(d.error || 'Lookup failed');
@@ -1146,6 +1147,62 @@ function adminLookupBox(container, onPick, opts) {
   };
   container.querySelector('.alGo').onclick = go;
   name.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+}
+
+// One ban panel for all three scopes - the site-admin console (global), a tournament's Admin tab,
+// and a series page. They differ only in wording and in where the two actions post to, so they
+// share this rather than drifting into three near-identical tables.
+// opts: { title, blurb, bans, lookup:{tournamentId|seriesId}, addLabel,
+//         onSet({fafId,name,reason,expires}), onRemove(fafId), after() }
+function banPanel(el, opts) {
+  const bans = opts.bans || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const active = bans.filter(b => !b.expired).length;
+  let html = `<div class="panel section"><h2>${esc(opts.title)} <span class="h2-strong">(${active}${bans.length > active ? ' active, ' + (bans.length - active) + ' expired' : ''})</span></h2>
+    <p class="muted small">${opts.blurb}</p>
+    <div class="banAdd" style="margin:10px 0"></div>`;
+  if (!bans.length) html += '<div class="empty">Nobody is banned.</div>';
+  else html += '<div class="ban-table-wrap"><table class="ban-table"><thead><tr><th>Player</th><th>Reason</th><th>Banned by</th><th>Expires</th><th></th></tr></thead><tbody>' +
+    bans.map(b => `<tr class="${b.expired ? 'ban-expired' : ''}">
+      <td>${esc(b.name)} <span class="muted small">${esc(b.fafId)}</span></td>
+      <td class="small">${esc(b.reason || '\u2014')}</td>
+      <td class="small">${b.by ? esc(b.by) : '<span class="muted">\u2014</span>'}<div class="muted small">${b.at ? esc(fmtWhen(b.at)) : ''}</div></td>
+      <td class="small"><input type="date" class="banExp" data-fid="${esc(b.fafId)}" data-name="${esc(b.name)}" value="${b.expires ? esc(b.expires.slice(0, 10)) : ''}">${b.expired ? ' <span class="idbadge late">expired</span>' : (b.expires ? '' : ' <span class="muted small">no expiry</span>')}</td>
+      <td><button class="btn danger small" data-banrem="${esc(b.fafId)}">Lift ban</button></td>
+    </tr>`).join('') + '</tbody></table></div>';
+  html += '</div>';
+  el.innerHTML = html;
+
+  const done = async (msg) => { toast(msg); if (opts.after) await opts.after(); };
+  adminLookupBox(el.querySelector('.banAdd'), (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)})
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" class="bpReason" placeholder="Reason (optional)" maxlength="300" style="flex:1;min-width:180px">
+        <label class="muted small">Expires <input type="date" class="bpExp" min="${today}"></label>
+        <button class="btn danger small bpGo">${esc(opts.addLabel || 'Ban')}</button>
+      </div>`;
+    result.querySelector('.bpGo').onclick = async () => {
+      try {
+        await opts.onSet({ fafId: found.fafId, name: found.name,
+          reason: result.querySelector('.bpReason').value,
+          expires: result.querySelector('.bpExp').value || null });
+        await done('Banned');
+      } catch (e) { toast(e.message, true); }
+    };
+  }, opts.lookup || {});
+
+  el.querySelectorAll('[data-banrem]').forEach(b => b.onclick = async () => {
+    if (!confirm('Lift this ban?')) return;
+    try { await opts.onRemove(b.dataset.banrem); await done('Ban lifted'); }
+    catch (e) { toast(e.message, true); }
+  });
+  // changing the date in-place re-saves the same ban with a new expiry (blank = no expiry)
+  el.querySelectorAll('.banExp').forEach(inp => inp.onchange = async () => {
+    try {
+      await opts.onSet({ fafId: inp.dataset.fid, name: inp.dataset.name, reason: '', expires: inp.value || null });
+      await done(inp.value ? 'Expiry updated' : 'Expiry cleared');
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 function drawSaSiteAdmins(el) {
@@ -1214,46 +1271,13 @@ function drawSaDirectors(el) {
 }
 
 function drawSaBans(el) {
-  const bans = saData.bans || [];
-  const today = new Date().toISOString().slice(0, 10);
-  let html = `<div class="panel section"><h2>Tournament bans <span class="h2-strong">(${bans.length})</span></h2>
-    <p class="muted small">Banned accounts can't sign up, be added, or be invited to <strong>official</strong> tournaments (community tournaments are unaffected). Set an expiry date; it's changeable any time. An expired ban stops applying automatically.</p>
-    <div id="banAdd" style="margin:10px 0"></div>`;
-  if (!bans.length) html += '<div class="empty">Nobody is banned.</div>';
-  else html += '<table><thead><tr><th>Player</th><th>Reason</th><th>Expires</th><th></th></tr></thead><tbody>' +
-    bans.map(b => {
-      const expired = b.expires && new Date(b.expires).getTime() < Date.now();
-      return `<tr>
-        <td>${esc(b.name)} <span class="muted small">${esc(b.fafId)}</span></td>
-        <td class="small">${esc(b.reason || '—')}</td>
-        <td class="small">${b.expires ? '<input type="date" class="banExp" data-fid="' + esc(b.fafId) + '" data-name="' + esc(b.name) + '" value="' + esc(b.expires.slice(0, 10)) + '">' + (expired ? ' <span class="idbadge late">expired</span>' : '') : '<input type="date" class="banExp" data-fid="' + esc(b.fafId) + '" data-name="' + esc(b.name) + '" value=""> <span class="muted small">no expiry</span>'}</td>
-        <td><button class="btn danger small" data-banrem="${esc(b.fafId)}">Lift ban</button></td>
-      </tr>`;
-    }).join('') + '</tbody></table>';
-  html += '</div>';
-  el.innerHTML = html;
-  adminLookupBox(el.querySelector('#banAdd'), (found, result) => {
-    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)})
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
-        <input type="text" id="banReason" placeholder="Reason (optional)" maxlength="300" style="flex:1;min-width:180px">
-        <label class="muted small">Expires <input type="date" id="banExpNew" min="${today}"></label>
-        <button class="btn danger small" id="banGo">Ban</button>
-      </div>`;
-    result.querySelector('#banGo').onclick = async () => {
-      try {
-        await saPost('ban_set', { fafId: found.fafId, name: found.name, reason: result.querySelector('#banReason').value, expires: result.querySelector('#banExpNew').value || null });
-        toast('Ban set'); renderSiteAdmin();
-      } catch (e) { toast(e.message, true); }
-    };
-  });
-  el.querySelectorAll('[data-banrem]').forEach(b => b.onclick = async () => {
-    if (!confirm('Lift this ban?')) return;
-    try { await saPost('ban_remove', { fafId: b.dataset.banrem }); toast('Ban lifted'); renderSiteAdmin(); }
-    catch (e) { toast(e.message, true); }
-  });
-  el.querySelectorAll('.banExp').forEach(inp => inp.onchange = async () => {
-    try { await saPost('ban_set', { fafId: inp.dataset.fid, name: inp.dataset.name, expires: inp.value || null }); toast('Expiry updated'); }
-    catch (e) { toast(e.message, true); renderSiteAdmin(); }
+  banPanel(el, {
+    title: 'Global tournament bans',
+    blurb: "Banned accounts can't sign up, be added, or be invited to <strong>official</strong> tournaments (community tournaments are unaffected). This is the widest of the three scopes \u2014 organizers can also ban from a single tournament, and series owners from a whole series. Set an expiry date; it's changeable any time, and an expired ban stops applying automatically without losing the record of who set it.",
+    bans: saData.bans || [],
+    onSet: (r) => saPost('ban_set', r),
+    onRemove: (fid) => saPost('ban_remove', { fafId: fid }),
+    after: () => renderSiteAdmin()
   });
 }
 
