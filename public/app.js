@@ -1074,16 +1074,17 @@ async function renderSiteAdmin() {
       Site admin only - use the lock button in the top right to log in.</div></div></div>`;
     return;
   }
-  // Directors see a reduced console: no Requests and no Site Admins, but they DO manage their
-  // own roster - the TD team appoints and removes TDs without waiting on a site admin.
+  // Directors get the whole console EXCEPT Site Admins. Everything else here is at or below
+  // what the role already carries (organizer rights on every official tournament, appointing
+  // other directors); the site-admin list is the one real escalation, so it stays out.
   const director = !siteAdmin() && isDirector;
-  const validTabs = director ? ['directors', 'bans', 'logs', 'archived', 'articles'] : ['requests', 'siteadmins', 'directors', 'bans', 'logs', 'archived', 'articles'];
+  const validTabs = director ? ['requests', 'directors', 'bans', 'logs', 'archived', 'articles'] : ['requests', 'siteadmins', 'directors', 'bans', 'logs', 'archived', 'articles'];
   if (validTabs.indexOf(saTab) < 0) saTab = validTabs[0];
   app.innerHTML = `<div class="page">
     <h1 style="margin:0 0 14px">Site admin${director ? ' <span class="muted" style="font-size:14px;font-weight:400">(tournament director)</span>' : ''}</h1>
-    ${director ? '<p class="muted small" style="margin:-8px 0 12px">As a tournament director you manage the director roster under <strong>Directors</strong>, tournament bans, and the FAQ / Rules articles under <strong>Articles</strong>.</p>' : ''}
+    ${director ? '<p class="muted small" style="margin:-8px 0 12px">As a tournament director you have the whole console except <strong>Site Admins</strong>: access requests, the director roster, tournament bans, logs, archived tournaments and the FAQ / Rules articles.</p>' : ''}
     <div class="tabs" style="margin-bottom:14px">
-      ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
+      ${`<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
       ${director ? '' : `<button class="tab ${saTab === 'siteadmins' ? 'active' : ''}" data-satab="siteadmins">Site Admins${(saData && (saData.siteAdmins || []).length) ? ' (' + saData.siteAdmins.length + ')' : ''}</button>`}
       <button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>
       <button class="tab ${saTab === 'bans' ? 'active' : ''}" data-satab="bans">Tournament bans${(saData && (saData.bans || []).length) ? ' (' + saData.bans.length + ')' : ''}</button>

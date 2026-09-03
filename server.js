@@ -2115,11 +2115,18 @@ async function handleAPI(req, res, url) {
     // Editors get the articles surface and nothing else.
     const EDITOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete'];
     if (editor && EDITOR_ACTS.indexOf(act) < 0) return json(res, 403, { error: 'Site admin only' });
-    // Directors: logs, archived, articles, tournament bans, and their OWN roster. The TD team
-    // manages who is a TD; everything else on this console (host/editor/importer requests, and
-    // the site-admin list) stays site-admin only.
+    // What a tournament director gets on this console: everything except the SITE ADMIN list.
+    // That is the one genuine escalation left - a site admin can do anything at all, including
+    // removing directors and re-linking via the master password - so it stays site-admin only.
+    // Everything else here (access requests, the TD roster, bans, articles, logs, archived) is
+    // at or below what a director already holds: organizer rights on every official tournament,
+    // and the power to appoint other directors.
     const DIRECTOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete', 'ban_set', 'ban_remove',
-                           'director_grant', 'director_revoke'];
+                           'director_grant', 'director_revoke',
+                           // the whole Requests tab: hosting, article editors, Challonge importers
+                           'decide', 'revoke', 'grant',
+                           'editor_decide', 'editor_revoke', 'editor_grant',
+                           'importer_decide', 'importer_revoke', 'importer_grant'];
     if (director && DIRECTOR_ACTS.indexOf(act) < 0) return json(res, 403, { error: 'Directors can\u2019t do that \u2014 site admin only' });
     if (editor && act === 'data') {
       return json(res, 200, { role: 'editor', articles: (db.articles || []).slice().sort((a, c) => (a.order || 0) - (c.order || 0) || (a.createdAt || 0) - (c.createdAt || 0)).map(a => Object.assign({}, a, { archived: a.archived ? 1 : 0 })) });
@@ -2127,6 +2134,16 @@ async function handleAPI(req, res, url) {
 
     if (act === 'data') {
       const bansList = banListOf(db.tourneyBans);
+      const allowed = Object.keys(db.hostAllowed).map(fid => ({
+        fafId: fid, name: db.hostAllowed[fid].name || '', at: db.hostAllowed[fid].at || 0, by: db.hostAllowed[fid].by || ''
+      })).sort((x, y) => y.at - x.at);
+      const editorAllowed = Object.keys(db.editorAllowed).map(fid => ({
+        fafId: fid, name: db.editorAllowed[fid].name || '', at: db.editorAllowed[fid].at || 0, by: db.editorAllowed[fid].by || ''
+      })).sort((x, y) => y.at - x.at);
+      const importerAllowed = Object.keys(db.importerAllowed).map(fid => ({
+        fafId: fid, name: db.importerAllowed[fid].name || '', at: db.importerAllowed[fid].at || 0, by: db.importerAllowed[fid].by || ''
+      })).sort((x, y) => y.at - x.at);
+
       if (director) {
         return json(res, 200, {
           role: 'director', oauth: FAF_OAUTH_ON ? 1 : 0,
@@ -2134,30 +2151,20 @@ async function handleAPI(req, res, url) {
           archived: Object.values(db.tournaments).filter(t => t.archived).map(t => ({ id: t.id, name: t.name, status: t.status, at: t.archivedAt || 0, players: (t.players || []).length })).sort((x, y) => y.at - x.at),
           articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0)),
           bans: bansList,
-          // the TD team manages its own roster, so it needs to see it. Host/editor/importer
-          // requests and the site-admin list stay out of this payload, as they always have.
+          // The TD team manages its own roster and the access-request queues. This list stays
+          // EXPLICIT rather than "everything minus siteAdmins": an allow-list fails closed, so a
+          // key added to the admin payload later is not silently handed to directors as well.
           directors: Object.keys(db.directors || {}).map(fid => ({ fafId: fid, name: db.directors[fid].name || fid, at: db.directors[fid].at || 0, by: db.directors[fid].by || '' })).sort((x, y) => y.at - x.at),
+          requests: (db.hostRequests || []).slice().reverse(),
+          allowed,
+          editorRequests: (db.editorRequests || []).slice().reverse(),
+          editorAllowed,
+          importerRequests: (db.importerRequests || []).slice().reverse(),
+          importerAllowed,
           me: (currentSession(req) || {}).fafId || null
+          // deliberately NOT siteAdmins - see the DIRECTOR_ACTS note above
         });
       }
-      const allowed = Object.keys(db.hostAllowed).map(fid => ({
-        fafId: fid,
-        name: db.hostAllowed[fid].name || '',
-        at: db.hostAllowed[fid].at || 0,
-        by: db.hostAllowed[fid].by || ''
-      })).sort((x, y) => y.at - x.at);
-      const editorAllowed = Object.keys(db.editorAllowed).map(fid => ({
-        fafId: fid,
-        name: db.editorAllowed[fid].name || '',
-        at: db.editorAllowed[fid].at || 0,
-        by: db.editorAllowed[fid].by || ''
-      })).sort((x, y) => y.at - x.at);
-      const importerAllowed = Object.keys(db.importerAllowed).map(fid => ({
-        fafId: fid,
-        name: db.importerAllowed[fid].name || '',
-        at: db.importerAllowed[fid].at || 0,
-        by: db.importerAllowed[fid].by || ''
-      })).sort((x, y) => y.at - x.at);
       return json(res, 200, {
         role: 'admin',
         oauth: FAF_OAUTH_ON ? 1 : 0,
@@ -2792,7 +2799,9 @@ async function handleAPI(req, res, url) {
     // ready to decide can silence the alert. A request arriving AFTER a dismissal un-silences it,
     // which is the point - the alert exists because three hosting requests went unnoticed.
     let alert = null;
-    if (sess && sess.fafId && isSiteAdmin(req)) {
+    // Directors now review these queues too, so the nudge that exists because three hosting
+    // requests once went unnoticed has to reach them as well.
+    if (sess && sess.fafId && (isSiteAdmin(req) || isDirector(req))) {
       const pend = pendingAccessRequests();
       const seen = ((db.profiles[sess.fafId] || {}).seenRequests) || {};
       const fresh = pend.filter(r => !seen[r.id]);
@@ -2813,7 +2822,7 @@ async function handleAPI(req, res, url) {
   if (parts.length === 3 && parts[1] === 'my' && parts[2] === 'dismiss_requests' && method === 'POST') {
     const sess = currentSession(req);
     if (!sess || !sess.fafId) return json(res, 401, { error: 'Log in with FAF first' });
-    if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
+    if (!isSiteAdmin(req) && !isDirector(req)) return json(res, 403, { error: 'Site admin or tournament director only' });
     const seen = {};
     for (const r of pendingAccessRequests()) seen[r.id] = 1;
     db.profiles[sess.fafId] = db.profiles[sess.fafId] || {};
