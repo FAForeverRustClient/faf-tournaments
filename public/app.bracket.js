@@ -1592,6 +1592,9 @@ function drawBracket(el) {
   el.innerHTML = '';
   connectorRedraws = [];
   buildFeeders();
+  // The opponent pick phase replaces round one, so while it is open it IS the bracket view.
+  const pickOpen = T.picks && T.picks.status === 'open';
+  if (pickOpen && T.picks.forWhat !== 'stage2') { drawPickPhase(el); drawBracketPreview(el); return; }
   if (!T.matches.length) {
     drawBracketPreview(el);
     return;
@@ -1599,7 +1602,35 @@ function drawBracket(el) {
 
   if (T.competition === 'ffa') return drawFfaRounds(el);
 
-  if (T.bracketType === 'swiss') return drawSwissRounds(el);
+  if (T.bracketType === 'swiss') {
+    if (pickOpen) drawPickPhase(el);
+    // Two-stage: the playoff bracket sits above the Swiss stage that produced it, so the
+    // live action is at the top and the Swiss rounds read as history below it.
+    if (stageTwoLive()) {
+      const hdr = document.createElement('div');
+      hdr.className = 'division-header';
+      hdr.innerHTML = '<h2 style="margin:0 0 10px">Playoffs <span class="h2-strong">'
+        + esc(String(T.stage2.cutTo)) + '-team ' + (T.stage2.type === 'double' ? 'double' : 'single') + ' elimination</span></h2>'
+        + '<p class="muted small" style="margin:0 0 12px">Seeded from the Swiss standings below.</p>';
+      el.appendChild(hdr);
+      if (T.stage2.type === 'double') {
+        const gf = T.matches.find(m => m.bracket === 'gf');
+        bracketColumns(el, 'wb', 'Winners bracket', gf, 0);
+        bracketColumns(el, 'lb', 'Losers bracket', null, 0);
+      } else {
+        bracketColumns(el, 'wb', '');
+      }
+      const sep = document.createElement('div');
+      sep.className = 'division-header';
+      sep.innerHTML = '<h2 style="margin:22px 0 10px">Swiss stage</h2>';
+      el.appendChild(sep);
+      drawSwissRounds(el);
+      alignBracketSections(el);
+      for (const f of connectorRedraws) f();
+      return;
+    }
+    return drawSwissRounds(el);
+  }
 
   const divs = T.divisions || 0;
   const divNames = ['', 'King', 'Prince', 'Duke', 'Baron', 'Knight', 'Squire'];
@@ -2122,13 +2153,100 @@ function drawFfaPreview(el, n) {
   el.appendChild(sec);
 }
 
+// ---- opponent pick phase ----
+// Seeds 1-N/2 choose who they play. Modelled on the veto flow: the site always says whose turn
+// it is, shows that person a clear call to action, and lets an organizer act for anyone.
+function drawPickPhase(el) {
+  const p = T.picks;
+  if (!p) return;
+  const nm = id => { const tm = (T.teams || []).find(x => x.id === id); return tm ? tm.name : id; };
+  const seedOf = id => p.field.indexOf(id) + 1;
+  const org = viewerIsOrganizer();
+  const sec = document.createElement('div');
+  sec.className = 'panel section pickphase';
+
+  const clock = () => {
+    if (p.msLeft == null) return '';
+    const secs = Math.max(0, Math.round(p.msLeft / 1000));
+    const mm = Math.floor(secs / 60), ss = secs % 60;
+    return `<span class="pick-clock${secs <= 30 ? ' urgent' : ''}">${mm}:${String(ss).padStart(2, '0')}</span>`;
+  };
+
+  const head = p.status === 'done'
+    ? '<h2>Opponents <span class="h2-strong">chosen</span></h2>'
+    : `<h2>Choosing <span class="h2-strong">opponents</span></h2>`;
+
+  let body = '';
+  if (p.status === 'open') {
+    const turnName = p.turn ? nm(p.turn) : '';
+    body += `<p class="muted small" style="margin:2px 0 12px">The top ${p.half} seeds each choose who they play, in seed order.
+      ${p.perPickMs ? 'Each pick has a time limit; if it runs out, the standard bracket matchup is used.' : 'There is no time limit.'}</p>`;
+    if (p.myTurn) {
+      body += `<div class="pick-callout"><div class="pick-callout-h">Your pick ${clock()}</div>
+        <div class="muted small">Choose your opponent below.</div></div>`;
+    } else {
+      body += `<div class="infocell"><div class="mono small muted">WAITING ON</div>
+        <div>${esc(turnName)} <span class="muted small">(seed ${seedOf(p.turn)})</span> ${clock()}</div></div>`;
+    }
+  }
+
+  // the pairings so far
+  const rows = p.order.map(id => {
+    const pick = p.picks[id];
+    const isTurn = p.status === 'open' && id === p.turn;
+    return `<div class="pick-row${isTurn ? ' turn' : ''}">
+      <span class="pick-seed mono">${seedOf(id)}</span>
+      <span class="pick-name">${esc(nm(id))}</span>
+      <span class="pick-vs muted">vs</span>
+      <span class="pick-target">${pick
+        ? esc(nm(pick)) + ' <span class="muted mono small">(' + seedOf(pick) + ')</span>'
+        : (isTurn ? '<span class="pick-pending">choosing\u2026</span>' : '<span class="muted">\u2014</span>')}</span>
+    </div>`;
+  }).join('');
+  body += `<div class="pick-list">${rows}</div>`;
+
+  // the picker's own controls
+  if (p.status === 'open' && (p.myTurn || org) && (p.available || []).length) {
+    const who = p.turn ? nm(p.turn) : '';
+    body += `<div class="pick-choose">
+      <div class="mono small muted" style="margin-bottom:6px">${p.myTurn ? 'PICK YOUR OPPONENT' : 'PICK ON BEHALF OF ' + esc(who.toUpperCase())}</div>
+      <div class="pick-opts">${p.available.map(id =>
+        `<button class="btn ghost small" data-pickop="${esc(id)}">${esc(nm(id))} <span class="muted mono">${seedOf(id)}</span></button>`).join('')}</div>
+    </div>`;
+  }
+  if (org && p.status === 'open' && (p.log || []).length) {
+    body += '<div style="margin-top:10px"><button class="btn ghost small" id="pickUndo">Undo the last pick</button></div>';
+  }
+  if ((p.log || []).some(l => l.auto)) {
+    body += '<p class="muted small" style="margin:10px 0 0">Picks marked automatic were made by the clock running out, using the standard bracket matchup.</p>';
+  }
+
+  sec.innerHTML = head + body;
+  el.appendChild(sec);
+
+  sec.querySelectorAll('[data-pickop]').forEach(btn => btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      await api('/api/t/' + T.id + '/pick_opponent', { teamId: btn.dataset.pickop, admin: adminToken() });
+      await refresh();
+    } catch (e) { btn.disabled = false; toast(e.message, true); }
+  });
+  const undo = sec.querySelector('#pickUndo');
+  if (undo) undo.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/undo_pick_opponent', { admin: adminToken() }); toast('Pick undone'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+}
+
 function drawSwissRounds(el) {
   const ms = T.matches.filter(m => m.bracket === 'sw');
   const rounds = Math.max.apply(null, ms.map(m => m.round));
   for (let r = rounds; r >= 1; r--) {
     const sec = document.createElement('div');
     sec.className = 'panel section';
-    sec.innerHTML = `<h2>Round <span class="h2-strong">${r} / ${T.cfg.rounds}</span></h2>`;
+    const cuts = swissCutCfg(T);
+    sec.innerHTML = `<h2>Round <span class="h2-strong">${r}${cuts.on ? '' : ' / ' + T.cfg.rounds}</span></h2>`
+      + (r === rounds && cuts.on ? `<p class="muted small" style="margin:2px 0 0">${esc(swissCutLabel(T))}${cuts.decidingBo ? ' \u00b7 Bo' + cuts.decidingBo + ' when a win qualifies or a loss eliminates' : ''}</p>` : '');
     mapsLine('sw', r, sec);
     const q = document.createElement('div');
     q.className = 'queue';
@@ -2362,7 +2480,17 @@ function showMatchDetails(m) {
   const canCorrect = !T.imported && m.status === 'done' && viewerIsAdmin();
   const chatOk = matchChatAllowed(m);
 
-  modal(`<h3>${esc(mLabel(m))} <span class="muted" style="font-weight:400">BO${m.bo}</span>
+  // Per-match Bo: an organizer can retune exactly this series while it has not started. The
+  // per-round control on the bracket stays the bulk tool; this is the one-off escape hatch.
+  const canSetBo = !T.imported && viewerIsOrganizer() && m.bracket !== 'ffa'
+    && m.status !== 'done' && m.status !== 'live' && m.status !== 'bye'
+    && !(Array.isArray(m.games) && m.games.length);
+  const boBlock = canSetBo
+    ? `<select id="mdBo" class="md-bo-sel" title="Change this match's length">${[1, 3, 5, 7].map(v =>
+        '<option value="' + v + '"' + (v === m.bo ? ' selected' : '') + '>BO' + v + '</option>').join('')}</select>`
+    : `<span class="muted" style="font-weight:400">BO${m.bo}</span>`;
+
+  modal(`<h3>${esc(mLabel(m))} ${boBlock}
       <span class="mt-state ${st.cls}" style="margin-left:8px">${esc(st.txt)}</span></h3>
     <div class="md-grid">
       ${teamCol(m.team1, m.score1)}
@@ -2386,6 +2514,16 @@ function showMatchDetails(m) {
     root.querySelectorAll('[data-teamid]').forEach(n => n.onclick = (e) => {
       e.preventDefault(); closeModal(); showTeamPopup(n.dataset.teamid);
     });
+    const boSel = root.querySelector('#mdBo');
+    if (boSel) boSel.onchange = async () => {
+      const want = parseInt(boSel.value, 10);
+      try {
+        await api('/api/t/' + T.id + '/set_match_bo', { matchId: m.id, bo: want, admin: adminToken() });
+        toast(mLabel(m) + ' is now Bo' + want);
+        closeModal();
+        await refresh();
+      } catch (e) { boSel.value = String(m.bo); toast(e.message, true); }
+    };
     const c = root.querySelector('#mdChat');
     if (c) c.onclick = (e) => { e.preventDefault(); closeModal(); openMatchChat(m); };
     const rv = root.querySelector('#mdReveal');

@@ -26,7 +26,11 @@ const {
   buildSingle, buildDouble,
 } = require('./lib/match');
 // Swiss and FFA formats (import the shared match primitives internally).
-const { swissPairRound, swissAfterReport, swissStandings } = require('./lib/swiss');
+const { PRESETS, presetById, presetsFor } = require('./lib/presets');
+const PICKS = require('./lib/picks');
+const { swissPairRound, swissAfterReport, swissStandings,
+        swissCuts, swissCutRounds, swissRecord, swissAdvanced,
+        stageTwoCfg, stageTwoField, stageTwoBuild } = require('./lib/swiss');
 const { ffaCreateRound, ffaAfterReport, ffaRank } = require('./lib/ffa');
 // Team formation and map lookups.
 const { buildDraft, finishDraftIfDone, finalizeOpenTeams, formTeamsGrouped } = require('./lib/teams');
@@ -34,6 +38,7 @@ const { mapById, publicMapView } = require('./lib/maps');
 // Wire the Swiss progression hook into the match core (see lib/match.js). Must come
 // after the swiss require above, since swissAfterReport is now imported, not hoisted.
 require('./lib/match').setHooks({ swissAfterReport });
+require('./lib/swiss').setSwissHooks({ openStagePicks });
 
 const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -469,6 +474,131 @@ function cleanPrize(cur, amt) {
   if (!c || n === null || !isFinite(n) || n < 0) return { currency: null, amount: null };
   return { currency: c, amount: Math.round(n * 100) / 100 };
 }
+// ---------- Swiss record cuts + stage 2 (opt-in) ----------
+// These are the LotS / Invitational knobs. EVERY field defaults to off, and start_bracket
+// only writes them onto t.cfg / t.stage2 when they are actually asked for, so a Swiss
+// tournament that ignores them is byte-identical to one created before they existed.
+//   winCut/lossCut - leave the stage on record instead of a round count (0 = off)
+//   decidingBo     - longer series when a win qualifies or a loss eliminates (0 = off)
+//   stage2         - cut the qualified field into a playoff bracket in the same tournament
+const S2_TYPES = ['single', 'double'];
+function cleanSwissExtras(src, prev) {
+  const p = prev || {};
+  const s = src || {};
+  const n = (v, d, lo, hi) => { const x = parseInt(v, 10); return (x >= lo && x <= hi) ? x : d; };
+  const boOr = (v, d) => { const x = parseInt(v, 10); return BO_OK.indexOf(x) >= 0 ? x : d; };
+  const pick = (key, dflt, fn) => (s[key] !== undefined ? fn(s[key]) : (p[key] !== undefined ? fn(p[key]) : dflt));
+  const out = {
+    winCut: pick('winCut', 0, v => n(v, 0, 0, 15)),
+    lossCut: pick('lossCut', 0, v => n(v, 0, 0, 15)),
+    decidingBo: pick('decidingBo', 0, v => boOr(v, 0)),
+    stage2: pick('stage2', 0, v => (v ? 1 : 0)),
+    s2Type: pick('s2Type', 'single', v => (S2_TYPES.indexOf(String(v)) >= 0 ? String(v) : 'single')),
+    s2CutTo: pick('s2CutTo', 8, v => n(v, 8, 2, 64)),
+    s2Bo: pick('s2Bo', 3, v => boOr(v, 3)),
+    s2Final: pick('s2Final', 5, v => boOr(v, 5)),
+    s2Gf: pick('s2Gf', 5, v => boOr(v, 5)),
+    s2Hcap: pick('s2Hcap', 0, v => (v ? 1 : 0))
+  };
+  // A cut of 1 loss is just single elimination and a cut of 1 win is a one-round event; both
+  // are legal but pointless, so they are left alone rather than "corrected" behind the organizer.
+  return out;
+}
+
+// Turn the stored extras into the t.stage2 record the swiss engine consumes. Returns null
+// when stage 2 is off, which is what clears it on a re-generate.
+function buildStageTwo(ex, cfgSrc) {
+  // ex.pickPhase is threaded in by the caller from t.pickOpponents
+  if (!ex.stage2) return null;
+  const c = cfgSrc || {};
+  const cut = ex.s2CutTo;
+  const R = Math.max(1, log2i(nextPow2(cut)));
+  const spread = last => { const a = []; for (let i = 0; i < R; i++) a.push(i === R - 1 ? last : ex.s2Bo); return a; };
+  if (ex.s2Type === 'double') {
+    return {
+      type: 'double', cutTo: cut,
+      wb: cleanBoList(Array.isArray(c.s2wb) && c.s2wb.length ? c.s2wb : spread(ex.s2Bo), R),
+      lb: cleanBoList(Array.isArray(c.s2lb) && c.s2lb.length ? c.s2lb : spread(ex.s2Bo), Math.max(2 * R - 2, 1)),
+      gf: ex.s2Gf, lbHandicap: ex.s2Hcap ? 1 : 0, pickPhase: ex.pickPhase ? 1 : 0, built: 0, field: []
+    };
+  }
+  return {
+    type: 'single', cutTo: cut,
+    rounds: cleanBoList(Array.isArray(c.s2rounds) && c.s2rounds.length ? c.s2rounds : spread(ex.s2Final), R),
+    pickPhase: ex.pickPhase ? 1 : 0, built: 0, field: []
+  };
+}
+
+// ---------- opponent pick phase ----------
+// Opt-in per tournament (t.pickOpponents). The top half of the seeds choose who they play in
+// round one instead of the bracket deciding. Without the flag none of this runs.
+// Why a field can be refused, phrased so the fix is obvious.
+const PICK_FIELD_MSG = n => 'Opponent picking needs a full bracket (4, 8, 16, 32...) so every seed has exactly one opponent to choose. You have ' +
+  n + ' team' + (n === 1 ? '' : 's') + ' - either adjust the field, or turn opponent picking off on the Format panel and start normally.';
+function pickClockMs(t) {
+  const mins = parseInt(t && t.pickMinutes, 10) || 0;
+  return mins > 0 ? mins * 60000 : null;
+}
+function teamsIManage(t, req, token) {
+  // Every team this viewer can act for: their own, plus all of them for an organizer.
+  const out = [];
+  if (canOrganize(t, req, { admin: token })) return (t.teams || []).map(x => x.id);
+  const sess = currentSession(req);
+  if (!sess) return out;
+  const me = (t.players || []).find(p => p.fafId === sess.fafId);
+  if (me && me.teamId) out.push(me.teamId);
+  return out;
+}
+// Called by lib/swiss when a stage-2 bracket is due and its field picks its own matchups.
+function openStagePicks(t, field) {
+  if (PICKS.pickPhaseOf(t)) return false;          // already running or finished
+  if (!PICKS.fullBracket((field || []).length)) {
+    // Mid-event is the worst possible moment to refuse, so the playoff bracket is built the
+    // normal way and the reason is said out loud rather than silently swallowed.
+    tpush(t, 'System', 'Opponent picking was skipped: it needs a full bracket (4, 8, 16, 32...) and '
+      + (field || []).length + ' came through. The playoff bracket is seeded from the standings instead.');
+    return false;
+  }
+  if (!PICKS.startPickPhase(t, field, { perPickMs: pickClockMs(t) })) return false;
+  t.pickFor = 'stage2';
+  tpush(t, 'System', 'The Swiss stage is over. The top ' + Math.floor(field.length / 2) +
+    ' seeds now choose their playoff opponent, in seed order.');
+  return true;
+}
+// Apply lapsed pick clocks, then build the bracket if every pick is in. Safe to call anywhere.
+function sweepPicks(t) {
+  const ph = PICKS.pickPhaseOf(t);
+  if (!ph) return false;
+  let changed = false;
+  const auto = PICKS.sweepPickDeadlines(t);
+  for (const a of auto) {
+    changed = true;
+    const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+    tpush(t, 'System', nm(a.by) + ' ran out of time and was given ' + nm(a.target) + ' (the standard bracket matchup).');
+  }
+  if (ph.status === 'done' && !ph.applied) changed = buildAfterPicks(t) || changed;
+  return changed;
+}
+function buildAfterPicks(t) {
+  const ph = PICKS.pickPhaseOf(t);
+  if (!ph || ph.status !== 'done' || ph.applied) return false;
+  const slots = PICKS.pickedSlots(t);
+  ph.applied = now();
+  if (t.pickFor === 'stage2') {
+    stageTwoBuild(t, slots);
+  } else {
+    // start_bracket already validated and stored t.cfg; the picks only change round one.
+    if (t.bracketType === 'double') buildDouble(t, t.cfg, 0, { slots });
+    else buildSingle(t, t.cfg, 0, { slots });
+    syncPlanFromMatches(t);
+    if (t.status !== 'finished') t.status = 'running';
+  }
+  const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+  tpush(t, 'System', 'All opponents chosen: ' + Object.keys(ph.picks)
+    .map(k => nm(k) + ' vs ' + nm(ph.picks[k])).join(' \u00b7 ') + '.');
+  return true;
+}
+
 // ---------- qualification (parent / child tournaments) ----------
 // A parent lists the qualifiers that feed it:
 //   t.qualifiers = [ { id, tournamentId, rule:{type:'top'|'points', n}, applied, qualified:[], unreachable:[] } ]
@@ -483,13 +613,30 @@ function tournamentRanking(t) {
     catch (e) { return []; }
   }
   if (t.bracketType === 'swiss') {
-    try { return (swissStandings(t) || []).map(r => r.teamId).filter(Boolean); } catch (e) { return []; }
+    try {
+      const standings = (swissStandings(t) || []).map(r => r.teamId).filter(Boolean);
+      // Two-stage: the playoff bracket decides the top of the table, the Swiss standings
+      // order everyone who did not make the cut. Single-stage swiss is unchanged.
+      const s2 = stageTwoCfg(t);
+      if (s2 && s2.built) {
+        const top = eliminationRanking(t);
+        return top.concat(standings.filter(id => top.indexOf(id) < 0));
+      }
+      return standings;
+    } catch (e) { return []; }
   }
-  // Elimination: champion first, then by how late each team was knocked out. The stage key matches
-  // the bracket's own ordering, so surviving longer always ranks higher.
+  return eliminationRanking(t);
+}
+
+// Elimination: champion first, then by how late each team was knocked out. The stage key matches
+// the bracket's own ordering, so surviving longer always ranks higher. Only bracket matches count,
+// so a Swiss stage feeding a playoff bracket does not pollute the playoff ranking.
+function eliminationRanking(t) {
+  const BR = { wb: 1, lb: 1, gf: 1 };
   const stage = m => (m.bracket === 'gf' ? 1000 : 0) + ((m.round || 0) * 10) + (m.bracket === 'lb' ? 1 : 0);
   const out = {};
   for (const m of (t.matches || [])) {
+    if (!BR[m.bracket]) continue;
     if (m.status !== 'done' || !m.loser || m.loser === 'BYE') continue;
     const k = stage(m);
     if (out[m.loser] == null || k > out[m.loser]) out[m.loser] = k;   // their FINAL loss
@@ -499,8 +646,34 @@ function tournamentRanking(t) {
     .sort((a, b) => out[b] - out[a] || seedOf(a) - seedOf(b));
   const ranked = [];
   if (t.championTeamId) ranked.push(t.championTeamId);
+  else {
+    // A tournament stopped early has no champion. Whoever is still standing outranks everyone
+    // who was knocked out, winners-bracket survivors first - that is exactly the Q1/Q2 order.
+    const sp = survivorSplit(t);
+    for (const id of sp.wb.concat(sp.lb)) if (ranked.indexOf(id) < 0) ranked.push(id);
+  }
   for (const id of losers) if (ranked.indexOf(id) < 0) ranked.push(id);
   return ranked;
+}
+
+// Who is still standing, and which side of a double-elim bracket they are on. A team with no
+// bracket loss is in the winners bracket; one loss puts them in the losers bracket. This is what
+// makes "top 2 of winners = Q1, top 2 of losers = Q2" expressible.
+function bracketLosses(t, teamId) {
+  let n = 0;
+  for (const m of (t.matches || [])) {
+    if (m.bracket !== 'wb' && m.bracket !== 'lb' && m.bracket !== 'gf') continue;
+    if (m.status === 'done' && m.loser === teamId) n++;
+  }
+  return n;
+}
+function survivorSplit(t) {
+  const bySeed = (a, b) => (a.seed || 9999) - (b.seed || 9999);
+  const alive = (t.teams || []).filter(x => !x.eliminated);
+  if (t.bracketType !== 'double') return { wb: alive.slice().sort(bySeed).map(x => x.id), lb: [] };
+  const wb = [], lb = [];
+  for (const tm of alive) (bracketLosses(t, tm.id) === 0 ? wb : lb).push(tm);
+  return { wb: wb.sort(bySeed).map(x => x.id), lb: lb.sort(bySeed).map(x => x.id) };
 }
 
 function qualifyingTeamIds(child, rule) {
@@ -532,6 +705,41 @@ function qualifiedFafIds(child, teamId) {
     if (p && p.fafId) ids.push({ fafId: p.fafId, name: p.name || ('FAF ' + p.fafId) });
   }
   return ids;
+}
+
+// Put the teams that arrived through a qualifier at a fixed block of seeds (LotS wants its four
+// qualifiers at 13-16). Only runs when a link actually asks for it, so every other tournament
+// seeds exactly as before. The order inside the block is the order they qualified, which for an
+// early-stopped double elim is winners-bracket survivors first.
+function pinQualifierSeeds(t) {
+  const links = (t.qualifiers || []).filter(q => (parseInt(q.seedFrom, 10) || 0) > 0);
+  if (!links.length || !(t.teams || []).length) return false;
+  const want = [];
+  for (const link of links) {
+    const from = parseInt(link.seedFrom, 10) || 0;
+    const inv = (t.invites || []).filter(i => i.via === link.tournamentId);
+    inv.forEach((i, idx) => {
+      const p = (t.players || []).find(pl => pl.fafId === i.fafId);
+      if (!p || !p.teamId) return;
+      if (want.some(w => w.teamId === p.teamId)) return;
+      want.push({ teamId: p.teamId, seed: from + want.filter(w => w.link === link.id).length, link: link.id });
+    });
+  }
+  if (!want.length) return false;
+  const total = t.teams.length;
+  const order = new Array(total).fill(null);
+  const used = {};
+  for (const w of want.slice().sort((a, b) => a.seed - b.seed)) {
+    let idx = Math.max(0, w.seed - 1);
+    while (idx < total && order[idx]) idx++;
+    if (idx >= total) continue;
+    order[idx] = w.teamId; used[w.teamId] = 1;
+  }
+  const rest = t.teams.filter(x => !used[x.id]).sort((a, b) => (a.seed || 0) - (b.seed || 0));
+  let ri = 0;
+  for (let i = 0; i < total; i++) if (!order[i]) order[i] = rest[ri++].id;
+  order.forEach((id, i) => { const tm = teamById(t, id); if (tm) tm.seed = i + 1; });
+  return true;
 }
 
 // Lazy sweep (same idiom as scheduled publishing): apply any link whose child has finished.
@@ -1020,9 +1228,21 @@ function syncPlanFromMatches(t) {
 
 function matchLabel(t, m) {
   if (!m) return '';
-  if (m.bracket === 'gf') return t.bracketType === 'swiss' ? 'Final' : 'Grand Final';
+  // A two-stage tournament is Swiss on top of a real bracket, so its bracket matches are
+  // labelled like a bracket, not like a swiss final.
+  const twoStage = !!(t.bracketType === 'swiss' && t.stage2 && t.stage2.cutTo);
+  if (m.bracket === 'gf') {
+    if (twoStage) return t.stage2.type === 'double' ? 'Grand Final' : 'Final';
+    return t.bracketType === 'swiss' ? 'Final' : 'Grand Final';
+  }
   if (m.bracket === 'sw') return 'Round ' + m.round + ' Match ' + (m.index + 1);
   if (m.bracket === 'ffa') return 'Round ' + m.round + ' Lobby ' + (m.index + 1);
+  if (twoStage) {
+    const deepest = Math.max.apply(null, t.matches.filter(x => x.bracket === m.bracket).map(x => x.round).concat([0]));
+    const pre = m.bracket === 'lb' ? 'LB ' : (t.stage2.type === 'double' ? 'WB ' : '');
+    if (m.bracket !== 'lb' && m.round === deepest && t.stage2.type === 'single') return 'Playoffs Final';
+    return 'Playoffs ' + pre + 'Round ' + m.round + ' Match ' + (m.index + 1);
+  }
   const p = m.bracket === 'lb' ? 'LB ' : (t.bracketType === 'double' ? 'WB ' : '');
   return p + 'Round ' + m.round + ' Match ' + (m.index + 1);
 }
@@ -1144,12 +1364,15 @@ function publicView(t) {
     id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', prize: t.prize || { currency: null, amount: null }, sponsors: t.sponsors || '', category: t.category || null,
     published: t.published !== false ? 1 : 0, publishAt: t.publishAt || null, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
     seriesId: t.seriesId || null,
+    survivors: (t.status === 'running' || t.status === 'finished') && t.bracketType !== 'swiss' && t.competition !== 'ffa'
+      ? survivorSplit(t) : null,
+    earlyFinish: t.earlyFinish || null,
     qualifiers: (t.qualifiers || []).map(q => {
       const c = db.tournaments[q.tournamentId];
       return {
         id: q.id, tournamentId: q.tournamentId,
         name: c ? c.name : '(deleted tournament)', status: c ? c.status : null,
-        rule: q.rule || null, applied: q.applied || null,
+        rule: q.rule || null, applied: q.applied || null, seedFrom: q.seedFrom || 0,
         qualified: q.qualified || [], unreachable: q.unreachable || []
       };
     }),
@@ -1184,7 +1407,8 @@ function publicView(t) {
     teamSize: t.teamSize, draftOrder: t.draftOrder,
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0, perRoundBo: t.perRoundBo ? 1 : 0,
-    cfg: t.cfg || null, seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
+    cfg: t.cfg || null, stage2: t.stage2 || null, preset: t.preset || null, presetName: t.presetName || null,
+    pickOpponents: t.pickOpponents ? 1 : 0, pickMinutes: t.pickMinutes || 0, seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
     signupMode: t.signupMode || 'open',
     playerReporting: t.playerReporting === undefined ? 1 : (t.playerReporting ? 1 : 0),
     veto: t.veto || { enabled: false, mode: 'upfront' },
@@ -1199,7 +1423,7 @@ function publicView(t) {
     poolAssign: t.poolAssign || {},
     players: t.players,
     teams: t.teams.map(x => ({
-      id: x.id, name: x.name, seed: x.seed,
+      id: x.id, name: x.name, seed: x.seed, stage2Seed: x.stage2Seed || 0,
       captainId: x.captainId, playerIds: x.playerIds,
       division: x.division || 0,
       checkedIn: x.checkedIn ? 1 : 0, createdAt: x.createdAt || 0,
@@ -1849,7 +2073,20 @@ async function handleAPI(req, res, url) {
     }
     const name = cleanName(b.name, 60);
     if (!name) return bad(res, 'Name required');
-    const category = (b.category === 'official' || b.category === 'community') ? b.category : null;
+    // A named preset (LotS, Invitational) is restricted to global tournament directors. This
+    // check is the restriction - the create form only hides the option, which stops nobody who
+    // can open a browser console. The preset id is recorded on the tournament so the format it
+    // claims to be is verifiable afterwards.
+    let preset = null;
+    if (b.presetId) {
+      preset = presetById(b.presetId);
+      if (!preset) return bad(res, 'Unknown format preset');
+      if (preset.directorOnly && !(isSiteAdmin(req) || isDirector(req))) {
+        return json(res, 403, { error: 'The ' + preset.name + ' format can only be hosted by a global tournament director' });
+      }
+    }
+    let category = (b.category === 'official' || b.category === 'community') ? b.category : null;
+    if (preset && preset.forceCategory) category = preset.forceCategory;
     if (!category) return bad(res, 'Choose whether this is an Official or Community tournament');
     const competition = b.competition === 'ffa' ? 'ffa' : 'team';
     let teamSize, formation, bracketType = 'single', ffaCfg = null, draftOrder = 'linear', plan = null;
@@ -1868,7 +2105,7 @@ async function handleAPI(req, res, url) {
       } else if (bracketType === 'double') {
         plan = { wb: bo(pb.wb, 3), wbFinal: bo(pb.wbFinal, 3), lb: bo(pb.lb, 3), lbFinal: bo(pb.lbFinal, 3), gf: bo(pb.gf, 5), lbHandicap: pb.lbHandicap ? 1 : 0 };
       } else {
-        plan = { bo: (parseInt(pb.bo, 10) === 1) ? 1 : 3, final: pb.final ? 1 : 0, finalBo: bo(pb.finalBo, 5), fast: pb.fast ? 1 : 0 };
+        plan = Object.assign({ bo: (parseInt(pb.bo, 10) === 1) ? 1 : 3, final: pb.final ? 1 : 0, finalBo: bo(pb.finalBo, 5), fast: pb.fast ? 1 : 0 }, cleanSwissExtras(pb, null));
       }
     } else {
       teamSize = intIn(b.teamSize, 1, 3, 1);
@@ -1900,6 +2137,10 @@ async function handleAPI(req, res, url) {
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
       plan, maxTeams,
+      preset: preset ? preset.id : null, presetName: preset ? preset.name : null,
+      // opponent pick phase: off unless asked for (0 minutes = no clock, picks wait forever)
+      pickOpponents: b.pickOpponents ? 1 : 0,
+      pickMinutes: intIn(b.pickMinutes, 0, 1440, 0),
       cfg: null, maps: {}, mapDb: [], mapPools: [], poolAssign: {},
       seeding: (['rating', 'random', 'manual'].indexOf(b.seeding) >= 0) ? b.seeding : 'rating',
       ratingType: (['global', '1v1', '2v2', '3v3', '4v4', 'rc'].indexOf(b.ratingType) >= 0) ? b.ratingType : (b.ratingType === 'none' ? 'none' : 'global'),
@@ -2489,6 +2730,13 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { tournaments: mine });
   }
 
+  // Named format presets (LotS, Invitational). Everyone can see that they exist; only global
+  // tournament directors and site admins get the settings, and only they may create with one.
+  if (parts.length === 2 && parts[1] === 'presets' && method === 'GET') {
+    const may = isSiteAdmin(req) || isDirector(req);
+    return json(res, 200, { presets: presetsFor(may), may: !!may });
+  }
+
   // ---------- tournament series ----------
   // A series is only a grouping label: editions are independent tournaments that share a name.
   // Anyone can read; site admins and directors create and edit them.
@@ -2842,11 +3090,16 @@ async function handleAPI(req, res, url) {
       let dirty = noteFinished(t);          // record when it ended (starts the chat-lock clock)
       if (sweepPoolPublishes(t)) dirty = true;   // reveal any pool whose scheduled time has passed
       if (syncFafName(t, req)) dirty = true;     // they renamed on FAF since signing up
+      if (sweepPicks(t)) dirty = true;           // a pick clock ran out while nobody was looking
       if (dirty) saveDB();
       const view = publicView(t);
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
       const organizer = isAdmin(t, tok, req) || isOrganizer(t, req);
+      // The pick phase is viewer-specific (it has to say "your pick"), so it is attached here
+      // rather than in publicView. Absent entirely when the tournament does not pick opponents.
+      view.picks = PICKS.pickView(t, teamsIManage(t, req, tok));
+      if (view.picks) view.picks.forWhat = t.pickFor || 'main';
       const streamer = !organizer && isCaster(t, req);
       // Who organizes a tournament is visible to its organizers and site admins only.
       if (!organizer) delete view.createdByName;
@@ -3213,12 +3466,28 @@ async function handleAPI(req, res, url) {
       if (t.qualifiers.some(q => q.tournamentId === cid)) return bad(res, 'That qualifier is already linked');
       const type = b.ruleType === 'points' ? 'points' : 'top';
       const n = Math.max(1, parseInt(b.n, 10) || 1);
-      const link = { id: uid(8), tournamentId: cid, rule: { type, n }, applied: null, qualified: [], unreachable: [] };
+      // seedFrom (0 = off): pin the arrivals to a fixed block of seeds in this tournament.
+      const seedFrom = intIn(b.seedFrom, 0, 128, 0);
+      const link = { id: uid(8), tournamentId: cid, rule: { type, n }, seedFrom, applied: null, qualified: [], unreachable: [] };
       t.qualifiers.push(link);
       saveDB();
       tlog(t, req, b.admin, 'added "' + child.name + '" as a qualifier (' + (type === 'points' ? n + '+ points' : 'top ' + n) + ')');
       sweepQualifications();   // the child may already be finished
       return json(res, 200, { ok: true, id: link.id });
+    }
+
+    // Change a link's seed block without unlinking it (the invites already sent are kept).
+    if (sub === 'qualifier_seed') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const link = (t.qualifiers || []).find(q => q.id === String(b.id || ''));
+      if (!link) return bad(res, 'Qualifier link not found');
+      link.seedFrom = intIn(b.seedFrom, 0, 128, 0);
+      const child = db.tournaments[link.tournamentId];
+      tlog(t, req, b.admin, link.seedFrom
+        ? 'qualifiers from "' + ((child && child.name) || link.tournamentId) + '" will take seeds ' + link.seedFrom + ' and down'
+        : 'qualifiers from "' + ((child && child.name) || link.tournamentId) + '" are seeded normally');
+      saveDB();
+      return json(res, 200, { ok: true });
     }
 
     if (sub === 'qualifier_remove') {
@@ -3873,6 +4142,53 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // ===== opponent picking =====
+    // A picker acts for their own team; an organizer may act for anyone (someone is asleep, or
+    // asked in Discord). Every pick is logged with who actually made it.
+    if (sub === 'pick_opponent') {
+      const ph = PICKS.pickPhaseOf(t);
+      if (!ph) return bad(res, 'This tournament is not picking opponents');
+      if (sweepPicks(t)) saveDB();
+      if (ph.status !== 'open') return bad(res, 'Every opponent has already been chosen');
+      const turn = PICKS.currentPicker(t);
+      if (!turn) return bad(res, 'Every opponent has already been chosen');
+      const isOrg = canOrganize(t, req, b);
+      const mine = teamsIManage(t, req, b.admin);
+      if (!isOrg && mine.indexOf(turn) < 0) {
+        const tm = teamById(t, turn);
+        return json(res, 403, { error: 'It is ' + ((tm && tm.name) || 'another seed') + "'s pick right now" });
+      }
+      const target = String(b.teamId || '');
+      const free = PICKS.availableTargets(t);
+      if (free.indexOf(target) < 0) return bad(res, 'That opponent is not available to pick');
+      const who = actorOf(req, b.admin).name;
+      PICKS.recordPick(t, turn, target, who, false);
+      const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+      tlog(t, req, b.admin, 'picked ' + nm(target) + ' as the opponent for ' + nm(turn));
+      tpush(t, 'System', nm(turn) + ' chose ' + nm(target) + '.');
+      buildAfterPicks(t);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Undo the most recent pick (organizer only, and only while the phase is still open).
+    if (sub === 'undo_pick_opponent') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const ph = PICKS.pickPhaseOf(t);
+      if (!ph) return bad(res, 'This tournament is not picking opponents');
+      if (ph.applied) return bad(res, 'The bracket is already built from these picks');
+      const last = ph.log[ph.log.length - 1];
+      if (!last) return bad(res, 'No picks to undo');
+      delete ph.picks[last.by];
+      ph.log.pop();
+      ph.status = 'open'; ph.doneAt = null;
+      ph.turnStartedAt = ph.perPickMs ? now() : null;
+      const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+      tlog(t, req, b.admin, 'undid the pick of ' + nm(last.target) + ' by ' + nm(last.by));
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     // ===== divisions (King/Prince split) =====
     // Auto-split the CURRENT full teams into N divisions by combined rating (division 1 = strongest).
     if (sub === 'split_divisions') {
@@ -4275,6 +4591,8 @@ async function handleAPI(req, res, url) {
         if (b.bracketType !== undefined && ['single', 'double', 'swiss'].indexOf(b.bracketType) >= 0) t.bracketType = b.bracketType;
         // per-round Bo is only meaningful for elimination brackets, never swiss/ffa
         if (b.perRoundBo !== undefined) t.perRoundBo = (b.perRoundBo && t.bracketType !== 'swiss') ? 1 : 0;
+        if (b.pickOpponents !== undefined) t.pickOpponents = b.pickOpponents ? 1 : 0;
+        if (b.pickMinutes !== undefined) t.pickMinutes = intIn(b.pickMinutes, 0, 1440, t.pickMinutes || 0);
         const pb = b.plan || {};
         const op = (t.plan && typeof t.plan === 'object') ? t.plan : {};
         if (t.bracketType === 'single') {
@@ -4282,7 +4600,7 @@ async function handleAPI(req, res, url) {
         } else if (t.bracketType === 'double') {
           t.plan = { wb: bo(pb.wb, op.wb || 3), wbFinal: bo(pb.wbFinal, op.wbFinal || 3), lb: bo(pb.lb, op.lb || 3), lbFinal: bo(pb.lbFinal, op.lbFinal || 3), gf: bo(pb.gf, op.gf || 5), lbHandicap: pb.lbHandicap !== undefined ? (pb.lbHandicap ? 1 : 0) : (op.lbHandicap ? 1 : 0) };
         } else {
-          t.plan = { bo: pb.bo !== undefined ? ((parseInt(pb.bo, 10) === 1) ? 1 : 3) : (op.bo || 3), final: pb.final !== undefined ? (pb.final ? 1 : 0) : (op.final !== undefined ? op.final : 1), finalBo: bo(pb.finalBo, op.finalBo || 5), fast: pb.fast !== undefined ? (pb.fast ? 1 : 0) : (op.fast ? 1 : 0) };
+          t.plan = Object.assign({ bo: pb.bo !== undefined ? ((parseInt(pb.bo, 10) === 1) ? 1 : 3) : (op.bo || 3), final: pb.final !== undefined ? (pb.final ? 1 : 0) : (op.final !== undefined ? op.final : 1), finalBo: bo(pb.finalBo, op.finalBo || 5), fast: pb.fast !== undefined ? (pb.fast ? 1 : 0) : (op.fast ? 1 : 0) }, cleanSwissExtras(pb, op));
         }
         t.ffaCfg = null;
       } else {
@@ -4974,6 +5292,56 @@ async function handleAPI(req, res, url) {
         if (t.status !== 'signup') return bad(res, 'Teams already formed');
         const err = (t.formation === 'open') ? finalizeOpenTeams(t) : formTeamsGrouped(t);
         if (err) return bad(res, err);
+        // Seeds are set: move any qualifier arrivals into the seed block their link asked for.
+        // No-op unless a link actually set one, so normal seeding is untouched.
+        if (pinQualifierSeeds(t)) {
+          tpush(t, 'System', 'Qualifier arrivals were placed in their reserved seed block.');
+        }
+        saveDB();
+        return json(res, 200, { ok: true });
+      }
+
+      // Stop a running tournament and lock the standings where they are. This is what makes
+      // "run the qualifier until the top 4 is decided" possible: there is otherwise no way to
+      // end an event before its final has been played. No champion is set - nobody won it.
+      if (a === 'finish_early') {
+        if (t.status !== 'running') return bad(res, 'Only a running tournament can be stopped');
+        const live = (t.matches || []).filter(m => m.status === 'live');
+        if (live.length && !b.force) {
+          return bad(res, live.length + ' match(es) are still being played. Finish or cancel them first, or confirm to stop anyway.');
+        }
+        const sp = survivorSplit(t);
+        const alive = sp.wb.concat(sp.lb);
+        if (!alive.length) return bad(res, 'Nobody is still standing - there is nothing to lock in');
+        const who = actorOf(req, b.admin).name;
+        t.status = 'finished';
+        t.finishedAt = now();
+        t.earlyFinish = {
+          at: now(), by: who, alive: alive.length,
+          wb: sp.wb.slice(), lb: sp.lb.slice(),
+          names: alive.map(id => { const tm = teamById(t, id); return tm ? tm.name : id; })
+        };
+        const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+        tlog(t, req, b.admin, 'stopped the tournament early with ' + alive.length + ' still standing ('
+          + alive.map(nm).join(', ') + ')');
+        tpush(t, 'System', 'The organizer ended this tournament early. Standings are locked with '
+          + alive.length + ' still standing: ' + alive.map(nm).join(', ') + '.');
+        audit(req, 'finish_early', { tournamentId: t.id, tournamentName: t.name, detail: alive.length + ' still standing' });
+        saveDB();
+        sweepQualifications();   // a parent drawing from this one can now invite
+        return json(res, 200, { ok: true, alive: alive.length });
+      }
+
+      // Undo the above, as long as the qualification it triggered has not gone out yet.
+      if (a === 'undo_finish_early') {
+        if (!t.earlyFinish) return bad(res, 'This tournament was not stopped early');
+        const sent = Object.values(db.tournaments || {}).some(par =>
+          (par.qualifiers || []).some(q => q.tournamentId === t.id && q.applied));
+        if (sent && !b.force) return bad(res, 'Qualification invites have already gone out from this result. Reopening will not take them back - confirm to reopen anyway.');
+        t.status = 'running';
+        t.finishedAt = null;
+        delete t.earlyFinish;
+        tlog(t, req, b.admin, 'reopened the tournament after stopping it early');
         saveDB();
         return json(res, 200, { ok: true });
       }
@@ -4994,6 +5362,18 @@ async function handleAPI(req, res, url) {
           const divs = (t.divisions && t.divisions > 1) ? t.divisions : 0;
           const R = log2i(nextPow2(n));
           t.cfg = { rounds: cleanBoList(c.rounds, R) };
+          if (t.pickOpponents && !divs) {
+            // The field chooses round one before anything is built. Teams stay locked and the
+            // tournament stays 'drafted' until the last pick lands (see buildAfterPicks).
+            const field = t.teams.slice().sort((x, y) => x.seed - y.seed).map(x => x.id);
+            if (!PICKS.fullBracket(field.length)) return bad(res, PICK_FIELD_MSG(field.length));
+            PICKS.startPickPhase(t, field, { perPickMs: pickClockMs(t) });
+            t.pickFor = 'main';
+            tlog(t, req, b.admin, 'opened the opponent pick phase (' + Math.floor(field.length / 2) + ' seeds to pick)');
+            tpush(t, 'System', 'Seeds 1-' + Math.floor(field.length / 2) + ' now choose their round one opponent, in seed order.');
+            saveDB();
+            return json(res, 200, { ok: true, picking: 1 });
+          }
           if (divs) {
             // validate each division has >= 2 teams
             for (let d = 1; d <= divs; d++) {
@@ -5015,6 +5395,16 @@ async function handleAPI(req, res, url) {
             gf: BO_OK.indexOf(parseInt(c.gf, 10)) >= 0 ? parseInt(c.gf, 10) : 5,
             lbHandicap: c.lbHandicap ? 1 : 0
           };
+          if (t.pickOpponents && !divs) {
+            const field = t.teams.slice().sort((x, y) => x.seed - y.seed).map(x => x.id);
+            if (!PICKS.fullBracket(field.length)) return bad(res, PICK_FIELD_MSG(field.length));
+            PICKS.startPickPhase(t, field, { perPickMs: pickClockMs(t) });
+            t.pickFor = 'main';
+            tlog(t, req, b.admin, 'opened the opponent pick phase (' + Math.floor(field.length / 2) + ' seeds to pick)');
+            tpush(t, 'System', 'Seeds 1-' + Math.floor(field.length / 2) + ' now choose their round one opponent, in seed order.');
+            saveDB();
+            return json(res, 200, { ok: true, picking: 1 });
+          }
           if (divs) {
             for (let d = 1; d <= divs; d++) {
               const dn = t.teams.filter(x => (x.division || 0) === d).length;
@@ -5027,13 +5417,44 @@ async function handleAPI(req, res, url) {
           if (t.status !== 'finished') t.status = 'running';
         } else { // swiss
           const defR = Math.max(1, log2i(nextPow2(n)));
+          // Config sent with the start wins; the stored plan is the default. Both go through
+          // the same cleaner so the create form, the format panel and the start dialog agree.
+          const ex = cleanSwissExtras(c, t.plan || {});
+          // With record cuts the round count is derived, not chosen: the longest a team can
+          // last is (winCut-1) wins plus (lossCut-1) losses plus the game that decides it.
+          const cutRounds = swissCutRounds(ex.winCut, ex.lossCut);
           t.cfg = {
-            rounds: intIn(c.rounds, 1, 15, defR),
+            rounds: cutRounds || intIn(c.rounds, 1, 15, defR),
             bo: (parseInt(c.bo, 10) === 1) ? 1 : 3,
             final: c.final ? 1 : 0,
             finalBo: BO_OK.indexOf(parseInt(c.finalBo, 10)) >= 0 ? parseInt(c.finalBo, 10) : 5,
             fast: c.fast ? 1 : 0
           };
+          if (ex.winCut || ex.lossCut) {
+            if (n <= Math.max(ex.winCut, ex.lossCut)) {
+              return bad(res, 'A ' + ex.winCut + ' wins / ' + ex.lossCut + ' losses stage needs more than ' +
+                Math.max(ex.winCut, ex.lossCut) + ' teams (' + n + ' entered)');
+            }
+            t.cfg.winCut = ex.winCut; t.cfg.lossCut = ex.lossCut;
+            if (ex.decidingBo) t.cfg.decidingBo = ex.decidingBo;
+            // Two soft warnings rather than blocks: a TD may deliberately run an odd field.
+            // Measured behaviour: 16 teams at 3/3 never needs a rematch and always advances
+            // exactly 8; below 2^(cut+1) fresh opponents run out and the draw has to repeat one.
+            const comfy = Math.pow(2, Math.max(ex.winCut, ex.lossCut) + 1);
+            if (n < comfy) {
+              tpush(t, 'System', 'Heads up: ' + n + ' teams is a small field for ' + ex.winCut + ' wins / ' +
+                ex.lossCut + ' losses. Below ' + comfy + ' the draw can run out of fresh opponents and may have to repeat a pairing.');
+            }
+            if (nextPow2(n) !== n) {
+              tpush(t, 'System', 'Heads up: ' + n + ' is not a power of two, so some rounds need a bye. A bye is a free win, ' +
+                'which means the number of teams that reach ' + (ex.winCut || '-') + ' wins can vary.');
+            }
+          }
+          t.stage2 = buildStageTwo(Object.assign({}, ex, { pickPhase: t.pickOpponents ? 1 : 0 }), c);
+          if (t.stage2) {
+            if (t.stage2.cutTo >= n) return bad(res, 'The playoff cut (' + t.stage2.cutTo + ') must be smaller than the field (' + n + ')');
+            t.cfg.final = 0;   // the playoff bracket replaces the single swiss final
+          }
           swissPairRound(t, 1);
           t.status = 'running';
         }
@@ -5067,6 +5488,29 @@ async function handleAPI(req, res, url) {
         t.plan[key][idx] = boVal;
       }
       t.perRoundBo = 1;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Set the Bo on ONE match. The per-round control below is the bulk tool; this is the escape
+    // hatch for the single series a TD needs to lengthen or shorten on the day - a stream
+    // overrun, a deciding match that deserves more games, a Swiss pairing that has to be quick.
+    if (sub === 'set_match_bo') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const boVal = parseInt(b.bo, 10);
+      if (BO_OK.indexOf(boVal) < 0) return bad(res, 'Bo must be 1, 3, 5, or 7');
+      const m = matchById(t, b.matchId);
+      if (!m) return bad(res, 'Match not found');
+      if (m.bracket === 'ffa') return bad(res, 'FFA lobbies do not have a best-of');
+      if (m.status === 'done') return bad(res, 'That match is already played');
+      if (m.status === 'live' || (Array.isArray(m.games) && m.games.length)) {
+        return bad(res, 'That match is already under way - its length is locked');
+      }
+      if (m.bo === boVal) return json(res, 200, { ok: true });
+      m.bo = boVal;
+      // A longer series needs faction slots for the extra games (same reason as set_round_bo).
+      initFactionVeto(t, m);
+      tlog(t, req, b.admin, 'set ' + matchLabel(t, m) + ' to Bo' + boVal);
       saveDB();
       return json(res, 200, { ok: true });
     }

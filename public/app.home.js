@@ -250,6 +250,11 @@ async function renderHost() {
       </div>
       <div class="panel section">
         <h2>Host a <span class="h2-strong">Tournament</span></h2>
+        <div id="presetPanel" style="display:none">
+          <label>Format preset <span class="muted" style="font-weight:400">(optional)</span></label>
+          <select id="cPreset"><option value="">Set everything up myself</option></select>
+          <div id="presetInfo" class="infocell" style="display:none;margin:8px 0 4px"></div>
+        </div>
         <label>Tournament name</label>
         <input type="text" id="cName" maxlength="60" placeholder="e.g. EPIC 3v3 double elim">
         <label>Event date &amp; time (UTC) <span class="muted" style="font-weight:400">(optional)</span></label>
@@ -370,6 +375,47 @@ async function renderHost() {
             <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
               <input type="checkbox" id="pSwFast"> Fast pairing \u2014 next matchup starts as soon as two teams are free
             </label>
+
+            <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+              <input type="checkbox" id="pSwCuts"> Finish on record instead of a round count
+            </label>
+            <div id="swCutBox" style="display:none;padding:8px 0 0 22px">
+              <p class="muted small" style="margin:0 0 8px">Teams leave the stage the moment they hit either mark, so the stage ends when everyone is decided rather than after a fixed number of rounds. Used by the FAF Invitational and LotS.</p>
+              <div class="row" style="gap:10px">
+                <div style="flex:1"><div class="muted small">Wins to advance</div><input type="number" id="pSwWinCut" min="0" max="15" value="3"></div>
+                <div style="flex:1"><div class="muted small">Losses to eliminate</div><input type="number" id="pSwLossCut" min="0" max="15" value="3"></div>
+                <div style="flex:1"><div class="muted small">Deciding matches</div><select id="pSwDecBo"><option value="0">same as above</option><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              </div>
+              <p class="muted small" style="margin:8px 0 0">A deciding match is one where a win qualifies someone or a loss knocks them out. Everything else uses the normal match length.</p>
+              <p class="muted small" id="swCutHint" style="margin:6px 0 0"></p>
+            </div>
+
+            <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+              <input type="checkbox" id="pSwStage2"> Second stage: cut the qualifiers into a playoff bracket
+            </label>
+            <div id="swStage2Box" style="display:none;padding:8px 0 0 22px">
+              <p class="muted small" style="margin:0 0 8px">One tournament, two stages. The Swiss stage runs first, then the teams that came through are seeded into a bracket on the same page - no second event, no invites to accept.</p>
+              <div class="row" style="gap:10px">
+                <div style="flex:1"><div class="muted small">Teams through</div><input type="number" id="pSwS2Cut" min="2" max="64" value="8"></div>
+                <div style="flex:1"><div class="muted small">Bracket</div><select id="pSwS2Type"><option value="single" selected>Single elimination</option><option value="double">Double elimination</option></select></div>
+                <div style="flex:1"><div class="muted small">Playoff matches</div><select id="pSwS2Bo"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+                <div style="flex:1"><div class="muted small">Playoff final</div><select id="pSwS2Final"><option value="1">Bo1</option><option value="3">Bo3</option><option value="5" selected>Bo5</option><option value="7">Bo7</option></select></div>
+              </div>
+              <p class="muted small" style="margin:8px 0 0">The single top-2 final above is replaced by the bracket while this is on.</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="pickPhaseOpts">
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
+            <input type="checkbox" id="pPickPhase"> Let the top seeds choose their own opponent
+          </label>
+          <div id="pickPhaseBox" style="display:none;padding:8px 0 0 22px">
+            <p class="muted small" style="margin:0 0 8px">The top half of the seeds each pick who they play in round one, in seed order, instead of the bracket deciding. Needs a full bracket (4, 8, 16, 32...). For a two-stage tournament this runs on the playoff bracket.</p>
+            <div class="row" style="gap:10px;align-items:flex-end">
+              <div style="width:170px"><div class="muted small">Time limit per pick</div><input type="number" id="pPickMins" min="0" max="1440" value="0"></div>
+              <div class="muted small" style="flex:1;padding-bottom:8px">Minutes. 0 means no limit. When a pick runs out of time the standard bracket matchup is used, so one absent player cannot stall the event.</div>
+            </div>
           </div>
         </div>
 
@@ -502,6 +548,47 @@ async function renderHost() {
   const cutMode = document.getElementById('cFfaCutMode');
   const finalMode = document.getElementById('cFfaFinalMode');
 
+  // Swiss record cuts + stage 2: show the sub-panels only when asked for, and tell the
+  // organizer what the numbers they typed actually mean before they commit to them.
+  const syncSwissExtras = () => {
+    const box = document.getElementById('swCutBox');
+    const s2box = document.getElementById('swStage2Box');
+    if (!box || !s2box) return;
+    const cuts = document.getElementById('pSwCuts');
+    const st2 = document.getElementById('pSwStage2');
+    const on = !!(cuts && cuts.checked);
+    box.style.display = on ? '' : 'none';
+    s2box.style.display = (st2 && st2.checked) ? '' : 'none';
+    // a plain top-2 final and a playoff bracket are two answers to the same question
+    const finalRow = document.getElementById('pSwFinal');
+    if (finalRow) finalRow.disabled = !!(st2 && st2.checked);
+    const pickBox = document.getElementById('pickPhaseBox');
+    const pickCk = document.getElementById('pPickPhase');
+    if (pickBox && pickCk) pickBox.style.display = pickCk.checked ? '' : 'none';
+    const hint = document.getElementById('swCutHint');
+    if (hint && on) {
+      const w = parseInt(document.getElementById('pSwWinCut').value, 10) || 0;
+      const l = parseInt(document.getElementById('pSwLossCut').value, 10) || 0;
+      const rounds = (w && l) ? (w + l - 1) : (w || l);
+      const comfy = Math.pow(2, Math.max(w, l) + 1);
+      const bits = [];
+      if (rounds) bits.push('Longest anyone can play: ' + rounds + ' round' + (rounds === 1 ? '' : 's') + '.');
+      if (comfy) bits.push('Works cleanly from ' + comfy + ' teams up; below that the draw may have to repeat a pairing.');
+      hint.textContent = bits.join(' ');
+    }
+  };
+  ['pPickPhase'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.addEventListener('change', () => {
+      const box = document.getElementById('pickPhaseBox');
+      if (box) box.style.display = e.checked ? '' : 'none';
+    });
+  });
+  ['pSwCuts', 'pSwStage2', 'pSwWinCut', 'pSwLossCut'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) { e.addEventListener('change', syncSwissExtras); e.addEventListener('input', syncSwissExtras); }
+  });
+
   const syncPerMatch = () => {
     const es = parseInt(ffaSize.value, 10);
     const maxL = Math.max(2, Math.floor(16 / es));
@@ -522,6 +609,7 @@ async function renderHost() {
     document.getElementById('planSingle').style.display = cBracket.value === 'single' ? '' : 'none';
     document.getElementById('planDouble').style.display = cBracket.value === 'double' ? '' : 'none';
     document.getElementById('planSwiss').style.display = cBracket.value === 'swiss' ? '' : 'none';
+    syncSwissExtras();
     document.getElementById('ffaPointsOpts').style.display = ffaMode.value === 'points' ? '' : 'none';
     document.getElementById('ffaElimOpts').style.display = ffaMode.value === 'elim' ? '' : 'none';
     document.getElementById('cFfaCutTo').style.display = cutMode.value === '1' ? '' : 'none';
@@ -579,6 +667,74 @@ async function renderHost() {
   addStreamRow();
   document.getElementById('cStreamAdd').onclick = () => addStreamRow();
 
+  // Format presets (LotS, Invitational). The server decides who may USE one - the picker only
+  // reflects that decision, and the restricted entries are shown greyed rather than hidden so a
+  // community organizer can see the format exists and why they cannot pick it.
+  let _presets = [];
+  (async () => {
+    let r;
+    try { r = await api('/api/presets'); } catch (e) { return; }
+    _presets = (r && r.presets) || [];
+    if (!_presets.length) return;
+    const sel = document.getElementById('cPreset');
+    const panel = document.getElementById('presetPanel');
+    if (!sel || !panel) return;
+    for (const p of _presets) {
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.name + (p.allowed ? '' : ' \u2014 tournament directors only');
+      o.disabled = !p.allowed;
+      sel.appendChild(o);
+    }
+    panel.style.display = '';
+    sel.onchange = () => applyPreset(sel.value);
+  })();
+
+  function applyPreset(id) {
+    const info = document.getElementById('presetInfo');
+    const p = _presets.find(x => x.id === id);
+    if (!p) { if (info) info.style.display = 'none'; return; }
+    if (!p.allowed || !p.apply) {
+      if (info) {
+        info.style.display = '';
+        info.innerHTML = '<div class="mono small muted">RESTRICTED</div><div>' + esc(p.name)
+          + ' can only be hosted by a global tournament director.</div>';
+      }
+      return;
+    }
+    const a = p.apply;
+    const setv = (elId, v) => { const e = document.getElementById(elId); if (e != null && v != null) e.value = String(v); };
+    const setc = (elId, v) => { const e = document.getElementById(elId); if (e) e.checked = !!v; };
+    if (a.competition && comp) comp.value = a.competition;
+    if (a.teamSize && size) size.value = String(a.teamSize);
+    if (a.bracketType && cBracket) cBracket.value = a.bracketType;
+    setv('cSeed', a.seeding); setv('cRatingType', a.ratingType);
+    setv('cMaxTeams', a.maxTeams); setv('cSignupMode', a.signupMode);
+    if (a.playerReporting !== undefined) setc('cPlayerReporting', a.playerReporting);
+    // an official-only preset picks the category for you, and says so below
+    setv('cCategory', 'official');
+    const pl = a.plan || {};
+    setv('pSwBo', pl.bo); setc('pSwFinal', pl.final); setv('pSwFinalBo', pl.finalBo); setc('pSwFast', pl.fast);
+    setc('pSwCuts', pl.winCut || pl.lossCut);
+    setv('pSwWinCut', pl.winCut || 3); setv('pSwLossCut', pl.lossCut || 3); setv('pSwDecBo', pl.decidingBo || 0);
+    setc('pSwStage2', pl.stage2);
+    setv('pSwS2Cut', pl.s2CutTo || 8); setv('pSwS2Type', pl.s2Type || 'single');
+    setv('pSwS2Bo', pl.s2Bo || 3); setv('pSwS2Final', pl.s2Final || 5);
+    setc('pPickPhase', a.pickPhase); setv('pPickMins', a.pickMinutes || 0);
+    if (info) {
+      info.style.display = '';
+      info.innerHTML = '<div class="mono small muted">' + esc(p.name.toUpperCase()) + '</div>'
+        + '<div style="margin:4px 0 0">' + esc(p.blurb) + '</div>'
+        + (p.notes && p.notes.length
+            ? '<ul class="muted small" style="margin:8px 0 0;padding-left:18px">'
+              + p.notes.map(n => '<li style="margin:3px 0">' + esc(n) + '</li>').join('') + '</ul>'
+            : '')
+        + '<div class="muted small" style="margin:8px 0 0">Everything below is pre-filled and still editable \u2014 the preset is a starting point, not a lock.</div>';
+    }
+    syncVis();
+    syncSwissExtras();
+  }
+
   // Copy-from: list the tournaments this account organizes, then pre-fill on demand.
   const copySel = document.getElementById('cCopyFrom');
   (async () => {
@@ -635,11 +791,19 @@ async function renderHost() {
     else { if (size) size.value = t.teamSize; if (formation) formation.value = t.formation || 'draft'; if (cBracket) cBracket.value = t.bracketType || 'single'; }
     setv('cDraftOrder', t.draftOrder || 'linear');
     setv('cSeed', t.seeding || '');
+    setc('pPickPhase', t.pickOpponents); setv('pPickMins', t.pickMinutes || 0);
     // plan / Bo
     const pl = t.plan || {};
     if (t.bracketType === 'single') { setv('pEarly', pl.early); setv('pSemi', pl.semi); setv('pFinal', pl.final); }
     else if (t.bracketType === 'double') { setv('pWb', pl.wb); setv('pWbFinal', pl.wbFinal); setv('pLb', pl.lb); setv('pLbFinal', pl.lbFinal); setv('pGf', pl.gf); setc('pHcap', pl.lbHandicap); }
-    else if (t.bracketType === 'swiss') { setv('pSwBo', pl.bo); setc('pSwFinal', pl.final); setv('pSwFinalBo', pl.finalBo); setc('pSwFast', pl.fast); }
+    else if (t.bracketType === 'swiss') {
+      setv('pSwBo', pl.bo); setc('pSwFinal', pl.final); setv('pSwFinalBo', pl.finalBo); setc('pSwFast', pl.fast);
+      setc('pSwCuts', pl.winCut || pl.lossCut); setv('pSwWinCut', pl.winCut || 3); setv('pSwLossCut', pl.lossCut || 3);
+      setv('pSwDecBo', pl.decidingBo || 0);
+      setc('pSwStage2', pl.stage2); setv('pSwS2Cut', pl.s2CutTo || 8); setv('pSwS2Type', pl.s2Type || 'single');
+      setv('pSwS2Bo', pl.s2Bo || 3); setv('pSwS2Final', pl.s2Final || 5);
+      syncSwissExtras();
+    }
     if (t.competition === 'ffa' && t.ffa) {
       setv('cAdvance', t.ffa.advance); setv('cFfaRounds', t.ffa.rounds);
       if (perMatch) perMatch.value = t.ffa.perMatch; if (ffaMode) ffaMode.value = t.ffa.mode || 'elim';
@@ -671,6 +835,8 @@ async function renderHost() {
   }
 
   document.getElementById('cGo').onclick = async () => {
+    const presetSel = document.getElementById('cPreset');
+    const presetId = presetSel ? presetSel.value : '';
     const name = document.getElementById('cName').value.trim();
     if (!name) return toast('Give the tournament a name', true);
     const category = document.getElementById('cCategory').value;
@@ -680,10 +846,22 @@ async function renderHost() {
     let plan = {};
     if (bt === 'single') plan = { early: pv('pEarly'), semi: pv('pSemi'), final: pv('pFinal') };
     else if (bt === 'double') plan = { wb: pv('pWb'), wbFinal: pv('pWbFinal'), lb: pv('pLb'), lbFinal: pv('pLbFinal'), gf: pv('pGf'), lbHandicap: document.getElementById('pHcap').checked };
-    else plan = { bo: pv('pSwBo'), final: document.getElementById('pSwFinal').checked, finalBo: pv('pSwFinalBo'), fast: document.getElementById('pSwFast').checked };
+    else {
+      const ck = id => { const e = document.getElementById(id); return !!(e && e.checked); };
+      plan = { bo: pv('pSwBo'), final: ck('pSwFinal'), finalBo: pv('pSwFinalBo'), fast: ck('pSwFast') };
+      if (ck('pSwCuts')) { plan.winCut = pv('pSwWinCut'); plan.lossCut = pv('pSwLossCut'); plan.decidingBo = pv('pSwDecBo'); }
+      if (ck('pSwStage2')) {
+        plan.stage2 = 1; plan.s2CutTo = pv('pSwS2Cut'); plan.s2Type = document.getElementById('pSwS2Type').value;
+        plan.s2Bo = pv('pSwS2Bo'); plan.s2Final = pv('pSwS2Final'); plan.s2Gf = pv('pSwS2Final');
+      }
+    }
     try {
+      const pickOn = (document.getElementById('pPickPhase') || {}).checked ? 1 : 0;
       const r = await api('/api/tournaments', {
         name,
+        presetId: presetId || '',
+        pickOpponents: pickOn,
+        pickMinutes: pickOn ? pv('pPickMins') : 0,
         description: document.getElementById('cDesc').value,
         category,
         seriesId: (document.getElementById('cSeries') || {}).value || '',
@@ -917,6 +1095,18 @@ function myTurnInfo() {
     if (capT && (capT.joinRequests || []).length) {
       const n = capT.joinRequests.length;
       return { text: n + ' player' + (n === 1 ? '' : 's') + ' want to join your team — accept or decline.', tab: 'teams', cta: 'Review requests' };
+    }
+  }
+  // 0a. your opponent pick. This outranks almost everything: the whole bracket is waiting on it.
+  if (T.picks && T.picks.status === 'open') {
+    if (T.picks.myTurn) {
+      const left = T.picks.msLeft;
+      const clock = left != null ? ' You have ' + Math.max(1, Math.round(left / 60000)) + ' minute(s) left.' : '';
+      return { text: 'Choose your opponent \u2014 it is your pick.' + clock, tab: 'bracket', cta: 'Pick opponent' };
+    }
+    if (viewerIsOrganizer()) {
+      const nm = (T.teams || []).find(x => x.id === T.picks.turn);
+      return { text: 'Waiting on ' + ((nm && nm.name) || 'a seed') + ' to choose their opponent.', tab: 'bracket', cta: 'View picks' };
     }
   }
   // 1. captain's draft pick

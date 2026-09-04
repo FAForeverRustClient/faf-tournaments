@@ -693,8 +693,69 @@ function typeLine(t) {
     return 'FFA ' + md + ' (' + sz + ', ' + t.ffaCfg.perMatch + ' per lobby)' + (t.maxTeams ? ' · max ' + t.maxTeams : '');
   }
   const bt = { single: 'single elim', double: 'double elim', swiss: 'swiss' }[t.bracketType];
+  const swissTail = (t.bracketType === 'swiss' && stageTwoOn(t))
+    ? ' \u2192 ' + (t.stage2.type === 'double' ? 'double' : 'single') + '-elim playoffs' : '';
   const form = t.teamSize === 1 ? '1v1' : t.teamSize + 'v' + t.teamSize + ' · ' + (t.formation === 'draft' ? 'captains draft' : t.formation === 'open' ? 'open teams' : 'premade');
-  return form + ' · ' + bt + (t.maxTeams ? ' · max ' + t.maxTeams + ' teams' : '');
+  // A tournament created from a named preset says so: it is the format's identity, and only a
+  // global tournament director can have made it.
+  const head = t.presetName ? t.presetName + ' · ' : '';
+  return head + form + ' · ' + bt + swissTail + (t.maxTeams ? ' · max ' + t.maxTeams + ' teams' : '');
+}
+
+// ---- Swiss record cuts + stage 2 (the LotS / Invitational format) ----
+// Every helper here answers "off" for a tournament that did not configure them, so a normal
+// Swiss or elimination event renders exactly as it did before any of this existed.
+function swissCutCfg(t) {
+  const tt = (t || T) || {};
+  // The live cfg is the truth once the bracket exists; before that the plan is all there is,
+  // and the format summary has to be able to describe a tournament that has not started.
+  const c = (tt.cfg && (tt.cfg.winCut || tt.cfg.lossCut)) ? tt.cfg : (tt.cfg || tt.plan || {});
+  const src = (c.winCut || c.lossCut) ? c : (tt.plan || {});
+  const win = parseInt(src.winCut, 10) || 0;
+  const loss = parseInt(src.lossCut, 10) || 0;
+  return { on: !!(win || loss), win: win, loss: loss, decidingBo: parseInt(src.decidingBo, 10) || 0 };
+}
+function swissCutLabel(t) {
+  const c = swissCutCfg(t);
+  if (!c.on) return '';
+  const bits = [];
+  if (c.win) bits.push(c.win + ' win' + (c.win === 1 ? '' : 's') + ' advances');
+  if (c.loss) bits.push(c.loss + ' loss' + (c.loss === 1 ? '' : 'es') + ' eliminates');
+  return bits.join(', ');
+}
+function stageTwoCfgOf(t) { const s = ((t || T) || {}).stage2; return (s && s.cutTo) ? s : null; }
+function stageTwoOn(t) { return !!stageTwoCfgOf(t); }
+function stageTwoLive(t) { const s = stageTwoCfgOf(t); return !!(s && s.built); }
+
+// One client-side Swiss table, used by the standings tab and by any badge that needs a
+// team's state. Mirrors lib/swiss.js swissRecord.
+function swissTable(t) {
+  t = t || T;
+  const cuts = swissCutCfg(t);
+  const S = {};
+  for (const team of (t.teams || [])) S[team.id] = { id: team.id, w: 0, l: 0, gd: 0, byes: 0, played: 0, state: 'active' };
+  for (const m of (t.matches || [])) {
+    if (m.bracket !== 'sw') continue;
+    if (m.status === 'bye') {
+      const id = m.team1 !== 'BYE' ? m.team1 : m.team2;
+      if (S[id]) { S[id].w++; S[id].gd += 1; S[id].byes++; S[id].played++; }
+    } else if (m.status === 'done') {
+      const ws = m.winner === m.team1 ? m.score1 : m.score2;
+      const ls = m.winner === m.team1 ? m.score2 : m.score1;
+      if (S[m.winner]) { S[m.winner].w++; S[m.winner].gd += ws - ls; S[m.winner].played++; }
+      if (S[m.loser]) { S[m.loser].l++; S[m.loser].gd -= ws - ls; S[m.loser].played++; }
+    }
+  }
+  const quota = (t.cfg && t.cfg.rounds) || 0;
+  for (const id of Object.keys(S)) {
+    const r = S[id];
+    if (cuts.on) {
+      if (cuts.win && r.w >= cuts.win) r.state = 'advanced';
+      else if (cuts.loss && r.l >= cuts.loss) r.state = 'eliminated';
+      else if (quota && r.played >= quota) r.state = 'done';
+    } else if (quota && r.played >= quota) r.state = 'done';
+  }
+  return Object.values(S).sort((a, b) => b.w - a.w || b.gd - a.gd || teamSeed(a.id) - teamSeed(b.id));
 }
 
 function planSummary(t) {
@@ -735,7 +796,21 @@ function planSummary(t) {
   }
   if (t.bracketType === 'single') return 'Bo' + p.early + ' rounds · Bo' + p.semi + ' semifinal · Bo' + p.final + ' final';
   if (t.bracketType === 'double') return 'Winners bracket Bo' + p.wb + ' (final Bo' + p.wbFinal + ') · losers bracket Bo' + p.lb + ' (final Bo' + p.lbFinal + ') · grand final Bo' + p.gf + (p.lbHandicap ? ' (upper finalist starts 1-0 up)' : '');
-  return 'Bo' + p.bo + ' matches' + (p.final ? ' · Bo' + p.finalBo + ' final between the top 2' : ' · highest standing wins') + (p.fast ? ' · fast pairing' : '');
+  const cutTxt = swissCutLabel(t);
+  const parts = ['Bo' + p.bo + ' matches'];
+  if (cutTxt) {
+    parts.push(cutTxt);
+    if (p.decidingBo) parts.push('Bo' + p.decidingBo + ' when a win qualifies or a loss eliminates');
+  }
+  if (p.stage2) {
+    parts.push('top ' + (p.s2CutTo || 8) + ' go to a ' + (p.s2Type === 'double' ? 'double' : 'single') + '-elimination playoff bracket');
+  } else if (p.final) {
+    parts.push('Bo' + p.finalBo + ' final between the top 2');
+  } else if (!cutTxt) {
+    parts.push('highest standing wins');
+  }
+  if (p.fast && !cutTxt) parts.push('fast pairing');
+  return parts.join(' \u00b7 ');
 }
 
 function modal(html, onMount, opts) {

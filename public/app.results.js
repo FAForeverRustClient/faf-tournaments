@@ -307,25 +307,30 @@ function drawStandings(el) {
   }
 
   if (T.bracketType === 'swiss' && T.competition === 'team') {
-    // recompute swiss table client-side
-    const S = {};
-    for (const team of T.teams) S[team.id] = { id: team.id, w: 0, l: 0, gd: 0 };
-    for (const m of T.matches) {
-      if (m.bracket !== 'sw') continue;
-      if (m.status === 'bye') { const id = m.team1 !== 'BYE' ? m.team1 : m.team2; if (S[id]) { S[id].w++; S[id].gd += 1; } }
-      else if (m.status === 'done') {
-        const ws = m.winner === m.team1 ? m.score1 : m.score2;
-        const ls = m.winner === m.team1 ? m.score2 : m.score1;
-        if (S[m.winner]) { S[m.winner].w++; S[m.winner].gd += ws - ls; }
-        if (S[m.loser]) { S[m.loser].l++; S[m.loser].gd -= ws - ls; }
-      }
-    }
-    const rows = Object.values(S).sort((a, b) => b.w - a.w || b.gd - a.gd || teamSeed(a.id) - teamSeed(b.id));
+    const rows = swissTable(T);
+    const cuts = swissCutCfg(T);
+    const s2 = stageTwoCfgOf(T);
+    // With record cuts the table has to say what a row's record MEANS, not just show it:
+    // "2-1" is only readable if you also know that 3 wins is the finish line.
+    const stateCell = r => {
+      if (!cuts.on) return '';
+      if (r.state === 'advanced') return '<td><span class="pill live">Qualified</span></td>';
+      if (r.state === 'eliminated') return '<td><span class="pill">Eliminated</span></td>';
+      const need = [];
+      if (cuts.win) need.push((cuts.win - r.w) + ' more win' + (cuts.win - r.w === 1 ? '' : 's'));
+      if (cuts.loss) need.push((cuts.loss - r.l) + ' loss' + (cuts.loss - r.l === 1 ? '' : 'es') + ' left');
+      return '<td class="muted small">' + esc(need.join(' \u00b7 ')) + '</td>';
+    };
+    const head = cuts.on ? '<th>Status</th>' : '';
+    const note = [];
+    if (cuts.on) note.push(swissCutLabel(T));
+    if (s2) note.push('top ' + s2.cutTo + ' go through to the playoff bracket');
     el.innerHTML = `<div class="panel section"><h2>Swiss <span class="h2-strong">Standings</span></h2>
-      <table><thead><tr><th>#</th><th>Team</th><th>W</th><th>L</th><th>Game diff</th></tr></thead><tbody>
-      ${rows.map((r, i) => `<tr class="${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
+      ${note.length ? `<p class="muted small" style="margin:-4px 0 10px">${esc(note.join(' \u00b7 '))}</p>` : ''}
+      <table><thead><tr><th>#</th><th>Team</th><th>W</th><th>L</th><th>Game diff</th>${head}</tr></thead><tbody>
+      ${rows.map((r, i) => `<tr class="${r.state === 'eliminated' ? 'row-out' : ''} ${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
         <td class="mono">${i + 1}</td><td>${esc(teamName(r.id))}${T.championTeamId === r.id ? ' 🏆' : ''}</td>
-        <td class="mono">${r.w}</td><td class="mono">${r.l}</td><td class="mono">${r.gd > 0 ? '+' : ''}${r.gd}</td></tr>`).join('')}
+        <td class="mono">${r.w}</td><td class="mono">${r.l}</td><td class="mono">${r.gd > 0 ? '+' : ''}${r.gd}</td>${stateCell(r)}</tr>`).join('')}
       </tbody></table></div>`;
     return;
   }
@@ -455,6 +460,11 @@ async function drawAdmin(el) {
                 \u00b7 ${q.applied ? 'applied \u2014 ' + (q.qualified || []).length + ' qualified' : (q.status === 'finished' ? 'pending' : 'waiting for it to finish')}</div>
               ${(q.qualified || []).length ? '<div class="muted small">Qualified: ' + esc(q.qualified.join(', ')) + '</div>' : ''}
               ${(q.unreachable || []).length ? '<div class="warn small">No FAF account \u2014 invite manually: ' + esc(q.unreachable.join(', ')) + '</div>' : ''}
+              <div class="muted small" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                Seed block:
+                <input type="number" class="ql-seed" data-qlseed="${esc(q.id)}" min="0" max="128" value="${q.seedFrom || 0}" style="width:70px;margin:0">
+                <span>${q.seedFrom ? 'arrivals take seeds ' + q.seedFrom + ' and down, in the order they qualified' : '0 = seed them normally with everyone else'}</span>
+              </div>
             </div>
             <button class="btn ghost small" data-qlrm="${esc(q.id)}">Remove</button>
           </div>`).join('') + '</div>' : ''}
@@ -466,6 +476,7 @@ async function drawAdmin(el) {
           </div>
           <div style="width:150px"><label>Rule</label><select id="qlType"><option value="top">Top N advance</option><option value="points">N+ points</option></select></div>
           <div style="width:74px"><label>N</label><input type="number" id="qlN" min="1" max="128" value="4"></div>
+          <div style="width:96px"><label>Seed from</label><input type="number" id="qlSeedFrom" min="0" max="128" value="0"></div>
           <button class="btn ghost" id="qlAdd">Add</button>
         </div>
       </div>
@@ -567,6 +578,45 @@ async function drawAdmin(el) {
           <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
             <input type="checkbox" id="af_swfast"${p.fast ? ' checked' : ''}> Fast pairing \u2014 next matchup starts as soon as two teams are free
           </label>
+
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+            <input type="checkbox" id="af_swcuts"${(p.winCut || p.lossCut) ? ' checked' : ''}> Finish on record instead of a round count
+          </label>
+          <div id="af_swCutBox" style="display:${(p.winCut || p.lossCut) ? 'block' : 'none'};padding:8px 0 0 22px">
+            <p class="muted small" style="margin:0 0 8px">Teams leave the stage the moment they hit either mark. The stage ends when everyone is decided.</p>
+            <div class="row" style="gap:10px">
+              <div style="flex:1"><div class="muted small">Wins to advance</div><input type="number" id="af_swwin" min="0" max="15" value="${p.winCut || 3}"></div>
+              <div style="flex:1"><div class="muted small">Losses to eliminate</div><input type="number" id="af_swloss" min="0" max="15" value="${p.lossCut || 3}"></div>
+              <div style="flex:1"><div class="muted small">Deciding matches</div><select id="af_swdec"><option value="0"${!p.decidingBo ? ' selected' : ''}>same as above</option>${[1, 3, 5, 7].map(v => '<option value="' + v + '"' + (p.decidingBo === v ? ' selected' : '') + '>Bo' + v + '</option>').join('')}</select></div>
+            </div>
+            <p class="muted small" style="margin:8px 0 0">A deciding match is one where a win qualifies someone or a loss knocks them out.</p>
+          </div>
+
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+            <input type="checkbox" id="af_sw2"${p.stage2 ? ' checked' : ''}> Second stage: cut the qualifiers into a playoff bracket
+          </label>
+          <div id="af_sw2Box" style="display:${p.stage2 ? 'block' : 'none'};padding:8px 0 0 22px">
+            <p class="muted small" style="margin:0 0 8px">One tournament, two stages: the Swiss stage runs first, then the teams that came through are seeded into a bracket on the same page.</p>
+            <div class="row" style="gap:10px">
+              <div style="flex:1"><div class="muted small">Teams through</div><input type="number" id="af_sw2cut" min="2" max="64" value="${p.s2CutTo || 8}"></div>
+              <div style="flex:1"><div class="muted small">Bracket</div><select id="af_sw2type"><option value="single"${p.s2Type !== 'double' ? ' selected' : ''}>Single elimination</option><option value="double"${p.s2Type === 'double' ? ' selected' : ''}>Double elimination</option></select></div>
+              <div style="flex:1"><div class="muted small">Playoff matches</div>${boSel('af_sw2bo', p.s2Bo || 3)}</div>
+              <div style="flex:1"><div class="muted small">Playoff final</div>${boSel('af_sw2final', p.s2Final || 5)}</div>
+            </div>
+            <p class="muted small" style="margin:8px 0 0">The single top-2 final above is replaced by the bracket while this is on.</p>
+          </div>
+        </div>
+      </div>
+      <div id="af_pickPhase">
+        <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
+          <input type="checkbox" id="af_pick"${T.pickOpponents ? ' checked' : ''}> Let the top seeds choose their own opponent
+        </label>
+        <div id="af_pickBox" style="display:${T.pickOpponents ? 'block' : 'none'};padding:8px 0 0 22px">
+          <p class="muted small" style="margin:0 0 8px">The top half of the seeds each pick who they play in round one, in seed order. Needs a full bracket (4, 8, 16, 32...). On a two-stage tournament this runs on the playoff bracket.</p>
+          <div class="row" style="gap:10px;align-items:flex-end">
+            <div style="width:170px"><div class="muted small">Time limit per pick</div><input type="number" id="af_pickMins" min="0" max="1440" value="${T.pickMinutes || 0}"></div>
+            <div class="muted small" style="flex:1;padding-bottom:8px">Minutes. 0 means no limit. A pick that runs out of time gets the standard bracket matchup.</div>
+          </div>
         </div>
       </div>
       <div id="af_ffa" style="display:none">
@@ -823,6 +873,28 @@ async function drawAdmin(el) {
       </div></div>`;
   }
 
+  // Stop a running tournament where it stands. This is the qualifier control: a LotS qualifier
+  // runs until the top 4 is settled, not until a champion exists.
+  if (T.status === 'running' && T.competition !== 'ffa' && T.survivors) {
+    const wb = T.survivors.wb || [], lb = T.survivors.lb || [];
+    const alive = wb.length + lb.length;
+    const nm = id => { const tm = (T.teams || []).find(x => x.id === id); return tm ? tm.name : id; };
+    const split = T.bracketType === 'double'
+      ? `<div class="muted small" style="margin:6px 0 0">Winners bracket: ${wb.length ? esc(wb.map(nm).join(', ')) : 'nobody'}<br>Losers bracket: ${lb.length ? esc(lb.map(nm).join(', ')) : 'nobody'}</div>`
+      : `<div class="muted small" style="margin:6px 0 0">${esc(wb.map(nm).join(', ')) || 'nobody'}</div>`;
+    html += `<div class="panel section"><h2>End <span class="h2-strong">early</span></h2>
+      <p class="muted small" style="margin:6px 0 10px">Locks the standings exactly as they are and marks the tournament finished, without playing out the remaining matches. Nobody is crowned champion. Use this when the tournament exists to decide who qualifies, not who wins - any parent tournament drawing from this one will invite from the locked standings.</p>
+      <div class="infocell"><div class="mono small muted">STILL STANDING (${alive})</div>${split}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn danger" id="finishEarlyBtn">End here and lock standings</button>
+      </div></div>`;
+  }
+  if (T.earlyFinish) {
+    html += `<div class="panel section"><h2>Ended <span class="h2-strong">early</span></h2>
+      <p class="muted small" style="margin:6px 0 10px">Stopped by ${esc(T.earlyFinish.by || 'an organizer')} with ${T.earlyFinish.alive} still standing: ${esc((T.earlyFinish.names || []).join(', '))}.</p>
+      <button class="btn ghost" id="undoFinishEarlyBtn">Reopen the tournament</button></div>`;
+  }
+
   html += `<div class="panel section" style="border-color:var(--danger,#e5484d)"><h2>Archive / Abandon</h2>
     <p class="muted small" style="margin:6px 0 10px"><strong>Archive</strong> hides this tournament from everyone (reversible by a site admin). <strong>Abandoned</strong> keeps it visible under Completed with a red ABANDONED badge — the honest label when it never actually happened, e.g. too few signups. Abandoning is reversible here.</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -943,6 +1015,7 @@ async function drawAdmin(el) {
             tournamentId: chosen.id,
             ruleType: document.getElementById('qlType').value,
             n: document.getElementById('qlN').value,
+            seedFrom: document.getElementById('qlSeedFrom').value,
             admin: adminToken()
           });
           _qlPanelOpen = true;
@@ -950,6 +1023,13 @@ async function drawAdmin(el) {
         } catch (e) { toast(e.message, true); }
       };
     }
+    el.querySelectorAll('[data-qlseed]').forEach(inp => inp.onchange = async () => {
+      try {
+        await api('/api/t/' + T.id + '/qualifier_seed', { id: inp.dataset.qlseed, seedFrom: inp.value, admin: adminToken() });
+        toast(parseInt(inp.value, 10) > 0 ? 'Seed block set' : 'Seed block cleared');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    });
     el.querySelectorAll('[data-qlrm]').forEach(b => b.onclick = async () => {
       if (!confirm('Remove this qualifier link? Invites already sent are kept.')) return;
       try { await api('/api/t/' + T.id + '/qualifier_remove', { id: b.dataset.qlrm, admin: adminToken() }); toast('Removed'); await refresh(); }
@@ -1024,6 +1104,35 @@ async function drawAdmin(el) {
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });
+
+  const feBtn = document.getElementById('finishEarlyBtn');
+  if (feBtn) feBtn.onclick = async () => {
+    const wb = (T.survivors && T.survivors.wb) || [], lb = (T.survivors && T.survivors.lb) || [];
+    const alive = wb.length + lb.length;
+    if (!confirm('End "' + T.name + '" now and lock the standings with ' + alive + ' still standing?\n\nNo champion will be recorded. Any tournament that draws qualifiers from this one will invite them straight away.')) return;
+    const send = async force => api('/api/t/' + T.id + '/phase', { action: 'finish_early', force: force ? 1 : 0, admin: adminToken() });
+    try { await send(false); }
+    catch (e) {
+      // the only soft refusal is "matches are still live" - offer to override rather than fail
+      if (!/still being played/i.test(e.message)) return toast(e.message, true);
+      if (!confirm(e.message + '\n\nStop anyway?')) return;
+      try { await send(true); } catch (e2) { return toast(e2.message, true); }
+    }
+    toast('Standings locked');
+    await refresh();
+  };
+  const ufeBtn = document.getElementById('undoFinishEarlyBtn');
+  if (ufeBtn) ufeBtn.onclick = async () => {
+    const send = async force => api('/api/t/' + T.id + '/phase', { action: 'undo_finish_early', force: force ? 1 : 0, admin: adminToken() });
+    try { await send(false); }
+    catch (e) {
+      if (!/already gone out/i.test(e.message)) return toast(e.message, true);
+      if (!confirm(e.message + '\n\nReopen anyway?')) return;
+      try { await send(true); } catch (e2) { return toast(e2.message, true); }
+    }
+    toast('Tournament reopened');
+    await refresh();
+  };
 
   const abandonBtn = document.getElementById('abandonBtn');
   if (abandonBtn) abandonBtn.onclick = async () => {
@@ -1326,13 +1435,19 @@ async function drawAdmin(el) {
       g('af_pSingle').style.display = (bt === 'single' && !perRound) ? '' : 'none';
       g('af_pDouble').style.display = (bt === 'double' && !perRound) ? '' : 'none';
       g('af_pSwiss').style.display = bt === 'swiss' ? '' : 'none';
+      if (g('af_swCutBox')) g('af_swCutBox').style.display = (g('af_swcuts') && g('af_swcuts').checked) ? 'block' : 'none';
+      if (g('af_sw2Box')) g('af_sw2Box').style.display = (g('af_sw2') && g('af_sw2').checked) ? 'block' : 'none';
+      if (g('af_swfinal')) g('af_swfinal').disabled = !!(g('af_sw2') && g('af_sw2').checked);
+      if (g('af_pickBox')) g('af_pickBox').style.display = (g('af_pick') && g('af_pick').checked) ? 'block' : 'none';
+      // picking is a bracket concept; FFA has no round-one pairing to choose
+      if (g('af_pickPhase')) g('af_pickPhase').style.display = isFfa ? 'none' : '';
       g('af_fpoints').style.display = g('af_fmode').value === 'points' ? '' : 'none';
       g('af_felim').style.display = g('af_fmode').value === 'elim' ? '' : 'none';
       g('af_fcutto').style.display = g('af_fcutmode').value === '1' ? '' : 'none';
       g('af_ffinalsize').style.display = g('af_ffinalmode').value === '1' ? '' : 'none';
       syncPm();
     };
-    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode', 'af_perRound']) { const e = g(id); if (e) e.onchange = sync; }
+    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode', 'af_perRound', 'af_swcuts', 'af_sw2', 'af_pick']) { const e = g(id); if (e) e.onchange = sync; }
     sync();
 
     g('af_save').onclick = async () => {
@@ -1347,11 +1462,29 @@ async function drawAdmin(el) {
         body.seeding = g('af_seed').value;
       }
       if (!isFfa) {
+        const pickOn = g('af_pick') && g('af_pick').checked;
+        body.pickOpponents = pickOn ? 1 : 0;
+        body.pickMinutes = pickOn ? g('af_pickMins').value : 0;
         body.bracketType = g('af_bt').value;
         body.perRoundBo = (g('af_perRound') && g('af_perRound').checked) ? 1 : 0;
         if (g('af_bt').value === 'single') body.plan = { early: g('af_early').value, semi: g('af_semi').value, final: g('af_final').value };
         else if (g('af_bt').value === 'double') body.plan = { wb: g('af_wb').value, wbFinal: g('af_wbf').value, lb: g('af_lb').value, lbFinal: g('af_lbf').value, gf: g('af_gf').value, lbHandicap: g('af_hcap').checked };
-        else body.plan = { bo: g('af_swbo').value, final: g('af_swfinal').checked, finalBo: g('af_swfbo').value, fast: g('af_swfast').checked };
+        else {
+          body.plan = { bo: g('af_swbo').value, final: g('af_swfinal').checked, finalBo: g('af_swfbo').value, fast: g('af_swfast').checked };
+          const cutsOn = g('af_swcuts') && g('af_swcuts').checked;
+          body.plan.winCut = cutsOn ? g('af_swwin').value : 0;
+          body.plan.lossCut = cutsOn ? g('af_swloss').value : 0;
+          body.plan.decidingBo = cutsOn ? g('af_swdec').value : 0;
+          const s2On = g('af_sw2') && g('af_sw2').checked;
+          body.plan.stage2 = s2On ? 1 : 0;
+          if (s2On) {
+            body.plan.s2CutTo = g('af_sw2cut').value;
+            body.plan.s2Type = g('af_sw2type').value;
+            body.plan.s2Bo = g('af_sw2bo').value;
+            body.plan.s2Final = g('af_sw2final').value;
+            body.plan.s2Gf = g('af_sw2final').value;
+          }
+        }
       } else {
         body.perMatch = g('af_pm').value;
         body.mode = g('af_fmode').value;

@@ -1335,3 +1335,51 @@ button.dp-cell:hover { border-color: var(--amber); background: #1d2b3a; }
 .ban-table tr.ban-expired td { opacity: .55; }
 .ban-notice { border-left: 3px solid var(--red); background: #e2564a0f; }
 .ban-notice h2::before { background: var(--red); }
+
+/* per-match Bo selector in the match details header (organizers only) */
+.md-bo-sel {
+  display: inline-block; width: auto; margin: 0 0 0 2px; padding: 2px 6px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.4;
+  vertical-align: middle; height: auto;
+}
+/* a swiss row for someone already knocked out reads as history, not a live contender */
+tr.row-out > td { opacity: .55; }
+
+/* ---- opponent pick phase (LotS: seeds 1-8 choose who they play) ---- */
+.pick-callout {
+  border: 1px solid var(--amber, #d99a2b);
+  background: color-mix(in srgb, var(--amber, #d99a2b) 12%, transparent);
+  border-radius: 6px; padding: 10px 12px; margin: 0 0 12px;
+}
+.pick-callout-h {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--amber, #d99a2b);
+}
+.pick-clock {
+  font-family: var(--mono); font-size: 12px; margin-left: 6px;
+  padding: 1px 6px; border-radius: 4px;
+  background: rgba(255, 255, 255, .07);
+}
+.pick-clock.urgent { background: var(--danger, #e5484d); color: #fff; }
+.pick-list { margin-top: 12px; border-top: 1px solid var(--line, #2a2f37); }
+.pick-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 4px; border-bottom: 1px solid var(--line, #2a2f37);
+}
+.pick-row.turn { background: rgba(255, 255, 255, .04); }
+.pick-seed {
+  width: 26px; text-align: center; flex: none;
+  color: var(--muted, #8b93a1); font-size: 12px;
+}
+.pick-name { flex: 1 1 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-vs { flex: none; font-size: 12px; }
+.pick-target { flex: 1 1 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-pending { color: var(--amber, #d99a2b); font-style: italic; }
+.pick-choose { margin-top: 14px; }
+.pick-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.pick-opts .btn { margin: 0; }
+@media (max-width: 560px) {
+  .pick-row { flex-wrap: wrap; gap: 4px 8px; }
+  .pick-name, .pick-target { flex-basis: calc(100% - 40px); }
+  .pick-vs { display: none; }
+}

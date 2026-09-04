@@ -1340,18 +1340,48 @@ function openStartConfig() {
   // swiss
   const defR = Math.max(1, R);
   const sp = T.plan || {};
+  // Record cuts and stage 2 are decided on the create form / format panel, not here. The
+  // dialog reflects them so nobody starts a LotS bracket wondering where the settings went.
+  const cutW = parseInt(sp.winCut, 10) || 0;
+  const cutL = parseInt(sp.lossCut, 10) || 0;
+  const cutsOn = !!(cutW || cutL);
+  const cutRounds = (cutW && cutL) ? (cutW + cutL - 1) : (cutW || cutL);
+  const s2On = !!sp.stage2;
+  const s2Cut = parseInt(sp.s2CutTo, 10) || 8;
+  const cutBits = [];
+  if (cutW) cutBits.push(cutW + ' win' + (cutW === 1 ? '' : 's') + ' advances');
+  if (cutL) cutBits.push(cutL + ' loss' + (cutL === 1 ? '' : 'es') + ' eliminates');
+  const comfy = cutsOn ? Math.pow(2, Math.max(cutW, cutL) + 1) : 0;
   return modal(`
     <h3>Swiss setup</h3>
-    <p class="muted small">${n} teams. Everyone plays every round; pairings by standings, rematches avoided.</p>
-    <label>Number of rounds</label>
-    <input type="number" id="swRounds" min="1" max="15" value="${defR}" autocomplete="off">
+    <p class="muted small">${n} teams. ${cutsOn
+      ? 'Teams leave the stage the moment they hit either mark; pairings stay inside a score group and rematches are avoided.'
+      : 'Everyone plays every round; pairings by standings, rematches avoided.'}</p>
+    ${cutsOn ? `<div class="infocell" style="margin:0 0 12px">
+      <div class="mono small muted">FORMAT</div>
+      <div>${esc(cutBits.join(' \u00b7 '))}</div>
+      <div class="muted small" style="margin-top:4px">At most ${cutRounds} round${cutRounds === 1 ? '' : 's'} per team${sp.decidingBo ? ' \u00b7 Bo' + sp.decidingBo + ' when a win qualifies or a loss eliminates' : ''}</div>
+      ${n < comfy ? `<div class="muted small" style="margin-top:6px">${n} teams is a small field for this - below ${comfy} the draw can run out of fresh opponents and may have to repeat a pairing.</div>` : ''}
+      ${nextPow2(n) !== n ? `<div class="muted small" style="margin-top:6px">${n} is not a power of two, so some rounds need a bye. A bye is a free win, so the number reaching ${cutW || '-'} wins can vary.</div>` : ''}
+    </div>` : ''}
+    ${s2On ? `<div class="infocell" style="margin:0 0 12px">
+      <div class="mono small muted">SECOND STAGE</div>
+      <div>Top ${s2Cut} go through to a ${sp.s2Type === 'double' ? 'double' : 'single'}-elimination playoff bracket</div>
+      <div class="muted small" style="margin-top:4px">Built automatically in this same tournament when the Swiss stage ends.</div>
+    </div>` : ''}
+    <div id="swRoundsWrap" style="display:${cutsOn ? 'none' : ''}">
+      <label>Number of rounds</label>
+      <input type="number" id="swRounds" min="1" max="15" value="${defR}" autocomplete="off">
+    </div>
     <label>Each match is</label>
     <select id="swBo"><option value="1"${sp.bo === 1 ? ' selected' : ''}>Bo1</option><option value="3"${sp.bo !== 1 ? ' selected' : ''}>Bo3</option></select>
-    <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:16px">
-      <input type="checkbox" id="swFinal" ${sp.final === 0 ? '' : 'checked'}> Final between the top 2 after the last round
-    </label>
-    <div id="swFinalBoWrap"><label>Final is</label>${boSelect('swFinalBo', sp.finalBo || 5)}</div>
-    <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+    <div id="swFinalWrap" style="display:${s2On ? 'none' : ''}">
+      <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:16px">
+        <input type="checkbox" id="swFinal" ${sp.final === 0 ? '' : 'checked'}> Final between the top 2 after the last round
+      </label>
+      <div id="swFinalBoWrap"><label>Final is</label>${boSelect('swFinalBo', sp.finalBo || 5)}</div>
+    </div>
+    <label style="display:${cutsOn ? 'none' : 'flex'};align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
       <input type="checkbox" id="swFast" ${sp.fast ? 'checked' : ''}> Fast pairing \u2014 next matchup starts as soon as two teams are free
     </label>
     <div class="actions"><button class="btn ghost" id="cfgCancel">Cancel</button><button class="btn primary" id="cfgGo">Start round 1</button></div>`,
@@ -1359,13 +1389,22 @@ function openStartConfig() {
       const fin = root.querySelector('#swFinal');
       fin.onchange = () => { root.querySelector('#swFinalBoWrap').style.display = fin.checked ? '' : 'none'; };
       root.querySelector('#cfgCancel').onclick = closeModal;
-      root.querySelector('#cfgGo').onclick = () => start({
-        rounds: parseInt(root.querySelector('#swRounds').value, 10),
-        bo: parseInt(root.querySelector('#swBo').value, 10),
-        final: fin.checked,
-        finalBo: parseInt(root.querySelector('#swFinalBo').value, 10),
-        fast: root.querySelector('#swFast').checked
-      });
+      root.querySelector('#cfgGo').onclick = () => {
+        const cfg = {
+          rounds: parseInt(root.querySelector('#swRounds').value, 10) || defR,
+          bo: parseInt(root.querySelector('#swBo').value, 10),
+          final: s2On ? false : fin.checked,
+          finalBo: parseInt(root.querySelector('#swFinalBo').value, 10),
+          fast: cutsOn ? false : root.querySelector('#swFast').checked
+        };
+        // pass the configured extras through explicitly so the server never has to guess
+        if (cutsOn) { cfg.winCut = cutW; cfg.lossCut = cutL; cfg.decidingBo = parseInt(sp.decidingBo, 10) || 0; }
+        if (s2On) {
+          cfg.stage2 = 1; cfg.s2CutTo = s2Cut; cfg.s2Type = sp.s2Type || 'single';
+          cfg.s2Bo = parseInt(sp.s2Bo, 10) || 3; cfg.s2Final = parseInt(sp.s2Final, 10) || 5; cfg.s2Gf = parseInt(sp.s2Gf, 10) || 5;
+        }
+        start(cfg);
+      };
     });
 }
 
