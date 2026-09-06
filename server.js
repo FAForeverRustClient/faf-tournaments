@@ -1696,6 +1696,8 @@ async function fafFetchIdentity(accessToken) {
 
 // FAF leaderboard ids (from /data/leaderboard): global=1, ladder_1v1=2, tmm_2v2=3, tmm_3v3=6, tmm_4v4_full_share=4.
 // FAF leaderboard technicalName per rating category (the working downloader filters by this).
+// per-session cooldown for the read-only rating check (in memory; resets on restart)
+let _checkRateSeen = {};
 const FAF_LEADERBOARD_NAME = { global: 'global', '1v1': 'ladder_1v1', '2v2': 'tmm_2v2', '3v3': 'tmm_3v3', '4v4': 'tmm_4v4_full_share' };
 
 // End of the given UTC day, formatted like the downloader: "YYYY-MM-DDT23:59:59Z".
@@ -1794,6 +1796,24 @@ async function fafFetchRating(fafId, ratingType, asOfMs, token) {
     return (await fafRatingProbe(fafId, ratingType, asOfMs, token)).rating;
   }
   catch (e) { return null; }
+}
+
+// Does this rating clear the tournament's limits? ONE helper, used by both the signup gate and
+// the read-only "check my rating" button. If these ever diverged, the check could tell someone
+// they qualify and the signup then refuse them, which is worse than having no check at all.
+// Note the limits are tested against the RAW rating: the rating cap only affects seeding.
+function ratingLimitVerdict(t, rating, exempt) {
+  if (exempt) return { ok: true, exempt: true };
+  if (rating == null) return { ok: true, unrated: true };
+  if (t.minRating != null && rating < t.minRating) return { ok: false, why: 'below', limit: t.minRating, rating };
+  if (t.maxRating != null && rating > t.maxRating) return { ok: false, why: 'above', limit: t.maxRating, rating };
+  return { ok: true, rating };
+}
+function ratingLimitMessage(t, v) {
+  if (v.ok) return '';
+  return v.why === 'below'
+    ? 'You can\u2019t sign up here: your rating (' + v.rating + ') is below this tournament\u2019s minimum of ' + v.limit + '.'
+    : 'You can\u2019t sign up here: your rating (' + v.rating + ') is above this tournament\u2019s maximum of ' + v.limit + '.';
 }
 
 // Look up a FAF player by exact login. Returns { fafId, name } or null. Needs a token.
@@ -3627,13 +3647,9 @@ async function handleAPI(req, res, url) {
         if (hit) return bad(res, adminAdding ? banRefusalOrganizer(hit, t, name) : banRefusalSelf(hit, t));
       }
       const invitedHere = !!(sess && (t.invites || []).some(i => i.fafId === sess.fafId));
-      if (!adminAdding && !invitedHere && rating != null) {
-        if (t.minRating != null && rating < t.minRating) {
-          return bad(res, 'You can\u2019t sign up here: your rating (' + rating + ') is below this tournament\u2019s minimum of ' + t.minRating + '.');
-        }
-        if (t.maxRating != null && rating > t.maxRating) {
-          return bad(res, 'You can\u2019t sign up here: your rating (' + rating + ') is above this tournament\u2019s maximum of ' + t.maxRating + '.');
-        }
+      {
+        const v = ratingLimitVerdict(t, rating, adminAdding || invitedHere);
+        if (!v.ok) return bad(res, ratingLimitMessage(t, v));
       }
       const p = {
         id: 'p' + uid(4), name, rating: (rating != null ? rating : null), ratingActual: (rating != null ? rating : null), fafId: fafId, manual: manual,
@@ -3656,6 +3672,69 @@ async function handleAPI(req, res, url) {
       tlog(t, req, b.admin, (adminAdding && p.name !== (actorOf(req, b.admin).name) ? 'added player ' + p.name : p.name + ' signed up') + (p.rating != null ? ' (rating ' + p.rating + ')' : '') + (p.pending ? ' \u2014 awaiting approval' : '') + (p.late ? ' \u2014 late signup' : ''));
       saveDB();
       return json(res, 200, { ok: true, playerId: p.id, pending: p.pending ? 1 : 0 });
+    }
+
+    // Read-only rating check. People cannot see their own FAF rating from here, so they have no
+    // way to know whether they qualify until they press Sign up and get refused. This answers the
+    // question WITHOUT signing anyone up: it creates no player, writes nothing, and returns the
+    // same verdict the signup gate would reach, from the same helper.
+    if (sub === 'check_rating') {
+      const sess = currentSession(req);
+      if (!sess || !sess.fafId) return json(res, 401, { error: 'Log in with FAF to check your rating' });
+      if (!t.ratingType || t.ratingType === 'none') {
+        return json(res, 200, { ok: true, rated: 0, message: 'This tournament does not use FAF ratings.' });
+      }
+      const fid = sess.fafId;
+      // A light per-session cooldown: this hits the FAF API and the button is one click away.
+      _checkRateSeen = _checkRateSeen || {};
+      const key = fid + '|' + t.id;
+      const last = _checkRateSeen[key] || 0;
+      if (Date.now() - last < 4000) return bad(res, 'Just a moment \u2014 checking again so soon would hammer FAF. Try in a few seconds.');
+      _checkRateSeen[key] = Date.now();
+
+      const token = await fafValidToken(sess);
+      if (!token) return json(res, 409, { error: 'Checking your rating needs your FAF login. Please log out and log back in (top-right), then try again.', needsRelogin: 1 });
+      let probe;
+      try {
+        probe = (t.ratingType === 'rc')
+          ? await fafRcProbe(fid, t.ratingDate, token)
+          : await fafRatingProbe(fid, t.ratingType, t.ratingDate, token);
+      } catch (e) { probe = null; }
+      if (!probe || probe.rating == null) {
+        const parts = (probe && (probe.attempts || Object.values(probe.boards || {}))) || [];
+        const any200 = parts.some(a2 => a2.status === 200);
+        return json(res, 200, {
+          ok: true, rated: 1, rating: null,
+          ratingType: t.ratingType, asOf: t.ratingDate || null,
+          eligible: null,
+          message: any200
+            ? (t.ratingType === 'rc'
+                ? 'FAF has no rated 2v2/3v3/4v4/Global games for your account as of this tournament\u2019s date, so no RC rating can be worked out.'
+                : 'FAF has no ' + t.ratingType + ' rating for your account as of this tournament\u2019s date \u2014 you may not have played ranked ' + t.ratingType + ' games by then.')
+            : 'Could not reach FAF for your rating just now. Try again in a moment.'
+        });
+      }
+      const rating = probe.rating;
+      // Everything that would actually stop them, in the order the signup gate applies it.
+      const hit = findEntryBan(t, fid);
+      const invitedHere = (t.invites || []).some(i => i.fafId === fid);
+      const already = (t.players || []).some(pl => pl.fafId === fid);
+      const v = ratingLimitVerdict(t, rating, invitedHere);
+      const capped = cappedRating(t, rating);
+      return json(res, 200, {
+        ok: true, rated: 1,
+        rating: rating,
+        capped: (capped !== rating) ? capped : null,
+        ratingType: t.ratingType,
+        asOf: t.ratingDate || null,
+        min: t.minRating != null ? t.minRating : null,
+        max: t.maxRating != null ? t.maxRating : null,
+        exempt: !!invitedHere,
+        alreadyIn: !!already,
+        banned: hit ? banRefusalSelf(hit, t) : null,
+        eligible: hit ? false : v.ok,
+        message: hit ? banRefusalSelf(hit, t) : (v.ok ? '' : ratingLimitMessage(t, v))
+      });
     }
 
     if (sub === 'signup_team') {

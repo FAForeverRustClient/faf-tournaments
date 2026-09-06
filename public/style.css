@@ -1383,3 +1383,38 @@ tr.row-out > td { opacity: .55; }
   .pick-name, .pick-target { flex-basis: calc(100% - 40px); }
   .pick-vs { display: none; }
 }
+
+/* ---- read-only rating check (Players tab) ---- */
+.signup-actions {
+  display: flex; align-items: flex-start; gap: 12px;
+  flex-wrap: wrap; margin-top: 16px;
+}
+.signup-actions .btn { margin: 0; }
+.rating-check { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rating-check .btn { margin: 0; }
+.rating-check .rc-note { margin: 0; }
+.rc-out {
+  margin-top: 8px; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--line, #2a2f37);
+  background: rgba(255, 255, 255, .03);
+  max-width: 520px;
+}
+.rc-out.good { border-color: var(--green, #46a758); background: color-mix(in srgb, var(--green, #46a758) 10%, transparent); }
+.rc-out.bad { border-color: var(--danger, #e5484d); background: color-mix(in srgb, var(--danger, #e5484d) 10%, transparent); }
+.rc-out.warn { border-color: var(--amber, #d99a2b); background: color-mix(in srgb, var(--amber, #d99a2b) 10%, transparent); }
+.rc-verdict { font-weight: 600; margin-bottom: 6px; }
+.rc-num { margin-bottom: 2px; }
+
+/* "click here" from the overview lands ON the check, not just on the tab */
+.focus-flash {
+  animation: focusFlash 2s ease-out 1;
+  border-radius: 6px;
+}
+@keyframes focusFlash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  15%, 60% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber, #d99a2b) 55%, transparent); }
+}
+@media (max-width: 560px) {
+  .signup-actions { flex-direction: column; align-items: stretch; }
+  .rc-out { max-width: none; }
+}

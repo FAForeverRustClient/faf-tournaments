@@ -47,6 +47,20 @@ function drawPlayers(el) {
           + (req ? '<div class="rc-req muted small">' + req + '</div>' : '')
           + '</div>';
       };
+      // "Check my rating": people cannot see their own FAF rating from here, so without this the
+      // only way to find out whether they qualify is to press Sign up and be refused. The button
+      // asks the same question the signup gate asks, and answers it without signing anyone up.
+      const ratingCheckOn = () => !!(T.ratingType && T.ratingType !== 'none' && (viewerLoggedIn() || !fafAuth.enabled));
+      const ratingCheckHTML = (opts) => {
+        if (!ratingCheckOn()) return '';
+        const o = opts || {};
+        return `<div class="rating-check" id="ratingCheckBox">
+          <button class="btn ghost${o.small ? ' small' : ''}" id="rcGo">Check my rating for this tournament</button>
+          <div class="muted small rc-note">Just a check \u2014 it does not sign you up.</div>
+          <div id="rcOut" class="rc-out" hidden></div>
+        </div>`;
+      };
+
       // A banned viewer should be told before they press anything. T.myBan is set for whichever
       // scope caught them (tournament, series or the site-wide official ban).
       if (T.myBan && !viewerSignedUp()) {
@@ -68,7 +82,8 @@ function drawPlayers(el) {
       if (suNotOpen && !admin && !viewerSignedUp()) {
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="muted small">Signups haven\u2019t opened yet \u2014 they open <strong>${esc(fmtDateTime(T.signupOpensAt))}</strong>.</p>
-          ${ratingCalloutHTML()}</div>`;
+          ${ratingCalloutHTML()}
+          ${ratingCheckHTML()}</div>`;
       } else if (viewerSignedUp() && (() => { const mine = T.players.find(pl => pl.id === T.viewer.signedUpPlayerId); return mine && mine.pending; })()) {
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="signed-in-note">Your signup request is <strong>waiting for organizer approval</strong>. You'll appear in the player list once accepted.</p>
@@ -82,10 +97,13 @@ function drawPlayers(el) {
             : `<div class="dc-nudge"><label>Discord handle <span class="muted small">(optional \u2014 so the organizer and your teammates can reach you)</span></label>
                  <p class="muted small" style="margin:4px 0 6px">Enter your Discord <strong>username</strong> \u2014 the unique all-lowercase handle from Settings \u2192 My Account \u2014 not your display name.</p>
                  <div class="row" style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="sDcAdd" maxlength="40" autocomplete="off" style="max-width:240px"><button class="btn small" id="sDcSave">Save</button></div></div>`) : ''}
+          ${ratingCheckHTML({ small: 1 })}
           <button class="btn danger small" id="sWithdraw" style="margin-top:10px">Withdraw</button></div>`;
       } else if ((viewerLoggedIn() || !fafAuth.enabled) && T.signupMode === 'invite' && !(T.viewer && T.viewer.invited) && !admin) {
         html += `<div class="panel section"><h2>Sign up</h2>
-          <p class="muted small">This tournament is <strong>invite only</strong>. Ask the organizer for an invite \u2014 once invited, you can sign up here.</p></div>`;
+          <p class="muted small">This tournament is <strong>invite only</strong>. Ask the organizer for an invite \u2014 once invited, you can sign up here.</p>
+          ${ratingCalloutHTML()}
+          ${ratingCheckHTML()}</div>`;
       } else if (viewerLoggedIn() || !fafAuth.enabled) {
         // logged in (or pre-go-live): self-signup, name is your FAF identity
         html += `<div class="panel section"><h2>Sign up</h2>
@@ -97,7 +115,7 @@ function drawPlayers(el) {
               ${fafAuth.enabled ? '<label>Discord handle <span class="muted small">(optional \u2014 so the organizer and teammates can reach you)</span></label><p class="muted small" style="margin:4px 0 6px">Your Discord <strong>username</strong> \u2014 the unique all-lowercase handle from Settings \u2192 My Account \u2014 not your display name. Saved to your account for all tournaments.</p><input type="text" id="sDiscord" maxlength="40" autocomplete="off" value="' + esc((fafAuth.user && fafAuth.user.discord) || '') + '">' : ''}
               ${(T.ratingType && T.ratingType !== 'none') ? '' : '<label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">'}
               ${T.signupMode === 'request' && !admin ? '<p class="muted small">This tournament is <strong>request only</strong>: an organizer approves your signup before you appear in the list.</p>' : ''}
-              <div style="margin-top:16px"><button class="btn primary" id="sGo">${T.signupMode === 'request' && !admin ? 'Request to sign up' : 'Sign up'}${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
+              <div class="signup-actions"><button class="btn primary" id="sGo">${T.signupMode === 'request' && !admin ? 'Request to sign up' : 'Sign up'}${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button>${ratingCheckHTML()}</div>
             </div>
             <div class="muted small" style="align-self:end">${esc(helpText)}</div>
           </div></div>`;
@@ -285,6 +303,50 @@ function drawPlayers(el) {
     if (!confirm('Withdraw from this tournament?')) return;
     try { await api('/api/t/' + T.id + '/remove', { playerId: pid }); toast('Withdrawn'); await refresh(); }
     catch (e) { toast(e.message, true); }
+  };
+
+  // ---- read-only rating check ----
+  // Deliberately renders the verdict AND the numbers behind it: "you qualify" alone is not
+  // useful to someone who is trying to work out how far off they are.
+  const rcBtn = document.getElementById('rcGo');
+  if (rcBtn) rcBtn.onclick = async () => {
+    const out = document.getElementById('rcOut');
+    rcBtn.disabled = true;
+    const label = rcBtn.textContent;
+    rcBtn.textContent = 'Checking\u2026';
+    if (out) { out.hidden = false; out.className = 'rc-out'; out.innerHTML = '<span class="muted small">Asking FAF\u2026</span>'; }
+    let r;
+    try { r = await api('/api/t/' + T.id + '/check_rating', {}); }
+    catch (e) {
+      rcBtn.disabled = false; rcBtn.textContent = label;
+      if (out) { out.className = 'rc-out bad'; out.innerHTML = esc(e.message); }
+      return;
+    }
+    rcBtn.disabled = false; rcBtn.textContent = label;
+    if (!out) return;
+
+    if (!r.rated) { out.className = 'rc-out'; out.innerHTML = esc(r.message || 'This tournament does not use FAF ratings.'); return; }
+    if (r.rating == null) { out.className = 'rc-out warn'; out.innerHTML = esc(r.message || 'No rating found.'); return; }
+
+    const board = r.ratingType === 'rc' ? 'RC' : r.ratingType;
+    const asOf = r.asOf ? ' as of <strong>' + esc(fmtDate(r.asOf)) + '</strong>' : ' (current)';
+    const bits = ['<div class="rc-num">Your <strong>' + esc(board) + '</strong> rating' + asOf + ': <strong>' + r.rating + '</strong></div>'];
+    if (r.capped != null) bits.push('<div class="muted small">This tournament caps ratings, so you would be seeded as ' + r.capped + '.</div>');
+
+    const range = (r.min != null && r.max != null) ? r.min + '\u2013' + r.max
+      : r.min != null ? r.min + ' or higher'
+      : r.max != null ? 'up to ' + r.max : null;
+    if (range) bits.push('<div class="muted small">This tournament asks for <strong>' + esc(range) + '</strong>.</div>');
+
+    let cls = 'rc-out good', verdict;
+    if (r.banned) { cls = 'rc-out bad'; verdict = esc(r.banned); }
+    else if (r.eligible === false) { cls = 'rc-out bad'; verdict = esc(r.message); }
+    else if (r.alreadyIn) verdict = 'You qualify \u2014 and you are already signed up.';
+    else if (r.exempt && range) verdict = 'You are invited, so the rating range does not apply to you. You can sign up.';
+    else verdict = range ? 'You qualify \u2014 you can sign up here.' : 'Nothing is stopping you signing up here.';
+
+    out.className = cls;
+    out.innerHTML = '<div class="rc-verdict">' + verdict + '</div>' + bits.join('');
   };
 
   const go = document.getElementById('sGo');

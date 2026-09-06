@@ -1399,10 +1399,17 @@ function gameInfoPanel() {
     if (T.ratingCap != null) parts.push('Ratings above ' + T.ratingCap + ' count as ' + T.ratingCap + ' (capped)');
     if (viewerIsOrganizer() && (T.minRating != null || T.maxRating != null)) parts.push('(organizer invites/adds are exempt from min/max)');
     const src = ratingSourceHtml(T);
+    // The rating is pulled from FAF automatically, so a player reading this box has no way to
+    // know their own number or whether it clears the range. Point them at the check.
+    const canCheck = T.ratingType && T.ratingType !== 'none' && (typeof viewerLoggedIn !== 'function' || viewerLoggedIn());
+    const checkLink = canCheck
+      ? '<div class="muted small" style="margin-top:8px">Don\u2019t know your rating? <a href="#" data-goto="players" data-focus="ratingCheckBox">Click here</a></div>'
+      : '';
     if (src || parts.length) {
       topCells.push(['Rating requirements',
         (src ? '<div class="rating-source">' + src + '</div>' : '')
-        + (parts.length ? '<div' + (src ? ' style="margin-top:8px"' : '') + '>' + parts.map(esc).join('<br>') + '</div>' : '')]);
+        + (parts.length ? '<div' + (src ? ' style="margin-top:8px"' : '') + '>' + parts.map(esc).join('<br>') + '</div>' : '')
+        + checkLink]);
     }
   }
   // Lobby options and mods can be long and support formatting — their own row, rendered rich.
@@ -1683,6 +1690,17 @@ function drawOverview(el) {
 
   el.querySelectorAll('[data-goto]').forEach(a => a.onclick = e => {
     e.preventDefault(); currentTab = a.dataset.goto; syncTabURL(); drawTournament();
+    // data-focus: after the destination tab has rendered, scroll its target into view and flash
+    // it, so "click here" lands ON the thing rather than merely on the right tab.
+    const want = a.dataset.focus;
+    if (!want) return;
+    setTimeout(() => {
+      const node = document.getElementById(want);
+      if (!node) return;
+      try { node.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (err) { node.scrollIntoView(); }
+      node.classList.add('focus-flash');
+      setTimeout(() => node.classList.remove('focus-flash'), 2000);
+    }, 60);
   });
 
   const edb = document.getElementById('editDateBtn');

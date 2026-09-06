@@ -99,6 +99,23 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - **Ending a qualifier early**: a running tournament can be stopped where it stands from the Admin tab ("End here and lock standings"). No champion is recorded - nobody won it - and the locked standings are what any parent draws from. This is how a qualifier that exists to decide the top 4 stops once the top 4 is decided, instead of playing out a final nobody needs. Survivors outrank everyone who was knocked out, winners-bracket survivors first, so "top 4" from a stopped double elimination means the two who have not lost, then the two on one loss. It is reversible, with a warning if invites have already gone out.
 - The link is stored only on the parent, so the two sides can never disagree. Removing a link keeps invites already sent. Self-links and circular links are rejected.
 
+### Checking your rating before you sign up
+- The rating is pulled from FAF automatically, so a player has no way to see their own number or
+  know whether it clears the range. **Check my rating for this tournament** sits beside the Sign up
+  button and answers exactly that: it fetches the rating using *this* tournament's board and as-of
+  date, then says whether they qualify, with the number and the requirement side by side so they
+  can see how far off they are.
+- **It is purely a check.** It creates no entrant, writes nothing, and signs nobody up. The button
+  says so, and the suite asserts it - a check that quietly signed you up would be a trap.
+- It reports the same verdict the signup gate would reach, from the same helper, so the two can
+  never disagree. Bans, invite exemptions and the rating cap are all reflected.
+- It also appears where signups are not yet open and where the tournament is invite-only: those are
+  exactly the moments someone is deciding whether it is worth waiting for or asking for an invite.
+- The **Rating requirements** box on the Overview carries a "Don't know your rating? Click here"
+  link that switches to the Players tab and highlights the check. Both are hidden when the
+  tournament does not use FAF ratings, or when the viewer is not logged in.
+- Lightly rate-limited per account, because the button is one click from the FAF API.
+
 ### Player-chosen opponents
 - Optional per tournament. Instead of the bracket pairing round one, the **top half of the seeds each choose who they play**, in seed order. LotS has always done this by DM to the tournament director; this is the same thing on the site.
 - Whoever is on the clock sees a clear call to action on the Bracket tab and in the header alert, exactly like a veto turn. Everyone else can watch the pairings fill in. An organizer can pick on anyone's behalf, and can undo the last pick while the phase is still open.
