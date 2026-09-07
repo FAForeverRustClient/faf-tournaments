@@ -702,6 +702,34 @@ function typeLine(t) {
   return head + form + ' · ' + bt + swissTail + (t.maxTeams ? ' · max ' + t.maxTeams + ' teams' : '');
 }
 
+// ---- declared early stop (qualifiers) ----
+// A qualifier that will stop at N survivors must SAY SO from the moment the bracket appears,
+// or the bracket lies: it draws a grand final that nobody is ever going to play.
+function stopAtOf(t) { return parseInt(((t || T) || {}).stopAtAlive, 10) || 0; }
+function stopAtLine(t) {
+  t = t || T;
+  const n = stopAtOf(t);
+  if (!n) return '';
+  return 'Ends when ' + n + ' are left \u2014 all ' + n + ' qualify, and the remaining matches are not played.';
+}
+// How many eliminations still to go. Null when there is no declared stop or it has happened.
+function stopAtRemaining(t) {
+  t = t || T;
+  const n = stopAtOf(t);
+  if (!n || t.status !== 'running') return null;
+  const alive = (t.aliveCount != null) ? t.aliveCount : (t.teams || []).filter(x => !x.eliminated).length;
+  return Math.max(0, alive - n);
+}
+// A match that was still outstanding when the tournament stopped was never played, and should
+// not sit on the bracket looking like it is coming up.
+function neverPlayed(m, t) {
+  t = t || T;
+  const ef = t.earlyFinish;
+  if (!ef) return false;
+  if (m.status === 'done' || m.status === 'bye') return false;
+  return Array.isArray(ef.unplayed) ? ef.unplayed.indexOf(m.id) >= 0 : true;
+}
+
 // ---- Swiss record cuts + stage 2 (the LotS / Invitational format) ----
 // Every helper here answers "off" for a tournament that did not configure them, so a normal
 // Swiss or elimination event renders exactly as it did before any of this existed.

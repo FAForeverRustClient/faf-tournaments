@@ -39,6 +39,7 @@ const { mapById, publicMapView } = require('./lib/maps');
 // after the swiss require above, since swissAfterReport is now imported, not hoisted.
 require('./lib/match').setHooks({ swissAfterReport });
 require('./lib/swiss').setSwissHooks({ openStagePicks });
+require('./lib/match').setHooks({ afterFinalize: (t) => { autoStopIfReached(t); } });
 
 const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -527,6 +528,62 @@ function buildStageTwo(ex, cfgSrc) {
     rounds: cleanBoList(Array.isArray(c.s2rounds) && c.s2rounds.length ? c.s2rounds : spread(ex.s2Final), R),
     pickPhase: ex.pickPhase ? 1 : 0, built: 0, field: []
   };
+}
+
+// ---------- stopping a qualifier early ----------
+// A qualifier exists to decide who goes through, not to crown anyone, so once the field is down
+// to the number that qualifies there is nothing left worth playing. t.stopAtAlive declares that
+// number UP FRONT: the bracket then says so from the moment it is generated, and the tournament
+// ends by itself when the count is reached. Absent (0) = nothing here runs, and the tournament
+// behaves exactly as it always has.
+function aliveTeamCount(t) {
+  return (t.teams || []).filter(x => !x.eliminated).length;
+}
+
+// The one place standings are locked. The manual button and the automatic stop both come here,
+// so they can never drift apart.
+function lockStandingsEarly(t, byName, auto) {
+  const sp = survivorSplit(t);
+  const alive = sp.wb.concat(sp.lb);
+  if (!alive.length) return null;
+  const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+  t.status = 'finished';
+  t.finishedAt = now();
+  t.earlyFinish = {
+    at: now(), by: byName, auto: auto ? 1 : 0,
+    target: auto ? (t.stopAtAlive || 0) : 0,
+    alive: alive.length,
+    wb: sp.wb.slice(), lb: sp.lb.slice(),
+    names: alive.map(nm),
+    // matches that will now never be played, so the bracket can say so instead of showing
+    // them as if they were still coming
+    unplayed: (t.matches || []).filter(m => m.status === 'ready' || m.status === 'waiting' || m.status === 'live').map(m => m.id)
+  };
+  return t.earlyFinish;
+}
+
+// Called after every finalised match (via the lib/match afterFinalize hook).
+function autoStopIfReached(t) {
+  const target = parseInt(t && t.stopAtAlive, 10) || 0;
+  if (!target) return false;
+  if (t.status !== 'running') return false;
+  if (t.competition === 'ffa' || t.bracketType === 'swiss') return false;
+  const alive = aliveTeamCount(t);
+  if (alive > target) return false;
+  const rec = lockStandingsEarly(t, 'Automatic', true);
+  if (!rec) return false;
+  const overshot = rec.alive < target;
+  tpush(t, 'System', 'This tournament ended automatically: it was set to stop once '
+    + target + ' were left, and ' + rec.alive + ' ' + (rec.alive === 1 ? 'is' : 'are') + ' still standing ('
+    + rec.names.join(', ') + ').'
+    + (overshot ? ' Two results landed close together, so the count went one past the target.' : ''));
+  audit(null, 'finish_early', {
+    tournamentId: t.id, tournamentName: t.name,
+    actor: { kind: 'system', fafId: null, name: 'Automatic stop' },
+    detail: rec.alive + ' still standing (target ' + target + ')'
+  });
+  sweepQualifications();
+  return true;
 }
 
 // ---------- opponent pick phase ----------
@@ -1408,7 +1465,8 @@ function publicView(t) {
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0, perRoundBo: t.perRoundBo ? 1 : 0,
     cfg: t.cfg || null, stage2: t.stage2 || null, preset: t.preset || null, presetName: t.presetName || null,
-    pickOpponents: t.pickOpponents ? 1 : 0, pickMinutes: t.pickMinutes || 0, seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
+    pickOpponents: t.pickOpponents ? 1 : 0, pickMinutes: t.pickMinutes || 0,
+    stopAtAlive: t.stopAtAlive || 0, aliveCount: aliveTeamCount(t), seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
     signupMode: t.signupMode || 'open',
     playerReporting: t.playerReporting === undefined ? 1 : (t.playerReporting ? 1 : 0),
     veto: t.veto || { enabled: false, mode: 'upfront' },
@@ -2161,6 +2219,8 @@ async function handleAPI(req, res, url) {
       // opponent pick phase: off unless asked for (0 minutes = no clock, picks wait forever)
       pickOpponents: b.pickOpponents ? 1 : 0,
       pickMinutes: intIn(b.pickMinutes, 0, 1440, 0),
+      // declared up front so the bracket can say so from the start (0 = play it out)
+      stopAtAlive: intIn(b.stopAtAlive, 0, 128, 0),
       cfg: null, maps: {}, mapDb: [], mapPools: [], poolAssign: {},
       seeding: (['rating', 'random', 'manual'].indexOf(b.seeding) >= 0) ? b.seeding : 'rating',
       ratingType: (['global', '1v1', '2v2', '3v3', '4v4', 'rc'].indexOf(b.ratingType) >= 0) ? b.ratingType : (b.ratingType === 'none' ? 'none' : 'global'),
@@ -4672,6 +4732,7 @@ async function handleAPI(req, res, url) {
         if (b.perRoundBo !== undefined) t.perRoundBo = (b.perRoundBo && t.bracketType !== 'swiss') ? 1 : 0;
         if (b.pickOpponents !== undefined) t.pickOpponents = b.pickOpponents ? 1 : 0;
         if (b.pickMinutes !== undefined) t.pickMinutes = intIn(b.pickMinutes, 0, 1440, t.pickMinutes || 0);
+        if (b.stopAtAlive !== undefined) t.stopAtAlive = intIn(b.stopAtAlive, 0, 128, t.stopAtAlive || 0);
         const pb = b.plan || {};
         const op = (t.plan && typeof t.plan === 'object') ? t.plan : {};
         if (t.bracketType === 'single') {
@@ -5389,26 +5450,16 @@ async function handleAPI(req, res, url) {
         if (live.length && !b.force) {
           return bad(res, live.length + ' match(es) are still being played. Finish or cancel them first, or confirm to stop anyway.');
         }
-        const sp = survivorSplit(t);
-        const alive = sp.wb.concat(sp.lb);
-        if (!alive.length) return bad(res, 'Nobody is still standing - there is nothing to lock in');
-        const who = actorOf(req, b.admin).name;
-        t.status = 'finished';
-        t.finishedAt = now();
-        t.earlyFinish = {
-          at: now(), by: who, alive: alive.length,
-          wb: sp.wb.slice(), lb: sp.lb.slice(),
-          names: alive.map(id => { const tm = teamById(t, id); return tm ? tm.name : id; })
-        };
-        const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
-        tlog(t, req, b.admin, 'stopped the tournament early with ' + alive.length + ' still standing ('
-          + alive.map(nm).join(', ') + ')');
+        const rec = lockStandingsEarly(t, actorOf(req, b.admin).name, false);
+        if (!rec) return bad(res, 'Nobody is still standing - there is nothing to lock in');
+        tlog(t, req, b.admin, 'stopped the tournament early with ' + rec.alive + ' still standing ('
+          + rec.names.join(', ') + ')');
         tpush(t, 'System', 'The organizer ended this tournament early. Standings are locked with '
-          + alive.length + ' still standing: ' + alive.map(nm).join(', ') + '.');
-        audit(req, 'finish_early', { tournamentId: t.id, tournamentName: t.name, detail: alive.length + ' still standing' });
+          + rec.alive + ' still standing: ' + rec.names.join(', ') + '.');
+        audit(req, 'finish_early', { tournamentId: t.id, tournamentName: t.name, detail: rec.alive + ' still standing' });
         saveDB();
         sweepQualifications();   // a parent drawing from this one can now invite
-        return json(res, 200, { ok: true, alive: alive.length });
+        return json(res, 200, { ok: true, alive: rec.alive });
       }
 
       // Undo the above, as long as the qualification it triggered has not gone out yet.
@@ -5429,6 +5480,14 @@ async function handleAPI(req, res, url) {
         if (t.status !== 'drafted') return bad(res, 'Form teams first');
         const n = t.teams.length;
         if (n < 2) return bad(res, 'Need at least 2 teams');
+        // A declared stop point has to be reachable and has to leave something behind.
+        if (t.stopAtAlive) {
+          if (t.competition === 'ffa' || t.bracketType === 'swiss') {
+            return bad(res, 'Stopping at a survivor count only applies to single or double elimination. Turn it off on the Format panel, or change the bracket type.');
+          }
+          if (t.stopAtAlive < 2) return bad(res, 'Stopping at 1 survivor is just playing the tournament out - set 2 or more, or turn it off.');
+          if (t.stopAtAlive >= n) return bad(res, 'This tournament is set to stop when ' + t.stopAtAlive + ' are left, but only ' + n + ' entered. Lower it, or turn it off on the Format panel.');
+        }
         // The tournament is starting: pending and declined invites are no longer relevant.
         t.invites = (t.invites || []).filter(i => (t.players || []).some(pl => pl.fafId === i.fafId));
         tlog(t, req, b.admin, 'started the bracket (' + n + ' teams)');

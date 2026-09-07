@@ -607,6 +607,18 @@ async function drawAdmin(el) {
           </div>
         </div>
       </div>
+      <div id="af_stopAt">
+        <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
+          <input type="checkbox" id="af_stopOn"${T.stopAtAlive ? ' checked' : ''}> End the tournament early, once a set number are left
+        </label>
+        <div id="af_stopBox" style="display:${T.stopAtAlive ? 'block' : 'none'};padding:8px 0 0 22px">
+          <p class="muted small" style="margin:0 0 8px">For a qualifier: once the field is down to the number that qualifies there is nothing left worth playing. It ends by itself at that point, standings locked, no champion. Stated on the bracket from the moment it is generated so nobody is surprised. Single or double elimination only.</p>
+          <div class="row" style="gap:10px;align-items:flex-end">
+            <div style="width:150px"><div class="muted small">Stop when this many are left</div><input type="number" id="af_stopN" min="2" max="128" value="${T.stopAtAlive || 4}"></div>
+            <div class="muted small" style="flex:1;padding-bottom:8px">You can still stop it by hand at any time from this tab.</div>
+          </div>
+        </div>
+      </div>
       <div id="af_pickPhase">
         <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
           <input type="checkbox" id="af_pick"${T.pickOpponents ? ' checked' : ''}> Let the top seeds choose their own opponent
@@ -882,8 +894,14 @@ async function drawAdmin(el) {
     const split = T.bracketType === 'double'
       ? `<div class="muted small" style="margin:6px 0 0">Winners bracket: ${wb.length ? esc(wb.map(nm).join(', ')) : 'nobody'}<br>Losers bracket: ${lb.length ? esc(lb.map(nm).join(', ')) : 'nobody'}</div>`
       : `<div class="muted small" style="margin:6px 0 0">${esc(wb.map(nm).join(', ')) || 'nobody'}</div>`;
+    const declared = parseInt(T.stopAtAlive, 10) || 0;
+    const toGo = declared ? Math.max(0, alive - declared) : null;
     html += `<div class="panel section"><h2>End <span class="h2-strong">early</span></h2>
-      <p class="muted small" style="margin:6px 0 10px">Locks the standings exactly as they are and marks the tournament finished, without playing out the remaining matches. Nobody is crowned champion. Use this when the tournament exists to decide who qualifies, not who wins - any parent tournament drawing from this one will invite from the locked standings.</p>
+      ${declared
+        ? '<p class="muted small" style="margin:6px 0 10px">This tournament is set to end by itself once <strong>' + declared + '</strong> are left'
+          + (toGo === 0 ? ' \u2014 the next result will do it.' : ', ' + toGo + ' elimination' + (toGo === 1 ? '' : 's') + ' from now.')
+          + ' Players can see that on the bracket. You can also stop it by hand right now:</p>'
+        : '<p class="muted small" style="margin:6px 0 10px">Locks the standings exactly as they are and marks the tournament finished, without playing out the remaining matches. Nobody is crowned champion. Use this when the tournament exists to decide who qualifies, not who wins - any parent tournament drawing from this one will invite from the locked standings. To have it happen automatically instead, set a survivor count on the <strong>Format</strong> panel before the bracket starts.</p>'}
       <div class="infocell"><div class="mono small muted">STILL STANDING (${alive})</div>${split}</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
         <button class="btn danger" id="finishEarlyBtn">End here and lock standings</button>
@@ -891,7 +909,7 @@ async function drawAdmin(el) {
   }
   if (T.earlyFinish) {
     html += `<div class="panel section"><h2>Ended <span class="h2-strong">early</span></h2>
-      <p class="muted small" style="margin:6px 0 10px">Stopped by ${esc(T.earlyFinish.by || 'an organizer')} with ${T.earlyFinish.alive} still standing: ${esc((T.earlyFinish.names || []).join(', '))}.</p>
+      <p class="muted small" style="margin:6px 0 10px">${T.earlyFinish.auto ? 'Stopped automatically' : 'Stopped by ' + esc(T.earlyFinish.by || 'an organizer')} with ${T.earlyFinish.alive} still standing: ${esc((T.earlyFinish.names || []).join(', '))}.${T.earlyFinish.target && T.earlyFinish.alive < T.earlyFinish.target ? ' Two results landed close together, so it went one past the target of ' + T.earlyFinish.target + '.' : ''}</p>
       <button class="btn ghost" id="undoFinishEarlyBtn">Reopen the tournament</button></div>`;
   }
 
@@ -1438,6 +1456,9 @@ async function drawAdmin(el) {
       if (g('af_swCutBox')) g('af_swCutBox').style.display = (g('af_swcuts') && g('af_swcuts').checked) ? 'block' : 'none';
       if (g('af_sw2Box')) g('af_sw2Box').style.display = (g('af_sw2') && g('af_sw2').checked) ? 'block' : 'none';
       if (g('af_swfinal')) g('af_swfinal').disabled = !!(g('af_sw2') && g('af_sw2').checked);
+      if (g('af_stopBox')) g('af_stopBox').style.display = (g('af_stopOn') && g('af_stopOn').checked) ? 'block' : 'none';
+      // a survivor cut-off is an elimination-bracket idea; swiss and FFA have no such count
+      if (g('af_stopAt')) g('af_stopAt').style.display = (isFfa || bt === 'swiss') ? 'none' : '';
       if (g('af_pickBox')) g('af_pickBox').style.display = (g('af_pick') && g('af_pick').checked) ? 'block' : 'none';
       // picking is a bracket concept; FFA has no round-one pairing to choose
       if (g('af_pickPhase')) g('af_pickPhase').style.display = isFfa ? 'none' : '';
@@ -1447,7 +1468,7 @@ async function drawAdmin(el) {
       g('af_ffinalsize').style.display = g('af_ffinalmode').value === '1' ? '' : 'none';
       syncPm();
     };
-    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode', 'af_perRound', 'af_swcuts', 'af_sw2', 'af_pick']) { const e = g(id); if (e) e.onchange = sync; }
+    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode', 'af_perRound', 'af_swcuts', 'af_sw2', 'af_pick', 'af_stopOn']) { const e = g(id); if (e) e.onchange = sync; }
     sync();
 
     g('af_save').onclick = async () => {
@@ -1462,6 +1483,8 @@ async function drawAdmin(el) {
         body.seeding = g('af_seed').value;
       }
       if (!isFfa) {
+        const stopOn = g('af_stopOn') && g('af_stopOn').checked;
+        body.stopAtAlive = stopOn ? g('af_stopN').value : 0;
         const pickOn = g('af_pick') && g('af_pick').checked;
         body.pickOpponents = pickOn ? 1 : 0;
         body.pickMinutes = pickOn ? g('af_pickMins').value : 0;

@@ -330,7 +330,7 @@ function matchBox(m) {
   const box = document.createElement('div');
   // masked = hidden by streamer mode, unless this specific match has been revealed
   const masked = streamerMode && !revealedMatches.has(m.id);
-  box.className = 'bmatch ' + (masked ? 'ready' : m.status);
+  box.className = 'bmatch ' + (masked ? 'ready' : m.status) + (neverPlayed(m, T) ? ' notplayed' : '');
   const row = (tid, score, slot) => {
     const win = !masked && m.winner && m.winner === tid && tid !== 'BYE';
     let nm;
@@ -1592,6 +1592,7 @@ function drawBracket(el) {
   el.innerHTML = '';
   connectorRedraws = [];
   buildFeeders();
+  drawStopNotice(el);
   // The opponent pick phase replaces round one, so while it is open it IS the bracket view.
   const pickOpen = T.picks && T.picks.status === 'open';
   if (pickOpen && T.picks.forWhat !== 'stage2') { drawPickPhase(el); drawBracketPreview(el); return; }
@@ -2153,6 +2154,32 @@ function drawFfaPreview(el, n) {
   el.appendChild(sec);
 }
 
+// The declared early stop, stated on the bracket itself. Without this the bracket draws a grand
+// final nobody will play and gives no hint of it, which is the whole complaint.
+function drawStopNotice(el) {
+  if (!stopAtOf(T)) return;
+  const ef = T.earlyFinish;
+  const box = document.createElement('div');
+  const left = stopAtRemaining(T);
+  if (ef) {
+    const over = ef.target && ef.alive < ef.target;
+    box.className = 'panel section stop-notice done';
+    box.innerHTML = `<div class="mono small stop-head">TOURNAMENT ENDED</div>
+      <div>${ef.auto ? 'Stopped automatically' : 'Stopped by ' + esc(ef.by || 'an organizer')} with
+        <strong>${ef.alive}</strong> still standing: ${esc((ef.names || []).join(', '))}.</div>
+      ${over ? '<div class="muted small" style="margin-top:4px">Two results landed close together, so the count went one past the target of ' + ef.target + '.</div>' : ''}
+      <div class="muted small" style="margin-top:6px">Greyed-out matches below were never played.</div>`;
+  } else {
+    box.className = 'panel section stop-notice';
+    box.innerHTML = `<div class="mono small stop-head">THIS TOURNAMENT ENDS EARLY</div>
+      <div>${esc(stopAtLine(T))}</div>
+      ${left != null ? '<div class="stop-count">' + (left === 0
+        ? 'The next result ends it.'
+        : '<strong>' + left + '</strong> more elimination' + (left === 1 ? '' : 's') + ' to go.') + '</div>' : ''}`;
+  }
+  el.appendChild(box);
+}
+
 // ---- opponent pick phase ----
 // Seeds 1-N/2 choose who they play. Modelled on the veto flow: the site always says whose turn
 // it is, shows that person a clear call to action, and lets an organizer act for anyone.
@@ -2331,6 +2358,8 @@ function drawFfaRounds(el) {
 
 // Human status for the list. Mirrors the pipeline: waiting -> picks & bans -> live -> concluded.
 function matchStateLabel(m, masked) {
+  // The tournament stopped before this match was needed. Saying "Ready" here would be a lie.
+  if (neverPlayed(m, T)) return { txt: 'Not played', cls: 'wait' };
   if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return { txt: 'Waiting', cls: 'wait' };
   if (!masked && m.status === 'done') return { txt: 'Concluded', cls: 'done' };
   if (masked && m.status === 'done') return { txt: 'Played', cls: 'live' };

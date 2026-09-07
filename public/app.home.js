@@ -406,6 +406,19 @@ async function renderHost() {
           </div>
         </div>
 
+        <div id="stopAtOpts">
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
+            <input type="checkbox" id="pStopOn"> End the tournament early, once a set number are left
+          </label>
+          <div id="stopAtBox" style="display:none;padding:8px 0 0 22px">
+            <p class="muted small" style="margin:0 0 8px">For a qualifier: once the field is down to the number that qualifies, there is nothing left worth playing. The tournament ends by itself at that point and the standings are locked - nobody is crowned champion.</p>
+            <div class="row" style="gap:10px;align-items:flex-end">
+              <div style="width:150px"><div class="muted small">Stop when this many are left</div><input type="number" id="pStopAt" min="2" max="128" value="4"></div>
+              <div class="muted small" style="flex:1;padding-bottom:8px">Shown on the bracket from the moment it is generated, so players know which matches are never going to be played. Single or double elimination only.</div>
+            </div>
+          </div>
+        </div>
+
         <div id="pickPhaseOpts">
           <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
             <input type="checkbox" id="pPickPhase"> Let the top seeds choose their own opponent
@@ -562,6 +575,9 @@ async function renderHost() {
     // a plain top-2 final and a playoff bracket are two answers to the same question
     const finalRow = document.getElementById('pSwFinal');
     if (finalRow) finalRow.disabled = !!(st2 && st2.checked);
+    const stopBox = document.getElementById('stopAtBox');
+    const stopCk = document.getElementById('pStopOn');
+    if (stopBox && stopCk) stopBox.style.display = stopCk.checked ? '' : 'none';
     const pickBox = document.getElementById('pickPhaseBox');
     const pickCk = document.getElementById('pPickPhase');
     if (pickBox && pickCk) pickBox.style.display = pickCk.checked ? '' : 'none';
@@ -577,6 +593,13 @@ async function renderHost() {
       hint.textContent = bits.join(' ');
     }
   };
+  ['pStopOn'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.addEventListener('change', () => {
+      const box = document.getElementById('stopAtBox');
+      if (box) box.style.display = e.checked ? '' : 'none';
+    });
+  });
   ['pPickPhase'].forEach(id => {
     const e = document.getElementById(id);
     if (e) e.addEventListener('change', () => {
@@ -792,6 +815,7 @@ async function renderHost() {
     setv('cDraftOrder', t.draftOrder || 'linear');
     setv('cSeed', t.seeding || '');
     setc('pPickPhase', t.pickOpponents); setv('pPickMins', t.pickMinutes || 0);
+    setc('pStopOn', t.stopAtAlive); setv('pStopAt', t.stopAtAlive || 4);
     // plan / Bo
     const pl = t.plan || {};
     if (t.bracketType === 'single') { setv('pEarly', pl.early); setv('pSemi', pl.semi); setv('pFinal', pl.final); }
@@ -856,12 +880,14 @@ async function renderHost() {
       }
     }
     try {
+      const stopOn = (document.getElementById('pStopOn') || {}).checked ? 1 : 0;
       const pickOn = (document.getElementById('pPickPhase') || {}).checked ? 1 : 0;
       const r = await api('/api/tournaments', {
         name,
         presetId: presetId || '',
         pickOpponents: pickOn,
         pickMinutes: pickOn ? pv('pPickMins') : 0,
+        stopAtAlive: stopOn ? pv('pStopAt') : 0,
         description: document.getElementById('cDesc').value,
         category,
         seriesId: (document.getElementById('cSeries') || {}).value || '',
@@ -1387,6 +1413,20 @@ function gameInfoPanel() {
     topCells.push(['Schedule', '<strong>' + esc(eventDaysLabel(T)) + '</strong>\n'
       + esc(eventDaysCountLabel(T)) + ' \u2014 no play on the days in between'
       + (T.eventDate ? '\nStarts ' + esc(fmtDateTime(T.eventDate)) : '')]);
+  }
+  // A declared early stop belongs in Game Setup, next to the format, because it changes what the
+  // bracket MEANS - half the matches drawn on it will never be played.
+  if (stopAtOf(T)) {
+    const left = stopAtRemaining(T);
+    const body = [esc(stopAtLine(T))];
+    if (T.earlyFinish) {
+      body.push('<span class="muted small">Reached \u2014 this tournament has ended.</span>');
+    } else if (left != null) {
+      body.push('<span class="muted small">' + (left === 0
+        ? 'The last result will end it.'
+        : left + ' more elimination' + (left === 1 ? '' : 's') + ' to go.') + '</span>');
+    }
+    topCells.push(['Ends early', body.join('<br>')]);
   }
   // Rating requirements. Shown whenever a rating is involved at all, not only when a min/max is
   // set, because WHICH rating counts and AS OF WHEN is itself a requirement players must know.
