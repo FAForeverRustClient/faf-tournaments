@@ -1433,3 +1433,19 @@ tr.row-out > td { opacity: .55; }
   font-family: var(--mono); font-size: 9px; letter-spacing: .5px;
   color: var(--muted, #8b93a1); text-transform: uppercase;
 }
+
+/* setting the early-stop rule from the Admin tab while the tournament runs */
+.stop-set {
+  margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--line, #2a2f37); border-radius: 6px;
+  background: rgba(255, 255, 255, .02);
+}
+.stop-set .btn { margin: 0; }
+
+/* ---- arranging the opening Swiss matchups ---- */
+.r1edit .r1rows { display: flex; flex-direction: column; gap: 6px; }
+.r1row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.r1row select { margin: 0; flex: 1 1 160px; min-width: 0; max-width: 240px; }
+.r1n { width: 20px; flex: none; color: var(--muted, #8b93a1); font-size: 12px; text-align: right; }
+.r1edit .warn { color: var(--amber, #d99a2b); }
+@media (max-width: 560px) { .r1row select { flex-basis: 100%; max-width: none; } }

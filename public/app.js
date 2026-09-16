@@ -151,6 +151,24 @@ async function refreshPending() {
 // account is a site admin, so existing `admin: siteAdmin()` calls still send something —
 // the server authenticates by session cookie regardless of the value.
 function siteAdmin() { return (fafAuth.user && fafAuth.user.siteAdmin) ? 'siteadmin' : null; }
+// Is this account ON the site-admin list, regardless of whether they currently have the powers
+// switched on? Only the stand-down toggle itself may ask - everything else asks siteAdmin().
+function siteAdminAccount() { return !!(fafAuth.user && fafAuth.user.siteAdminAccount); }
+function adminStoodDown() { return !!(fafAuth.user && fafAuth.user.adminStandDown); }
+// Switch site-admin powers off or on for THIS account, everywhere, until switched back.
+// The server holds the flag, so it survives reloads and follows the account across devices -
+// and, more importantly, the server genuinely stops honouring the powers rather than the page
+// merely hiding the buttons.
+async function setAdminStandDown(on) {
+  try {
+    await api('/auth/faf/stand_down', { on: on ? 1 : 0 });
+  } catch (e) { return toast(e.message, true); }
+  await refreshFafAuth();
+  toast(on
+    ? 'Site-admin powers OFF - you now see the site as a normal player'
+    : 'Site-admin powers ON');
+  route();
+}
 // The bar above is otherwise only drawn on navigation, so its "your turn to ban/pick" text
 // could go stale while a veto progresses elsewhere. Keep it current.
 setInterval(() => { try { refreshPending(); } catch (e) {} }, 30000);
@@ -1021,9 +1039,20 @@ function drawTopbar(modeText) {
       if (!btns.length && mode) btns.push('<span>' + esc(mode) + '</span>');
       return btns.join('');
     })() +
+    // Stand-down toggle. Shown to anyone ON the site-admin list, including while their powers
+    // are off - otherwise switching off would be a one-way door. Separate from "View as player",
+    // which is a per-tournament display toggle and changes no permissions at all.
+    (siteAdminAccount()
+      ? '<button class="btn ' + (adminStoodDown() ? 'amber' : 'ghost') + ' small" id="saPowerBtn" title="'
+        + (adminStoodDown()
+            ? 'Your site-admin powers are OFF. You are seeing the site exactly as a normal player, including map pools. Click to switch them back on.'
+            : 'Your site-admin powers are ON. Click to switch them off site-wide, so you cannot see anything a normal player cannot.')
+        + '">ADMIN ' + (adminStoodDown() ? 'OFF' : 'ON') + '</button>'
+      : '') +
     '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Open site admin console' : 'Link this account as site admin') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
+  { const sp = document.getElementById('saPowerBtn'); if (sp) sp.onclick = () => setAdminStandDown(!adminStoodDown()); }
   const saLink = document.getElementById('saLink');
   if (saLink) saLink.onclick = () => { history.pushState(null, '', '/siteadmin'); route(); };
   const edLink = document.getElementById('edLink');
@@ -1173,8 +1202,16 @@ async function renderSiteAdmin() {
   const app = document.getElementById('app');
   const isDirector = !!(fafAuth.user && fafAuth.user.director);
   if (!siteAdmin() && !isDirector) {
-    app.innerHTML = `<div class="page"><div class="panel"><div class="empty">
-      Site admin only - use the lock button in the top right to log in.</div></div></div>`;
+    // Being stood down is not the same as not being an admin, and saying "site admin only" to
+    // someone who IS one would be baffling.
+    app.innerHTML = adminStoodDown()
+      ? `<div class="page"><div class="panel section"><h2>Powers are <span class="h2-strong">switched off</span></h2>
+          <p class="muted small" style="margin:6px 0 12px">You are a site admin, but you have switched your powers off, so you are seeing the site exactly as a normal player would - map pools included. Switch them back on to use the console.</p>
+          <button class="btn primary" id="saStandUp">Switch site-admin powers back on</button></div></div>`
+      : `<div class="page"><div class="panel"><div class="empty">
+          Site admin only - use the lock button in the top right to log in.</div></div></div>`;
+    const su = document.getElementById('saStandUp');
+    if (su) su.onclick = () => setAdminStandDown(false);
     return;
   }
   // Directors get the whole console EXCEPT Site Admins. Everything else here is at or below

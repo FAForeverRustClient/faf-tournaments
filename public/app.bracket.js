@@ -58,7 +58,8 @@ function showPoolPopup(pool) {
 
 function mapsLine(bracket, round, el) {
   if (T.imported) return;
-  const admin = viewerIsOrganizer();
+  // assigning a pool to a round is a map action, so it follows map access, not organizer rights
+  const admin = viewerCanMaps();
 
   // With vetoes on, a round's maps come from its assigned pool — show that instead of a
   // fixed list, and let the organizer change it right here (works in the preview too).
@@ -243,6 +244,13 @@ function buildFeeders() {
 function viewerHasRights() { return !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
 function viewerIsAdmin() { return !playerViewMode && !!(T.viewer && T.viewer.admin); }
 function viewerIsOrganizer() { return !playerViewMode && !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
+// Map prep is its own permission, NARROWER than organizer rights: a global tournament director
+// organizes every official tournament but competes in them too, so they get no map access unless
+// they are a named organizer here. The server decides (viewer.maps / viewer.mapsView); this only
+// mirrors it so the page does not offer buttons every action behind them would refuse.
+// "View as player" still applies on top, exactly as it does for organizer controls.
+function viewerCanMaps() { return !playerViewMode && !!(T.viewer && T.viewer.maps); }
+function viewerSeesMapPrep() { return !playerViewMode && !!(T.viewer && T.viewer.mapsView); }
 function viewerLoggedIn() { return !!(T.viewer && T.viewer.loggedIn) || isFafVerified(); }
 function viewerSignedUp() { return !!(T.viewer && T.viewer.signedUpPlayerId); }
 // helper: prompt login (kicks off FAF flow if configured, else the name modal)
@@ -456,8 +464,11 @@ async function openMapImport() {
   let sources;
   try { sources = (await api('/api/my_tournaments')).tournaments || []; }
   catch (e) { return toast(e.message, true); }
-  sources = sources.filter(t => t.id !== T.id && (t.mapCount > 0 || t.poolCount > 0));
-  if (!sources.length) return toast('No other tournament of yours has maps to import', true);
+  // canCopyMaps comes from the server and is narrower than "appears in my tournaments": a
+  // director sees every official tournament there, but may only copy maps out of the ones they
+  // actually organize. Filtering here keeps the picker honest instead of offering a 403.
+  sources = sources.filter(t => t.id !== T.id && t.canCopyMaps && (t.mapCount > 0 || t.poolCount > 0));
+  if (!sources.length) return toast('No tournament you organize has maps to import', true);
 
   modal(`<h3>Import maps from another tournament</h3>
     <p class="muted small">Pick one of your tournaments, then choose whole pools or individual maps. Maps you already have (matched by name) won't be duplicated.</p>
@@ -583,7 +594,7 @@ function editMapEntry(map) {
 }
 
 function drawMaps(el) {
-  const admin = viewerIsOrganizer();
+  const admin = viewerCanMaps();
   const db = T.mapDb || [];
 
   // "Played in" should reflect only DIRECT round assignments of this specific map. Maps that
@@ -1630,6 +1641,7 @@ function drawBracket(el) {
       for (const f of connectorRedraws) f();
       return;
     }
+    drawSwissRound1Editor(el);
     return drawSwissRounds(el);
   }
 
@@ -2262,6 +2274,69 @@ function drawPickPhase(el) {
   if (undo) undo.onclick = async () => {
     try { await api('/api/t/' + T.id + '/undo_pick_opponent', { admin: adminToken() }); toast('Pick undone'); await refresh(); }
     catch (e) { toast(e.message, true); }
+  };
+}
+
+// Round 1 has no records to pair on, so the site draws it by seed - the same every time. Some
+// formats want the opening matchups chosen instead, so while the round is untouched an organizer
+// can rearrange it here. It disappears the moment anything is reported.
+function drawSwissRound1Editor(el) {
+  if (!T.swissR1Open || !viewerIsOrganizer()) return;
+  const r1 = (T.matches || []).filter(m => m.bracket === 'sw' && m.round === 1 && m.team2 !== 'BYE');
+  if (!r1.length) return;
+  const bye = (T.matches || []).find(m => m.bracket === 'sw' && m.round === 1 && m.team2 === 'BYE');
+  const nm = id => { const tm = (T.teams || []).find(x => x.id === id); return tm ? tm.name : id; };
+  const opts = sel => (T.teams || []).map(x =>
+    '<option value="' + esc(x.id) + '"' + (x.id === sel ? ' selected' : '') + '>' + esc(x.name) + '</option>').join('');
+
+  const sec = document.createElement('div');
+  sec.className = 'panel section r1edit';
+  sec.innerHTML = `<h2>Round 1 <span class="h2-strong">matchups</span></h2>
+    <p class="muted small" style="margin:2px 0 10px">Round 1 is drawn by seed, because there are no results to pair on yet. Set the opening matchups here if you want to choose them. Locked as soon as the first result comes in.</p>
+    <div class="r1rows">${r1.map((m, i) => `<div class="r1row">
+      <span class="r1n mono">${i + 1}</span>
+      <select data-r1a="${i}">${opts(m.team1)}</select>
+      <span class="muted small">vs</span>
+      <select data-r1b="${i}">${opts(m.team2)}</select>
+    </div>`).join('')}</div>
+    ${bye ? '<p class="muted small" style="margin:8px 0 0">' + esc(nm(bye.team1)) + ' has the bye.</p>' : ''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="btn primary small" id="r1save">Save matchups</button>
+      <button class="btn ghost small" id="r1shuffle">Draw at random</button>
+    </div>
+    <div id="r1warn" class="muted small" style="margin-top:8px"></div>`;
+  el.appendChild(sec);
+
+  // live duplicate check, so a bad set is obvious before it is sent
+  const readPairs = () => r1.map((m, i) => [
+    sec.querySelector('[data-r1a="' + i + '"]').value,
+    sec.querySelector('[data-r1b="' + i + '"]').value
+  ]);
+  const check = () => {
+    const seen = {}, dupes = [];
+    for (const [a, b] of readPairs()) for (const x of [a, b]) { if (seen[x]) dupes.push(nm(x)); seen[x] = 1; }
+    const missing = (T.teams || []).filter(x => !seen[x.id] && !(bye && bye.team1 === x.id)).map(x => x.name);
+    const w = sec.querySelector('#r1warn');
+    if (dupes.length) w.innerHTML = '<span class="warn">Twice in the list: ' + esc([...new Set(dupes)].join(', ')) + '</span>';
+    else if (missing.length) w.innerHTML = '<span class="warn">Not playing: ' + esc(missing.join(', ')) + '</span>';
+    else w.textContent = '';
+    return !dupes.length && !missing.length;
+  };
+  sec.querySelectorAll('select').forEach(x => x.onchange = check);
+  check();
+
+  sec.querySelector('#r1save').onclick = async () => {
+    if (!check()) return toast('Every player has to appear exactly once', true);
+    try {
+      await api('/api/t/' + T.id + '/swiss_round1', { pairs: readPairs(), admin: adminToken() });
+      toast('Round 1 matchups saved'); await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  sec.querySelector('#r1shuffle').onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/swiss_round1', { shuffle: 1, admin: adminToken() });
+      toast('Round 1 re-drawn'); await refresh();
+    } catch (e) { toast(e.message, true); }
   };
 }
 

@@ -30,7 +30,8 @@ const { PRESETS, presetById, presetsFor } = require('./lib/presets');
 const PICKS = require('./lib/picks');
 const { swissPairRound, swissAfterReport, swissStandings,
         swissCuts, swissCutRounds, swissRecord, swissAdvanced,
-        stageTwoCfg, stageTwoField, stageTwoBuild } = require('./lib/swiss');
+        stageTwoCfg, stageTwoField, stageTwoBuild,
+        swissRound1Open, swissSetRound1, swissShuffleRound1 } = require('./lib/swiss');
 const { ffaCreateRound, ffaAfterReport, ffaRank } = require('./lib/ffa');
 // Team formation and map lookups.
 const { buildDraft, finishDraftIfDone, finalizeOpenTeams, formTeamsGrouped } = require('./lib/teams');
@@ -901,9 +902,27 @@ function sweepScheduledPublishes() {
 // Site admin: a FAF account linked as site admin. The ADMIN_PASSWORD (GADMIN) is no longer an
 // identity of its own — it is only a bootstrap that links the CURRENT logged-in account (see
 // the /api/siteadmin link endpoint). So every site-admin check is now session-based.
-function isSiteAdmin(req) {
+// Is this account ON the site-admin list? This is the raw fact, and it is what the stand-down
+// toggle itself checks - otherwise standing down would lock you out of standing back up.
+function isSiteAdminAccount(req) {
   const sess = currentSession(req);
   return !!(sess && sess.fafId && db.siteAdmins && db.siteAdmins[sess.fafId]);
+}
+// Has this site admin voluntarily switched their powers off? Site admins compete in tournaments
+// too, and seeing every unpublished map pool is an advantage they cannot un-see. The toggle lets
+// them put the powers down and pick them back up whenever they like. Stored on the account, not
+// in the browser, so it holds across devices AND so it is the SERVER that stops honouring the
+// powers - a client-side flag would only hide the buttons, which is not the same thing.
+function siteAdminStoodDown(req) {
+  const sess = currentSession(req);
+  if (!sess || !sess.fafId) return false;
+  const rec = db.siteAdmins && db.siteAdmins[sess.fafId];
+  return !!(rec && rec.standDown);
+}
+// The effective answer, and the ONE thing every permission check in the app asks.
+function isSiteAdmin(req) {
+  if (!isSiteAdminAccount(req)) return false;
+  return !siteAdminStoodDown(req);
 }
 // Global tournament directors: organizer rights on every OFFICIAL tournament.
 function isDirector(req) {
@@ -1050,6 +1069,43 @@ function banRefusalOrganizer(hit, t, who) {
   return who + ' is banned from this tournament' + until + '.' + reason + ' Lift the ban first, on the Admin tab.';
 }
 // Combined check most mutating endpoints use: site-admin token OR a logged-in authorized organizer.
+// ---------- map access is NARROWER than organizer rights ----------
+// A global tournament director has organizer rights on every official tournament (isOrganizer
+// returns true for them), but they also COMPETE in those tournaments. Seeing an unpublished map
+// pool before it goes public is a real competitive advantage, and nobody agreed to give it to
+// them by making them a director. So map prep is gated separately:
+//
+//   named organizer of THIS tournament  - yes (they built it)
+//   organizer share-link token          - yes (same thing, via the link)
+//   caster                              - yes to VIEW only; they do not compete, and the role
+//                                         exists to see everything (they cannot edit anything)
+//   site admin                          - yes, because a broken pool has to be diagnosable
+//   global tournament director          - NO, unless they are also a named organizer here
+//
+// Every map read and every map write goes through these two helpers. If you add a map surface,
+// add it here rather than reaching for canOrganize.
+function namedOrganizer(t, req) {
+  const sess = currentSession(req);
+  return !!(sess && sess.fafId && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(sess.fafId) >= 0);
+}
+function hasOrganizerToken(t, tok) {
+  if (!tok || tok !== t.adminToken) return false;
+  return true;
+}
+// May this viewer CHANGE the maps and pools?
+function canManageMaps(t, req, body) {
+  const tok = body && body.admin;
+  if (isSiteAdmin(req)) return true;
+  if (namedOrganizer(t, req)) return true;
+  if (hasOrganizerToken(t, tok) && (!FAF_OAUTH_ON || currentSession(req))) return true;
+  return false;
+}
+// May this viewer SEE the map prep (unpublished maps, unpublished pools)?
+function canSeeMapPrep(t, tok, req) {
+  if (canManageMaps(t, req, { admin: tok })) return true;
+  return isCaster(t, req);
+}
+
 function canOrganize(t, req, body) {
   if (isAdmin(t, body && body.admin, req)) return true;   // site admin, or organizer token (logged in)
   if (isOrganizer(t, req)) return true;              // logged-in claimed organizer
@@ -1466,7 +1522,9 @@ function publicView(t) {
     plan: t.plan || null, maxTeams: t.maxTeams || 0, perRoundBo: t.perRoundBo ? 1 : 0,
     cfg: t.cfg || null, stage2: t.stage2 || null, preset: t.preset || null, presetName: t.presetName || null,
     pickOpponents: t.pickOpponents ? 1 : 0, pickMinutes: t.pickMinutes || 0,
-    stopAtAlive: t.stopAtAlive || 0, aliveCount: aliveTeamCount(t), seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
+    stopAtAlive: t.stopAtAlive || 0, aliveCount: aliveTeamCount(t),
+    swissR1Open: (t.bracketType === 'swiss' && t.status === 'running' && swissRound1Open(t)) ? 1 : 0,
+    seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
     signupMode: t.signupMode || 'open',
     playerReporting: t.playerReporting === undefined ? 1 : (t.playerReporting ? 1 : 0),
     veto: t.veto || { enabled: false, mode: 'upfront' },
@@ -2037,8 +2095,29 @@ async function handleAuth(req, res, url) {
     const prof = sess ? (db.profiles[sess.fafId] || {}) : {};
     return json(res, 200, {
       enabled: FAF_OAUTH_ON,
-      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0, importer: db.importerAllowed[sess.fafId] ? 1 : 0, director: (db.directors && db.directors[sess.fafId]) ? 1 : 0, siteAdmin: (db.siteAdmins && db.siteAdmins[sess.fafId]) ? 1 : 0, allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId]) || (db.siteAdmins && db.siteAdmins[sess.fafId])) ? 1 : 0 } : null
+      // siteAdmin is the EFFECTIVE flag (false while stood down) so every existing client check
+      // stays correct without being touched. siteAdminAccount + adminStandDown exist only so the
+      // toggle itself can be drawn while the powers are off.
+      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0, importer: db.importerAllowed[sess.fafId] ? 1 : 0, director: (db.directors && db.directors[sess.fafId]) ? 1 : 0, siteAdmin: isSiteAdmin(req) ? 1 : 0, siteAdminAccount: isSiteAdminAccount(req) ? 1 : 0, adminStandDown: siteAdminStoodDown(req) ? 1 : 0, allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId]) || (db.siteAdmins && db.siteAdmins[sess.fafId])) ? 1 : 0 } : null
     });
+  }
+
+  // Stand down / pick back up. Guarded by the RAW account check, so a stood-down admin can
+  // always reverse it. Nothing else in the app may use isSiteAdminAccount for a permission.
+  if (sub === 'stand_down' && req.method === 'POST') {
+    if (!isSiteAdminAccount(req)) return json(res, 403, { error: 'Site admin only' });
+    const sess = currentSession(req);
+    const b = await readBody(req, 4096);
+    const on = !!b.on;
+    const rec = db.siteAdmins[sess.fafId];
+    if (!!rec.standDown === on) return json(res, 200, { ok: true, standDown: on ? 1 : 0 });
+    rec.standDown = on ? 1 : 0;
+    saveDB();
+    audit(req, on ? 'admin_stand_down' : 'admin_stand_up', {
+      actor: { kind: 'faf', fafId: sess.fafId, name: sess.fafName || sess.fafId },
+      detail: on ? 'site admin powers switched OFF by themselves' : 'site admin powers switched back ON'
+    });
+    return json(res, 200, { ok: true, standDown: on ? 1 : 0 });
   }
 
   if (!FAF_OAUTH_ON) return json(res, 503, { error: 'FAF login is not configured on this server yet.' });
@@ -2266,7 +2345,11 @@ async function handleAPI(req, res, url) {
       saveDB();
       audit(req, 'siteadmin_linked', { actor: { kind: 'faf', fafId: sess.fafId, name: sess.fafName }, detail: 'via password' });
     }
-    return json(res, 200, { ok: true, siteAdmin: 1 });
+    // The password links the account; it deliberately does NOT undo a stand-down. Standing back
+    // up is a conscious click, not a side effect of typing a password for something else.
+    const down = siteAdminStoodDown(req);
+    return json(res, 200, { ok: true, siteAdmin: down ? 0 : 1, standDown: down ? 1 : 0,
+      note: down ? 'This account is linked, but you have your site-admin powers switched off. Turn them back on from the header when you want them.' : undefined });
   }
 
   // ---- hosting access (only meaningful once FAF login is configured) ----
@@ -2501,7 +2584,7 @@ async function handleAPI(req, res, url) {
         })).sort((x, y) => y.at - x.at),
         articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0)),
         directors: Object.keys(db.directors || {}).map(fid => ({ fafId: fid, name: db.directors[fid].name || fid, at: db.directors[fid].at || 0, by: db.directors[fid].by || '' })).sort((x, y) => y.at - x.at),
-        siteAdmins: Object.keys(db.siteAdmins || {}).map(fid => ({ fafId: fid, name: db.siteAdmins[fid].name || fid, at: db.siteAdmins[fid].at || 0, by: db.siteAdmins[fid].by || '' })).sort((x, y) => y.at - x.at),
+        siteAdmins: Object.keys(db.siteAdmins || {}).map(fid => ({ fafId: fid, name: db.siteAdmins[fid].name || fid, at: db.siteAdmins[fid].at || 0, by: db.siteAdmins[fid].by || '', standDown: db.siteAdmins[fid].standDown ? 1 : 0 })).sort((x, y) => y.at - x.at),
         me: (currentSession(req) || {}).fafId || null,
         bans: bansList
       });
@@ -2806,7 +2889,15 @@ async function handleAPI(req, res, url) {
     const mine = Object.values(db.tournaments).filter(t => !t.archived && (
       (Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(sess.fafId) >= 0) ||
       (isOfficial(t) && db.directors[sess.fafId])
-    )).sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0)).map(t => ({ id: t.id, name: t.name, category: t.category || null, status: t.status, eventDate: t.eventDate || null, mapCount: (t.mapDb || []).length, poolCount: (t.mapPools || []).length }));
+    )).sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0)).map(t => {
+      // canCopyMaps is deliberately narrower than "appears in this list": a director sees every
+      // official tournament here (they organize them) but may only copy maps out of the ones
+      // they actually run. The counts are zeroed too, so the list does not leak pool sizes.
+      const may = canManageMaps(t, req, {});
+      return { id: t.id, name: t.name, category: t.category || null, status: t.status, eventDate: t.eventDate || null,
+        mapCount: may ? (t.mapDb || []).length : 0, poolCount: may ? (t.mapPools || []).length : 0,
+        canCopyMaps: may ? 1 : 0 };
+    });
     return json(res, 200, { tournaments: mine });
   }
 
@@ -3268,12 +3359,18 @@ async function handleAPI(req, res, url) {
         oauthEnabled: FAF_OAUTH_ON ? 1 : 0,
         caster: streamer ? 1 : 0,
         streamer: streamer ? 1 : 0,   // deprecated alias for `caster`
-        newsReadAt: (sess && db.profiles[sess.fafId] && db.profiles[sess.fafId].newsRead && db.profiles[sess.fafId].newsRead[t.id]) || 0
+        newsReadAt: (sess && db.profiles[sess.fafId] && db.profiles[sess.fafId].newsRead && db.profiles[sess.fafId].newsRead[t.id]) || 0,
+        // map prep is narrower than organizer rights - the client must not offer a Maps tab
+        // that every action inside would refuse
+        maps: canManageMaps(t, req, { admin: tok }) ? 1 : 0,
+        mapsView: canSeeMapPrep(t, tok, req) ? 1 : 0
       };
       // Hide prep from non-organizers: unpublished maps and unpublished pools.
       // Exception: a map that's already on screen somewhere (in a live veto or a round's
       // map pool) must keep its name, or players would see a raw id.
-      if (!organizer && !streamer) {
+      // Map prep uses its OWN rule, not `organizer`: a director organizes every official
+      // tournament but must not see its pool unless they actually run it.
+      if (!canSeeMapPrep(t, tok, req)) {
         const inPlay = {};
         for (const m of (view.matches || [])) {
           if (!m.veto) continue;
@@ -5053,7 +5150,7 @@ async function handleAPI(req, res, url) {
     // set maps for a round (admin, any time)
     // ===== map pools (named sets of maps, assignable to rounds/matches) =====
     if (sub === 'pool_save') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const name = cleanName(b.name, 40);
       if (!name) return bad(res, 'Pool name required');
       const ids = Array.isArray(b.mapIds) ? b.mapIds.filter(id => mapById(t, id)) : [];
@@ -5102,13 +5199,15 @@ async function handleAPI(req, res, url) {
     // Import maps (and optionally whole pools) from another tournament the requester
     // organizes. Deduplicates by map name so repeat imports don't pile up copies.
     if (sub === 'copy_maps') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const src = db.tournaments[String(b.sourceId || '')];
       if (!src) return bad(res, 'Source tournament not found');
-      const sess = currentSession(req);
-      const mayRead = (Array.isArray(src.organizerFafIds) && sess && src.organizerFafIds.indexOf(sess.fafId) >= 0) ||
-        (isOfficial(src) && isDirector(req)) || isAdmin(t, b.admin, req);
-      if (!mayRead) return json(res, 403, { error: 'You must organize the source tournament to copy from it' });
+      // Reading the SOURCE is a map read, so it uses the same rule (see canManageMaps): being a
+      // global director is not enough. Copying was otherwise a back door straight through the
+      // restriction - copy the official tournament's pool into your own and read it there.
+      if (!canManageMaps(src, req, {})) {
+        return json(res, 403, { error: 'You must be a named organizer of the source tournament to copy its maps' });
+      }
 
       t.mapDb = t.mapDb || [];
       const byName = {};
@@ -5160,7 +5259,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'pool_copy_sequence') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const src = poolById(t, b.sourceId);
       if (!src) return bad(res, 'Source pool not found');
       const srcSize = (src.mapIds || []).length;
@@ -5187,7 +5286,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'pool_publish') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const pool = poolById(t, b.id);
       if (!pool) return bad(res, 'Pool not found');
       pool.published = b.published ? 1 : 0;
@@ -5209,7 +5308,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'pool_delete') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const delPool = poolById(t, b.id);
       if (delPool) tlog(t, req, b.admin, 'deleted pool "' + delPool.name + '"');
       t.mapPools = (t.mapPools || []).filter(p => p.id !== b.id);
@@ -5227,7 +5326,7 @@ async function handleAPI(req, res, url) {
 
     // assign a pool to a round ("bracket:round") or a specific match ("match:<id>"); empty clears it
     if (sub === 'pool_assign') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const key = String(b.key || '');
       if (!key) return bad(res, 'Missing assignment key');
       if (b.poolId) {
@@ -5260,7 +5359,7 @@ async function handleAPI(req, res, url) {
     // ===== map database =====
     // Add or update a map. Image comes as a base64 data URL (optional). Organizer only.
     if (sub === 'map_save') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const name = cleanName(b.name, 60);
       if (!name) return bad(res, 'Map name required');
       const description = String(b.description || '').slice(0, 1000);
@@ -5298,7 +5397,7 @@ async function handleAPI(req, res, url) {
     // Toggle publish state (hide/publish for TD-team prep). Organizer only.
     // With all:1 it applies to every map in the database at once.
     if (sub === 'map_publish') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       if (b.all) {
         for (const m of (t.mapDb || [])) m.published = b.published ? 1 : 0;
         tlog(t, req, b.admin, (b.published ? 'published' : 'hid') + ' all maps (' + (t.mapDb || []).length + ')');
@@ -5315,7 +5414,7 @@ async function handleAPI(req, res, url) {
 
     // Delete a map from the database. Also strips it from round pools and veto config.
     if (sub === 'map_delete') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const map = mapById(t, b.id);
       if (!map) return json(res, 200, { ok: true });
       tlog(t, req, b.admin, 'deleted map ' + map.name);
@@ -5336,7 +5435,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'set_maps') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
       const bracket = String(b.bracket || '');
       const round = parseInt(b.round, 10);
       if (['wb', 'lb', 'gf', 'sw', 'ffa'].indexOf(bracket) < 0 || !(round >= 1 && round <= 30)) return bad(res, 'Bad round');
@@ -5588,6 +5687,10 @@ async function handleAPI(req, res, url) {
                 'which means the number of teams that reach ' + (ex.winCut || '-') + ' wins can vary.');
             }
           }
+          // A per-tournament draw seed: the pairing inside a score group is shuffled with it, so
+          // the draw is random but can still be reproduced exactly when someone asks how a round
+          // came out the way it did.
+          t.cfg.drawSeed = t.cfg.drawSeed || (t.id + '-' + uid(8));
           t.stage2 = buildStageTwo(Object.assign({}, ex, { pickPhase: t.pickOpponents ? 1 : 0 }), c);
           if (t.stage2) {
             if (t.stage2.cutTo >= n) return bad(res, 'The playoff cut (' + t.stage2.cutTo + ') must be smaller than the field (' + n + ')');
@@ -5628,6 +5731,75 @@ async function handleAPI(req, res, url) {
       t.perRoundBo = 1;
       saveDB();
       return json(res, 200, { ok: true });
+    }
+
+    // Rearrange the opening Swiss matchups. Round 1 has no records to pair on, so it is drawn by
+    // seed and is the same every time; some formats want it chosen instead. Only while the round
+    // is genuinely untouched - the moment anything is reported, the draw is history.
+    if (sub === 'swiss_round1') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (t.bracketType !== 'swiss') return bad(res, 'This only applies to a Swiss stage');
+      // Order matters: a finished tournament that is told "has not started yet" reads as a bug.
+      if (!swissRound1Open(t)) return bad(res, 'Round 1 has already started - the matchups are locked in');
+      if (t.status !== 'running') return bad(res, 'The Swiss stage has not started yet');
+      const removed = [];
+      const err = b.shuffle
+        ? swissShuffleRound1(t, removed)
+        : swissSetRound1(t, Array.isArray(b.pairs) ? b.pairs : null, removed);
+      if (err) return bad(res, err);
+      // the old match rooms can never be reached again, so do not leave them lying around
+      if (t.chat) for (const id of removed) delete t.chat['match:' + id];
+      const nm = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+      const drawn = (t.matches || []).filter(m => m.bracket === 'sw' && m.round === 1 && m.team2 !== 'BYE');
+      tlog(t, req, b.admin, b.shuffle ? 're-drew the round 1 matchups' : 'set the round 1 matchups by hand');
+      tpush(t, 'System', 'Round 1 matchups ' + (b.shuffle ? 're-drawn' : 'set') + ': '
+        + drawn.map(m => nm(m.team1) + ' vs ' + nm(m.team2)).join(' \u00b7 ') + '.');
+      saveDB();
+      return json(res, 200, { ok: true, pairs: drawn.map(m => [m.team1, m.team2]) });
+    }
+
+    // Set (or clear) the survivor count this tournament stops at. Deliberately NOT part of
+    // edit_format, which is locked the moment the bracket starts: the point at which a TD
+    // realises a qualifier should stop at 4 is usually mid-event, and it changes nothing
+    // structural - it only declares when to stop. Players are told, because it changes which
+    // matches are going to be played.
+    if (sub === 'set_stop_at') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (t.status === 'finished') return bad(res, 'This tournament has already finished. Reopen it first if you want to carry on.');
+      const n = intIn(b.stopAtAlive, 0, 128, 0);
+      if (n) {
+        if (t.competition === 'ffa' || t.bracketType === 'swiss') {
+          return bad(res, 'Stopping at a survivor count only applies to single or double elimination.');
+        }
+        if (n < 2) return bad(res, 'Stopping at 1 survivor is just playing the tournament out - set 2 or more, or clear it.');
+        const field = (t.teams || []).length;
+        if (field && n >= field) {
+          return bad(res, 'This tournament has ' + field + ' teams, so stopping at ' + n + ' would end it before a single match. Set a lower number.');
+        }
+        const alive = aliveTeamCount(t);
+        if (t.status === 'running' && alive <= n && !b.confirm) {
+          return bad(res, 'Only ' + alive + ' ' + (alive === 1 ? 'is' : 'are') + ' still standing, so this would end the tournament straight away. Confirm to do that.');
+        }
+      }
+      const prev = parseInt(t.stopAtAlive, 10) || 0;
+      if (prev === n) return json(res, 200, { ok: true, stopAtAlive: n });
+      t.stopAtAlive = n;
+      tlog(t, req, b.admin, n
+        ? 'set this tournament to end once ' + n + ' are left' + (prev ? ' (was ' + prev + ')' : '')
+        : 'removed the early-stop rule - it will now be played out in full');
+      // Only worth telling the players about once the bracket exists; before that the format
+      // summary already carries it and there is nothing on screen to contradict.
+      if (t.status === 'running') {
+        tpush(t, 'System', n
+          ? 'The organizer set this tournament to end once ' + n + ' are left. All ' + n +
+            ' qualify, and the matches after that point will not be played.'
+          : 'The organizer removed the early-stop rule. This tournament will now be played out in full.');
+      }
+      saveDB();
+      // The new rule may already be satisfied - honour it now rather than at the next result.
+      const ended = n && t.status === 'running' ? autoStopIfReached(t) : false;
+      if (ended) saveDB();
+      return json(res, 200, { ok: true, stopAtAlive: n, ended: ended ? 1 : 0 });
     }
 
     // Set the Bo on ONE match. The per-round control below is the bulk tool; this is the escape

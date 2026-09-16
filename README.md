@@ -14,6 +14,21 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - FFA modes: points over rounds (placement points per lobby, optional cut after each round, optional final lobby between the top X) or knockout (top 1-4 advance per lobby).
 - Swiss: Bo1/Bo3 rounds, optional final between the top 2, optional fast pairing (next matchup starts as soon as two teams are free).
 - Swiss **record cuts** (optional): instead of a fixed number of rounds, teams leave the stage the moment they reach a win or loss threshold - "3 wins advance, 3 losses eliminated", the format used by the FAF Invitational and LotS. The round count is then derived, not chosen: the longest anyone can play is (wins - 1) + (losses - 1) + 1, so 3/3 is five rounds. Pairing stays inside a score group, never repeats a matchup, and floats the odd player down a group the way Swiss always has. Measured behaviour: 16 teams at 3/3 never needs a repeat and always advances exactly 8. Below 2^(cut+1) teams the draw can run out of fresh opponents, and the organizer is warned at start rather than blocked.
+- **The draw inside a score group is random**, not a fixed order. It is seeded from a draw seed
+  stored on the tournament, so it is unpredictable in advance but reproducible afterwards - an
+  organizer can always show that a round was drawn the way the record says. Byes are drawn at
+  random too, among those who have not had one.
+- **Round 1 can be arranged by hand.** There are no records to pair on in the opening round, so
+  the site draws it; an organizer can rearrange it from the Bracket tab, or re-draw it at random.
+  Validated so every player appears exactly once (with the leftover taking the bye in an odd
+  field), and locked the moment the first result comes in.
+- **The deciding round pairs across the two streams.** The last score group is a merge: players
+  who *fell* into it from a better record, and players who *climbed* into it from a worse one.
+  That round puts the two against each other - "the 2-2 from the upper side plays the 2-2 from
+  the lower side". Never at the cost of a rematch: rematch avoidance always wins, and a
+  same-stream pairing only ever appears when no clean draw exists at all. Measured over 400
+  randomised 16-player runs: 1190 of 1200 deciding-round matches crossed the streams, and every
+  one of the other 10 was mathematically forced.
 - **Deciding-match length** (optional, with record cuts): a match where a win qualifies someone or a loss knocks them out can be played at a different best-of from the rest. LotS runs Bo1 throughout and Bo3 for those.
 - **Two stages in one tournament** (optional): a Swiss stage can cut its qualified field into a single- or double-elimination playoff bracket inside the same tournament - one page, one chat, one set of standings, no second event and no invites to accept. The playoff bracket is seeded from the Swiss standings and appears above the Swiss rounds on the Bracket tab.
 - **Per-match best-of**: an organizer can retune one specific match from its Details popup, as long as it has not started. This is the escape hatch for a single series on the day; the per-round control below is still the bulk tool.
@@ -97,7 +112,8 @@ Zero runtime dependencies: plain Node.js (built-in `http` only), JSON file stora
 - Both sides show it: a qualifier displays "the top N here will be invited to X", and the parent lists where its field comes from and who has qualified.
 - Seeding in the parent is by rating as usual, with the normal manual seed override. A link can also reserve a **seed block**: set "seed from" to 13 and the arrivals take seeds 13 and down in the order they qualified, with everyone else shuffling up. This is how LotS puts its four qualifiers at 13-16 without the organizer dragging them there by hand.
 - **Ending a qualifier early**: a running tournament can be stopped where it stands from the Admin tab ("End here and lock standings"). No champion is recorded - nobody won it - and the locked standings are what any parent draws from. This is how a qualifier that exists to decide the top 4 stops once the top 4 is decided, instead of playing out a final nobody needs. Survivors outrank everyone who was knocked out, winners-bracket survivors first, so "top 4" from a stopped double elimination means the two who have not lost, then the two on one loss. It is reversible, with a warning if invites have already gone out.
-- **Declaring it up front, and stopping automatically**: set a survivor count on the Format panel and the tournament ends *by itself* the moment that many are left. More importantly it is **announced from the moment the bracket is generated** - a banner on the bracket and a cell in Game Setup say "Ends when 4 are left, all 4 qualify, and the remaining matches are not played", with a live countdown of how many eliminations are still to come. Without that the bracket lies: it draws a grand final nobody is ever going to play and gives no hint of it. Once it stops, the matches that were never played are greyed out and read **Not played** rather than Ready. Single or double elimination only, and the count is validated against the field when the bracket starts. If two results land close enough together to take the count one past the target, the site says so rather than quietly pretending it hit the number.
+- **Declaring it up front, and stopping automatically**: set a survivor count on the Format panel and the tournament ends *by itself* the moment that many are left. More importantly it is **announced from the moment the bracket is generated** - a banner on the bracket and a cell in Game Setup say "Ends when 4 are left, all 4 qualify, and the remaining matches are not played", with a live countdown of how many eliminations are still to come. Without that the bracket lies: it draws a grand final nobody is ever going to play and gives no hint of it. Once it stops, the matches that were never played are greyed out and read **Not played** rather than Ready. Single or double elimination only, and the count is validated against the field when the bracket starts.
+- **Settable at any point, including mid-event.** The Format panel is locked once the bracket starts, but the survivor count is not part of the format - it changes nothing structural, it only declares when to stop. So it also lives in the **End early** panel on the Admin tab, where it can be set, changed or cleared while the tournament is running, and players are told in the tournament chat when it changes. If the number you set is already satisfied, the site says it would end the tournament straight away and asks you to confirm rather than doing it silently. If two results land close enough together to take the count one past the target, the site says so rather than quietly pretending it hit the number.
 - The link is stored only on the parent, so the two sides can never disagree. Removing a link keeps invites already sent. Self-links and circular links are rejected.
 
 ### Checking your rating before you sign up
@@ -174,6 +190,49 @@ Removing someone from a tournament was a revolving door - they just signed up ag
 - The Players tab has a **Ban** action that bans and, where removal is still allowed, removes in one step - that is what an organizer means by "kick". The **ban is written first on purpose**: if the removal then fails they are banned but still listed, which is visible and fixable, whereas the other order could leave them removed and free to walk back in. Once the bracket is running it only blocks re-entry and says so.
 - Only accounts with a FAF id can be banned, so a manually-added player (no `fafId`) shows no Ban button - there is nothing stable to ban.
 - One client component, `banPanel()`, renders all three; the console, the tournament Admin tab and the series page differ only in wording and in where the two actions post.
+
+### Map access is narrower than organizer rights
+- A global tournament director has organizer rights on every official tournament - but they also
+  **compete** in them, and seeing an unpublished map pool before it goes public is a real
+  competitive advantage nobody agreed to hand them by making them a director.
+- So map prep (hidden maps, unpublished pools) is gated on its own rule, not on organizer rights:
+
+  | Who | Sees prep | Can edit maps |
+  |---|---|---|
+  | A named organizer of *that* tournament | yes | yes |
+  | Someone holding the organizer share-link | yes | yes |
+  | Caster | yes | no - the role has zero organizer powers |
+  | Site admin | yes - a broken pool has to be diagnosable | yes |
+  | Global tournament director (not an organizer there) | **no** | **no** |
+
+- A director who is *also* added as an organizer of a specific tournament gets full map access
+  there, as normal. Every other director power is untouched: they still organize official
+  tournaments, see drafts, run the console, manage bans and the director roster.
+- The **copy-maps** path is closed too. Copying reads the source tournament's pool, so it follows
+  the same rule - otherwise a director could copy an official pool into their own tournament and
+  read it there. The import picker only offers tournaments you may actually copy from, and the
+  map counts of the others are not sent at all.
+- Published maps and pools stay public to everyone, and maps already in a live veto keep their
+  names, exactly as before. Nothing here changes what a normal player sees.
+
+### Switching site-admin powers off
+- Site admins compete too, and the same argument applies to them - except a site admin genuinely
+  needs full access to diagnose and fix problems. So instead of restricting them, they get a
+  switch: **ADMIN ON / ADMIN OFF** in the header, visible on every page.
+- Switching off removes the powers **site-wide**, not for one tournament: no site-admin console,
+  no admin rights on any tournament, and no map prep anywhere. It is the server that stops
+  honouring them, not the page hiding buttons - a client-side flag would leave the data one
+  devtools window away.
+- The state lives on the account, so it survives reloads, restarts and other devices. It is
+  reversible at any time by the admin themselves, and the toggle stays visible while the powers
+  are off, so switching off is never a one-way door. Visiting the console while stood down
+  explains the situation and offers the switch, rather than claiming you are not an admin.
+- It changes **only** the site-admin role. A stood-down admin who is also a director keeps their
+  director powers, and can still host. The master-password link does not undo a stand-down:
+  picking the powers back up is a deliberate click, not a side effect of typing a password.
+- Both switches are recorded in the audit log.
+- It is **independent of "View as player"**, which remains a per-browser display toggle that hides
+  organizer clutter and changes no permissions at all. The two can be used together.
 
 ### The tournament-director role, in full
 A **global tournament director** is not a site admin. What the role grants:

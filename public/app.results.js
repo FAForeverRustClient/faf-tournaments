@@ -903,6 +903,19 @@ async function drawAdmin(el) {
           + ' Players can see that on the bracket. You can also stop it by hand right now:</p>'
         : '<p class="muted small" style="margin:6px 0 10px">Locks the standings exactly as they are and marks the tournament finished, without playing out the remaining matches. Nobody is crowned champion. Use this when the tournament exists to decide who qualifies, not who wins - any parent tournament drawing from this one will invite from the locked standings. To have it happen automatically instead, set a survivor count on the <strong>Format</strong> panel before the bracket starts.</p>'}
       <div class="infocell"><div class="mono small muted">STILL STANDING (${alive})</div>${split}</div>
+      <div class="stop-set">
+        <div class="ic-label">End automatically</div>
+        <p class="muted small" style="margin:4px 0 8px">${declared
+          ? 'Change the number, or clear it to play the tournament out in full. Players see this on the bracket.'
+          : 'Set the number that qualifies and the tournament ends by itself when it gets there - and says so on the bracket from now on, so nobody is surprised by matches that never get played.'}</p>
+        <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span class="muted small">Stop when</span>
+          <input type="number" id="stopAtN" min="2" max="128" value="${declared || Math.max(2, Math.min(4, alive - 1))}" style="width:80px;margin:0">
+          <span class="muted small">are left</span>
+          <button class="btn small" id="stopAtSave">${declared ? 'Update' : 'Set'}</button>
+          ${declared ? '<button class="btn ghost small" id="stopAtClear">Clear</button>' : ''}
+        </div>
+      </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
         <button class="btn danger" id="finishEarlyBtn">End here and lock standings</button>
       </div></div>`;
@@ -1122,6 +1135,27 @@ async function drawAdmin(el) {
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });
+
+  // The survivor count, editable while the tournament runs. The Format panel disappears once
+  // the bracket starts, and mid-event is exactly when a TD decides a qualifier should stop.
+  const saveStopAt = async (n) => {
+    const send = force => api('/api/t/' + T.id + '/set_stop_at', { stopAtAlive: n, confirm: force ? 1 : 0, admin: adminToken() });
+    try { const r = await send(false); toast(r.ended ? 'Tournament ended - standings locked' : (n ? 'Set: ends when ' + n + ' are left' : 'Early stop cleared')); }
+    catch (e) {
+      if (!/straight away/i.test(e.message)) return toast(e.message, true);
+      if (!confirm(e.message)) return;
+      try { const r2 = await send(true); toast(r2.ended ? 'Tournament ended - standings locked' : 'Set'); }
+      catch (e2) { return toast(e2.message, true); }
+    }
+    await refresh();
+  };
+  const stopSave = document.getElementById('stopAtSave');
+  if (stopSave) stopSave.onclick = () => saveStopAt(parseInt(document.getElementById('stopAtN').value, 10) || 0);
+  const stopClear = document.getElementById('stopAtClear');
+  if (stopClear) stopClear.onclick = () => {
+    if (!confirm('Clear the early-stop rule? This tournament will then be played out in full.')) return;
+    saveStopAt(0);
+  };
 
   const feBtn = document.getElementById('finishEarlyBtn');
   if (feBtn) feBtn.onclick = async () => {
