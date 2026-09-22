@@ -658,7 +658,7 @@ async function drawAdmin(el) {
         </div>
       </div>
       <label>Seeding</label>
-      <select id="af_seed"${dis}><option value="rating"${T.seeding === 'rating' ? ' selected' : ''}>By rating</option><option value="random"${T.seeding === 'random' ? ' selected' : ''}>Random</option></select>
+      <select id="af_seed"${dis}><option value="rating"${T.seeding === 'rating' ? ' selected' : ''}>By rating</option><option value="random"${T.seeding === 'random' ? ' selected' : ''}>Random</option>${T.seeding === 'manual' ? '<option value="manual" selected>Manual (set on the seeding list)</option>' : ''}</select>
       <label>Max teams / entrants (0 = unlimited)</label>
       <input type="number" id="af_max" min="0" max="128" value="${T.maxTeams || 0}" autocomplete="off">
       <label>Signups</label>
@@ -672,22 +672,7 @@ async function drawAdmin(el) {
     </div>`;
   }
 
-  if (T.status === 'drafted' && T.competition === 'team' && (T.bracketType === 'single' || T.bracketType === 'double')) {
-    const seeded = T.teams.slice().sort((a, b) => a.seed - b.seed);
-    html += `<div class="panel section"><h2>Seeding</h2>
-      <p class="muted small">Drag to reorder, or use the arrows. Seed 1 is the top seed. This determines the bracket \u2014 fixed once you start it.</p>
-      <div style="margin:10px 0"><button class="btn ghost small" id="seedRandom">\ud83c\udfb2 Randomize</button>
-      ${T.seeding === 'rating' ? '<button class="btn ghost small" id="seedByRating" style="margin-left:8px">Reset to rating order</button>' : ''}</div>
-      <ol id="seedList" class="seedlist">
-        ${seeded.map(tm => `<li class="seeditem" draggable="true" data-tid="${tm.id}">
-          <span class="seednum"></span>
-          <span class="seedname">${esc(tm.name)}</span>
-          <span class="seedbtns"><button class="seedup" title="Move up">\u25b2</button><button class="seeddown" title="Move down">\u25bc</button></span>
-        </li>`).join('')}
-      </ol>
-      <div style="margin-top:12px"><button class="btn amber" id="seedSave">Save seeding</button> <span class="muted small" id="seedDirty"></span></div>
-    </div>`;
-  }
+  html += seedPanelHTML();
 
   html += `<div class="panel section"><h2>Game setup</h2>
     <div class="row" style="justify-content:space-between;align-items:center">
@@ -1397,67 +1382,8 @@ async function drawAdmin(el) {
     };
   }
 
-  // ---- seeding editor ----
-  const seedList = document.getElementById('seedList');
-  if (seedList) {
-    const renumber = () => {
-      let i = 1;
-      seedList.querySelectorAll('.seeditem').forEach(li => { li.querySelector('.seednum').textContent = i++; });
-      const sd = document.getElementById('seedDirty'); if (sd) sd.textContent = 'unsaved changes';
-    };
-    renumber();
-    const sd0 = document.getElementById('seedDirty'); if (sd0) sd0.textContent = '';
-
-    // arrow buttons
-    seedList.querySelectorAll('.seedup').forEach(b => b.onclick = e => {
-      const li = e.target.closest('.seeditem'); const prev = li.previousElementSibling;
-      if (prev) { seedList.insertBefore(li, prev); renumber(); }
-    });
-    seedList.querySelectorAll('.seeddown').forEach(b => b.onclick = e => {
-      const li = e.target.closest('.seeditem'); const next = li.nextElementSibling;
-      if (next) { seedList.insertBefore(next, li); renumber(); }
-    });
-
-    // drag and drop
-    let dragEl = null;
-    seedList.querySelectorAll('.seeditem').forEach(li => {
-      li.addEventListener('dragstart', () => { dragEl = li; li.classList.add('dragging'); });
-      li.addEventListener('dragend', () => { if (dragEl) dragEl.classList.remove('dragging'); dragEl = null; renumber(); });
-    });
-    seedList.addEventListener('dragover', e => {
-      e.preventDefault();
-      const after = [...seedList.querySelectorAll('.seeditem:not(.dragging)')].reduce((closest, child) => {
-        const box = child.getBoundingClientRect();
-        const offset = e.clientY - box.top - box.height / 2;
-        if (offset < 0 && offset > closest.offset) return { offset, el: child };
-        return closest;
-      }, { offset: -Infinity, el: null }).el;
-      if (!dragEl) return;
-      if (after == null) seedList.appendChild(dragEl);
-      else seedList.insertBefore(dragEl, after);
-    });
-
-    const saveOrder = async (order, randomize) => {
-      try {
-        await api('/api/t/' + T.id + '/reseed', randomize ? { randomize: 1, admin: adminToken() } : { order, admin: adminToken() });
-        await refresh();
-        toast('Seeding saved');
-      } catch (e) { toast(e.message, true); }
-    };
-    document.getElementById('seedSave').onclick = () => {
-      const order = [...seedList.querySelectorAll('.seeditem')].map(li => li.dataset.tid);
-      saveOrder(order, false);
-    };
-    const rnd = document.getElementById('seedRandom');
-    if (rnd) rnd.onclick = () => saveOrder(null, true);
-    const byr = document.getElementById('seedByRating');
-    if (byr) byr.onclick = async () => {
-      // reset: order teams by their players' avg rating (desc)
-      const withR = T.teams.map(tm => ({ id: tm.id, r: tm.playerIds.reduce((s, pid) => { const p = T.players.find(x => x.id === pid); return s + (p && p.rating || 0); }, 0) }));
-      withR.sort((a, b) => b.r - a.r);
-      saveOrder(withR.map(x => x.id), false);
-    };
-  }
+  // ---- seeding editor (shared with the Players tab - see seedPanelHTML) ----
+  wireSeedPanel();
 
   const afComp = document.getElementById('af_comp');
   if (afComp) {

@@ -800,6 +800,53 @@ function pinQualifierSeeds(t) {
   return true;
 }
 
+// Seed order taken from the order the invites went out. An invitational's invite list IS its
+// ranking ("so that i can do it in order of invites"), and retyping it by hand into the seed
+// list is exactly the error-prone step worth removing. A team's place is its EARLIEST invited
+// member, so this reads the same for a solo field as for squads. Anyone who was never invited -
+// an organizer add, an open signup on a mixed field - keeps their current relative order and
+// follows the invited, rather than being shuffled somewhere arbitrary.
+// Returns null when nobody in the field was invited, so the caller can say so instead of
+// silently reordering on no information.
+function inviteSeedOrder(t) {
+  const invAt = {};
+  (t.invites || []).forEach((iv, i) => {
+    if (!iv || iv.fafId == null) return;
+    const key = String(iv.fafId);
+    // `at` is the invite timestamp; the array index is the tiebreak for invites sent in the
+    // same millisecond (a qualifier sweep invites its whole field in one pass).
+    const at = (iv.at != null) ? iv.at : 0;
+    const cur = invAt[key];
+    if (!cur || at < cur.at || (at === cur.at && i < cur.i)) invAt[key] = { at, i };
+  });
+  if (!Object.keys(invAt).length) return null;
+
+  const byPlayer = {};
+  for (const p of (t.players || [])) {
+    if (p.fafId == null) continue;
+    const hit = invAt[String(p.fafId)];
+    if (hit) byPlayer[p.id] = hit;
+  }
+  const rows = (t.teams || []).map((tm, i) => {
+    let best = null;
+    for (const pid of (tm.playerIds || [])) {
+      const hit = byPlayer[pid];
+      if (hit && (!best || hit.at < best.at || (hit.at === best.at && hit.i < best.i))) best = hit;
+    }
+    return { id: tm.id, inv: best, seed: (tm.seed != null ? tm.seed : i + 1), i };
+  });
+  if (!rows.some(r => r.inv)) return null;
+  rows.sort((a, b) => {
+    if (!a.inv !== !b.inv) return a.inv ? -1 : 1;          // uninvited go last
+    if (a.inv && b.inv) {
+      if (a.inv.at !== b.inv.at) return a.inv.at - b.inv.at;
+      if (a.inv.i !== b.inv.i) return a.inv.i - b.inv.i;
+    }
+    return a.seed - b.seed || a.i - b.i;                   // stable within a tie
+  });
+  return rows.map(r => r.id);
+}
+
 // Lazy sweep (same idiom as scheduled publishing): apply any link whose child has finished.
 function sweepQualifications() {
   let changed = false;
@@ -3560,6 +3607,16 @@ async function handleAPI(req, res, url) {
         const ids = t.teams.map(x => x.id);
         shuffle(ids);
         ids.forEach((id, i) => { const tm = teamById(t, id); if (tm) tm.seed = i + 1; });
+        tlog(t, req, b.admin, 'randomised the seeding');
+        saveDB();
+        return json(res, 200, { ok: true });
+      }
+      // One button for "seed them in the order I invited them" - see inviteSeedOrder.
+      if (b.inviteOrder) {
+        const byInvite = inviteSeedOrder(t);
+        if (!byInvite) return bad(res, 'Nobody in this field was invited, so there is no invite order to seed by');
+        byInvite.forEach((id, i) => { const tm = teamById(t, id); if (tm) tm.seed = i + 1; });
+        tlog(t, req, b.admin, 'seeded the field in invite order');
         saveDB();
         return json(res, 200, { ok: true });
       }
@@ -3570,6 +3627,7 @@ async function handleAPI(req, res, url) {
       const got = order.slice().sort().join(',');
       if (have !== got) return bad(res, 'Seed order must include every team exactly once');
       order.forEach((id, i) => { const tm = teamById(t, id); if (tm) tm.seed = i + 1; });
+      tlog(t, req, b.admin, 'changed the seeding by hand');
       saveDB();
       return json(res, 200, { ok: true });
     }

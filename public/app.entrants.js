@@ -151,6 +151,11 @@ function drawPlayers(el) {
     <tbody id="pRows"></tbody></table>
     ${T.players.length ? '' : '<div class="empty">No signups yet.</div>'}</div>`;
 
+  // On a solo field the players list IS the entrant list, so the seeding order belongs here
+  // rather than buried on the Admin tab ("on the players list, could you add an option to
+  // choose their seedings"). Team events keep it next to the teams, which is what gets seeded.
+  if (T.teamSize === 1) html += seedPanelHTML();
+
   el.innerHTML = html;
 
   const rows = document.getElementById('pRows');
@@ -198,6 +203,8 @@ function drawPlayers(el) {
     if (bb) bb.onclick = () => banPlayerFromTournament(p);
     rows.appendChild(tr);
   });
+
+  wireSeedPanel();   // no-op unless seedPanelHTML rendered above
 
   // restore + track signup form values across re-renders
   const bindKeep = (id, key) => {
@@ -871,6 +878,124 @@ function organizerAssignPlayer(playerId) {
       } catch (e) { toast(e.message, true); }
     };
   });
+}
+
+// ----- seeding (shared) -----
+// One seeding list, rendered on more than one surface: the Players tab for a solo field (which
+// IS the entrant list, and where organizers look for it), and the Admin tab for everything.
+// It used to be knockout-only, which meant a Swiss qualifier had no way to set seeds at all.
+// Seeds are read at different moments by the two shapes - the note under the heading says which.
+function seedPanelOpen() {
+  return T.status === 'drafted' && viewerIsOrganizer()
+    && T.competition === 'team' && (T.teams || []).length > 1;
+}
+
+// Accepted invites are the only ones that can carry a seed: a pending or declined invite has
+// nobody in the field to place. Organizer-only data, so this is never reachable from a player.
+function seedInviteCount() {
+  return (T.invites || []).filter(i => i.status === 'accepted').length;
+}
+
+function seedPanelHTML() {
+  if (!seedPanelOpen()) return '';
+  const swiss = T.bracketType === 'swiss';
+  const solo = T.teamSize === 1;
+  const noun = solo ? 'Players' : 'Teams';
+  const seeded = T.teams.slice().sort((a, b) => (a.seed || 0) - (b.seed || 0));
+  const invited = seedInviteCount();
+  // What a seed actually DOES differs by format, and getting this wrong is how an organizer
+  // spends an evening reordering a list that the pairer stops consulting after round 1.
+  const what = swiss
+    ? 'Seed 1 is the top seed. Seeds set the <strong>opening round\u2019s draw</strong> and break ties in the standings \u2014 from round 2 on, pairing follows records. Once the rounds start you can still rearrange round 1 by hand.'
+    : 'Seed 1 is the top seed. This determines the bracket \u2014 fixed once you start it.';
+  return `<div class="panel section"><h2>Seeding</h2>
+    <p class="muted small">Drag to reorder, or use the arrows. ${what}</p>
+    <div style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn ghost small" id="seedRandom">\ud83c\udfb2 Randomize</button>
+      <button class="btn ghost small" id="seedByRating" title="Highest rating first. Unrated go last.">Order by rating</button>
+      ${invited ? `<button class="btn ghost small" id="seedByInvite" title="Seed in the order the invites went out (${invited} accepted). ${noun} nobody invited keep their order and follow the invited ones.">Order by invite</button>` : ''}
+    </div>
+    <ol id="seedList" class="seedlist">
+      ${seeded.map(tm => `<li class="seeditem" draggable="true" data-tid="${tm.id}">
+        <span class="seednum"></span>
+        <span class="seedname">${esc(tm.name)}</span>
+        <span class="seedbtns"><button class="seedup" title="Move up">\u25b2</button><button class="seeddown" title="Move down">\u25bc</button></span>
+      </li>`).join('')}
+    </ol>
+    <div style="margin-top:12px"><button class="btn amber" id="seedSave">Save seeding</button> <span class="muted small" id="seedDirty"></span></div>
+  </div>`;
+}
+
+function wireSeedPanel() {
+  const seedList = document.getElementById('seedList');
+  if (!seedList) return;
+  const renumber = () => {
+    let i = 1;
+    seedList.querySelectorAll('.seeditem').forEach(li => { li.querySelector('.seednum').textContent = i++; });
+    const sd = document.getElementById('seedDirty'); if (sd) sd.textContent = 'unsaved changes';
+  };
+  renumber();
+  const sd0 = document.getElementById('seedDirty'); if (sd0) sd0.textContent = '';
+
+  seedList.querySelectorAll('.seedup').forEach(b => b.onclick = e => {
+    const li = e.target.closest('.seeditem'); const prev = li.previousElementSibling;
+    if (prev) { seedList.insertBefore(li, prev); renumber(); }
+  });
+  seedList.querySelectorAll('.seeddown').forEach(b => b.onclick = e => {
+    const li = e.target.closest('.seeditem'); const next = li.nextElementSibling;
+    if (next) { seedList.insertBefore(next, li); renumber(); }
+  });
+
+  let dragEl = null;
+  seedList.querySelectorAll('.seeditem').forEach(li => {
+    li.addEventListener('dragstart', () => { dragEl = li; li.classList.add('dragging'); });
+    li.addEventListener('dragend', () => { if (dragEl) dragEl.classList.remove('dragging'); dragEl = null; renumber(); });
+  });
+  seedList.addEventListener('dragover', e => {
+    e.preventDefault();
+    const after = [...seedList.querySelectorAll('.seeditem:not(.dragging)')].reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = e.clientY - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) return { offset, el: child };
+      return closest;
+    }, { offset: -Infinity, el: null }).el;
+    if (!dragEl) return;
+    if (after == null) seedList.appendChild(dragEl);
+    else seedList.insertBefore(dragEl, after);
+  });
+
+  // `mode` picks which of the three the server should do; only one is ever sent.
+  const saveOrder = async (order, mode) => {
+    const body = { admin: adminToken() };
+    if (mode === 'random') body.randomize = 1;
+    else if (mode === 'invite') body.inviteOrder = 1;
+    else body.order = order;
+    try {
+      await api('/api/t/' + T.id + '/reseed', body);
+      await refresh();
+      toast('Seeding saved');
+    } catch (e) { toast(e.message, true); }
+  };
+
+  document.getElementById('seedSave').onclick = () => {
+    const order = [...seedList.querySelectorAll('.seeditem')].map(li => li.dataset.tid);
+    saveOrder(order, null);
+  };
+  const rnd = document.getElementById('seedRandom');
+  if (rnd) rnd.onclick = () => saveOrder(null, 'random');
+  const inv = document.getElementById('seedByInvite');
+  if (inv) inv.onclick = () => saveOrder(null, 'invite');
+  const byr = document.getElementById('seedByRating');
+  if (byr) byr.onclick = () => {
+    // Rating order is recomputed here rather than stored, so it always reflects the ratings
+    // showing right now (an organizer edit to a rating lands immediately).
+    const withR = T.teams.map(tm => ({
+      id: tm.id,
+      r: tm.playerIds.reduce((s, pid) => { const p = T.players.find(x => x.id === pid); return s + (p && p.rating || 0); }, 0)
+    }));
+    withR.sort((a, b) => b.r - a.r);
+    saveOrder(withR.map(x => x.id), null);
+  };
 }
 
 function drawTeams(el) {
