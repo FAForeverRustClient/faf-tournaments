@@ -396,6 +396,68 @@ function drawStandings(el) {
 
 // ----- admin -----
 
+// Render the result of a rename check, and wire the picker it puts on screen. Split out of
+// drawAdmin so it can redraw itself after an update without re-rendering the whole tab (which
+// would scroll the organizer back to the top mid-task).
+function drawRenameCheck(out, r) {
+  // Say plainly what was NOT covered. "Every name is current" has to mean it, or the next
+  // organizer to read it trusts a check that quietly skipped half the field.
+  const notes = [];
+  if (r.failed) notes.push(r.failed + ' could not be checked \u2014 FAF did not answer for them');
+  if (r.manual) notes.push(r.manual + ' added by hand, with no FAF account to check');
+  const note = notes.length ? '<p class="muted small" style="margin-top:10px">' + esc(notes.join('. ')) + '.</p>' : '';
+
+  if (!r.changed || !r.changed.length) {
+    out.innerHTML = '<p class="muted small">Checked ' + r.checked + ' player' + (r.checked === 1 ? '' : 's')
+      + (r.checked ? ' \u2014 every name is current.' : '.') + '</p>' + note;
+    return;
+  }
+
+  out.innerHTML = `<div class="ic-label" style="margin-top:4px">Renamed since signup (${r.changed.length} of ${r.checked})</div>
+    <label class="muted small" style="display:block;margin:8px 0"><input type="checkbox" id="rnAll" checked> Select all</label>
+    ${r.changed.map(c => `<div class="sa-req"><div class="sa-req-main">
+      <label style="display:flex;gap:8px;align-items:baseline;cursor:pointer;margin:0">
+        <input type="checkbox" class="rnPick" data-pid="${esc(c.playerId)}" checked>
+        <span class="sa-req-name"><span class="muted">${esc(c.from)}</span> \u2192 <strong>${esc(c.to)}</strong></span>
+      </label>
+      ${c.team ? '<div class="muted small" style="margin-left:26px">also renames the entry \u201c' + esc(c.team) + '\u201d in the bracket</div>' : ''}
+    </div></div>`).join('')}
+    <div style="margin-top:12px"><button class="btn amber" id="rnApply">Update selected</button></div>${note}`;
+
+  const picks = () => [...out.querySelectorAll('.rnPick')];
+  const sync = () => {
+    const on = picks().filter(x => x.checked).length;
+    const b = out.querySelector('#rnApply');
+    if (b) { b.disabled = !on; b.textContent = on ? 'Update selected (' + on + ')' : 'Update selected'; }
+    const all = out.querySelector('#rnAll');
+    if (all) all.checked = on === picks().length;
+  };
+  const all = out.querySelector('#rnAll');
+  if (all) all.onchange = () => { picks().forEach(x => { x.checked = all.checked; }); sync(); };
+  picks().forEach(x => { x.onchange = sync; });
+  sync();
+
+  const apply = out.querySelector('#rnApply');
+  if (apply) apply.onclick = async () => {
+    const ids = picks().filter(x => x.checked).map(x => x.dataset.pid);
+    if (!ids.length) return;
+    apply.disabled = true; apply.textContent = 'Updating\u2026';
+    try {
+      const res = await api('/api/t/' + T.id + '/apply_renames', { playerIds: ids, admin: adminToken() });
+      const n = (res.updated || []).length;
+      toast(n ? 'Updated ' + n + ' name' + (n === 1 ? '' : 's') : 'Nothing to update');
+      await refresh();
+      // refresh() redraws the tab, so re-run the check to leave the panel showing the truth
+      // rather than a list of renames that have already been applied.
+      const fresh = document.getElementById('rnOut');
+      if (fresh) drawRenameCheck(fresh, await api('/api/t/' + T.id + '/check_renames', { admin: adminToken() }));
+    } catch (e) {
+      toast(e.message, true);
+      apply.disabled = false; apply.textContent = 'Update selected';
+    }
+  };
+}
+
 async function drawAdmin(el) {
   el.innerHTML = '<div class="panel"><div class="empty">Loading…</div></div>';
   let secrets = null;
@@ -673,6 +735,14 @@ async function drawAdmin(el) {
   }
 
   html += seedPanelHTML();
+
+  // Player names: FAF has no rename webhook, so a name recorded at signup goes stale silently
+  // and the bracket keeps showing it. Check is read-only; nothing is written until a box is
+  // ticked, because the old name is sometimes the one the organizer wants to keep.
+  html += `<div class="panel section"><h2>Player <span class="h2-strong">names</span></h2>
+    <p class="muted small">FAF names are recorded when someone signs up. If they rename on FAF afterwards, this tournament keeps showing the old name until they next open it. Check here, then pick which ones to update.</p>
+    <div style="margin:10px 0"><button class="btn ghost small" id="rnCheck">Check players for renames</button></div>
+    <div id="rnOut"></div></div>`;
 
   html += `<div class="panel section"><h2>Game setup</h2>
     <div class="row" style="justify-content:space-between;align-items:center">
@@ -1384,6 +1454,19 @@ async function drawAdmin(el) {
 
   // ---- seeding editor (shared with the Players tab - see seedPanelHTML) ----
   wireSeedPanel();
+
+  // ---- rename check ----
+  const rnCheck = document.getElementById('rnCheck');
+  if (rnCheck) rnCheck.onclick = async () => {
+    const out = document.getElementById('rnOut');
+    const label = rnCheck.textContent;
+    rnCheck.disabled = true; rnCheck.textContent = 'Checking\u2026';
+    out.innerHTML = '';
+    try {
+      drawRenameCheck(out, await api('/api/t/' + T.id + '/check_renames', { admin: adminToken() }));
+    } catch (e) { toast(e.message, true); }
+    rnCheck.disabled = false; rnCheck.textContent = label;
+  };
 
   const afComp = document.getElementById('af_comp');
   if (afComp) {

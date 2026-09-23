@@ -2018,21 +2018,56 @@ function syncFafName(t, req) {
   const sess = currentSession(req);
   if (!t || !sess || !sess.fafId || !sess.fafName) return false;
   const p = (t.players || []).find(x => x.fafId === sess.fafId);
-  if (!p || !p.name || p.name === sess.fafName) return false;
+  if (!p) return false;
+  return !!applyFafRename(t, p, sess.fafName, 'system');
+}
+
+// Apply one rename EVERYWHERE this tournament shows that player's name. There are two ways in -
+// the opportunistic resync above, and the organizer's rename check - and they have to leave the
+// tournament in the same state, so there is exactly one definition of what a rename touches.
+// `by` is who gets the credit in the log. Returns the old name, or null if there was nothing
+// to do (unknown player, blank name, already current).
+function applyFafRename(t, p, newName, by) {
+  const to = String(newName == null ? '' : newName).trim();
+  if (!p || !p.name || !to || p.name === to) return null;
   const old = p.name;
-  p.name = sess.fafName;
+  p.name = to;
   // A solo team is named after its player (and a draft team "Team <player>"). Follow the rename,
   // but never touch a name the captain has spent their one rename on - that name is theirs now.
   for (const team of (t.teams || [])) {
     if (team.captainId !== p.id || team.captainRenamed) continue;
-    if (team.name === old) team.name = p.name;
-    else if (team.name === 'Team ' + old) team.name = 'Team ' + p.name;
+    if (team.name === old) team.name = to;
+    else if (team.name === 'Team ' + old) team.name = 'Team ' + to;
   }
   // organizer display names are a snapshot too
-  if (t.organizerNames && t.organizerNames[p.fafId] === old) t.organizerNames[p.fafId] = p.name;
+  if (t.organizerNames && t.organizerNames[p.fafId] === old) t.organizerNames[p.fafId] = to;
+  // ...and so is the name stamped on their invite, which the organizer is still looking at
+  for (const inv of (t.invites || [])) {
+    if (String(inv.fafId) === String(p.fafId) && inv.name === old) inv.name = to;
+  }
   // Chat history is deliberately NOT rewritten: each message records who said it at the time.
-  tpush(t, 'system', old + ' is now known as ' + p.name + ' (renamed on FAF)');
-  return true;
+  tpush(t, by || 'system', old + ' is now known as ' + to + ' (renamed on FAF)');
+  return old;
+}
+
+// Live FAF logins for a set of players, a few at a time. Organizer-triggered and bounded, so a
+// 128-player field is 128 lookups in batches of 4 rather than a burst at FAF. A lookup that
+// fails is reported as UNCHECKED, never as "unchanged" - quietly hiding a rename behind a
+// network error is the one outcome that would make the whole check untrustworthy.
+async function fafCurrentNames(players, token) {
+  const out = { names: {}, failed: [] };
+  const queue = players.slice();
+  const worker = async () => {
+    while (queue.length) {
+      const p = queue.shift();
+      let hit = null;
+      try { hit = await fafLookupById(p.fafId, token); } catch (e) { hit = null; }
+      if (hit && hit.name) out.names[p.id] = hit.name;
+      else out.failed.push(p.id);
+    }
+  };
+  await Promise.all([0, 1, 2, 3].map(worker));
+  return out;
 }
 
 // Best-effort display name for a FAF id from data we already hold (no network): a linked profile,
@@ -3630,6 +3665,62 @@ async function handleAPI(req, res, url) {
       tlog(t, req, b.admin, 'changed the seeding by hand');
       saveDB();
       return json(res, 200, { ok: true });
+    }
+
+    // ---- FAF renames ----
+    // A FAF name is stamped on a player at signup and FAF has no rename webhook, so someone who
+    // renames afterwards keeps showing under their old name until they next open the tournament.
+    // This is the organizer's version of that resync, and it is deliberately TWO steps: the old
+    // name is sometimes the wanted one (a caster's on-stream name, a known alias, a bracket
+    // already screenshotted), so the check writes nothing and the organizer picks.
+    if (sub === 'check_renames') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const token = await fafValidToken(currentSession(req));
+      if (!token) return json(res, 409, { error: 'Checking names needs your FAF login. Log out and back in, then retry.', needsRelogin: 1 });
+      // Players added by hand have no FAF account behind them; there is nothing to check and
+      // saying so is better than letting the organizer read "all current" as covering them.
+      const manual = (t.players || []).filter(p => !p.fafId || !p.name).length;
+      const have = (t.players || []).filter(p => p.fafId && p.name);
+      if (!have.length) return json(res, 200, { ok: true, checked: 0, changed: [], failed: 0, manual });
+      const live = await fafCurrentNames(have, token);
+      const changed = [];
+      for (const p of have) {
+        const to = live.names[p.id];
+        if (!to || to === p.name) continue;
+        // Show the blast radius: the entry named after them moves too, and an organizer who
+        // cannot see that in advance finds out by way of a bracket that changed under them.
+        const team = (t.teams || []).find(x => x.captainId === p.id && !x.captainRenamed
+          && (x.name === p.name || x.name === 'Team ' + p.name));
+        changed.push({ playerId: p.id, fafId: p.fafId, from: p.name, to, team: team ? team.name : null });
+      }
+      return json(res, 200, { ok: true, checked: have.length, changed, failed: live.failed.length, manual });
+    }
+
+    if (sub === 'apply_renames') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const ids = Array.isArray(b.playerIds) ? b.playerIds.map(String) : null;
+      if (!ids || !ids.length) return bad(res, 'Pick at least one player to update');
+      const token = await fafValidToken(currentSession(req));
+      if (!token) return json(res, 409, { error: 'Updating names needs your FAF login. Log out and back in, then retry.', needsRelogin: 1 });
+      const want = (t.players || []).filter(p => p.fafId && p.name && ids.indexOf(String(p.id)) >= 0);
+      if (!want.length) return bad(res, 'None of those players are in this tournament');
+      // Re-read from FAF rather than writing whatever the browser was shown: the check may be
+      // minutes old, and a name the organizer never saw must not arrive from a stale page.
+      const live = await fafCurrentNames(want, token);
+      const actor = actorOf(req, b.admin).name;
+      const updated = [];
+      for (const p of want) {
+        const to = live.names[p.id];
+        if (!to) continue;
+        const old = applyFafRename(t, p, to, actor);
+        if (old) updated.push({ playerId: p.id, from: old, to });
+      }
+      if (updated.length) saveDB();
+      return json(res, 200, {
+        ok: true, updated,
+        unchanged: want.length - updated.length - live.failed.length,
+        failed: live.failed.length
+      });
     }
 
     if (sub === 'edit_date') {
