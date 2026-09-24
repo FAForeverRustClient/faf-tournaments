@@ -845,6 +845,55 @@ function swissTable(t) {
   return Object.values(S).sort((a, b) => b.w - a.w || b.gd - a.gd || teamSeed(a.id) - teamSeed(b.id));
 }
 
+// Each team's W-L as it stood going INTO `round` - i.e. the score group a pairing came out of.
+// Mirrors recordsBefore in lib/swiss.js. It has to be the historical record, not the current
+// one: by the time round 4 is over everyone in it has played round 4, so reading the standings
+// would say 2-2 for a match that was a 2-1 pairing when it was drawn.
+function swissRecordsBefore(round, t) {
+  t = t || T;
+  const out = {};
+  for (const team of (t.teams || [])) out[team.id] = { w: 0, l: 0 };
+  for (const m of (t.matches || [])) {
+    if (m.bracket !== 'sw' || !(m.round < round)) continue;
+    if (m.status === 'bye') {
+      const id = m.team1 !== 'BYE' ? m.team1 : m.team2;
+      if (out[id]) out[id].w++;
+    } else if (m.status === 'done') {
+      if (out[m.winner]) out[m.winner].w++;
+      if (out[m.loser]) out[m.loser].l++;
+    }
+  }
+  return out;
+}
+
+// The score group a Swiss pairing came out of: "2-1" when both arrived on the same record, which
+// is the normal case, and "2-1 vs 1-2" when an odd group floated its lowest player down into the
+// next one. Null for anything that is not a head-to-head Swiss match.
+function swissMatchRecord(m, t) {
+  if (!m || m.bracket !== 'sw' || !m.round || m.round < 2) return null;
+  if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return null;
+  const before = swissRecordsBefore(m.round, t);
+  const a = before[m.team1], b = before[m.team2];
+  if (!a || !b) return null;
+  const lab = r => r.w + '-' + r.l;
+  return lab(a) === lab(b) ? lab(a) : (lab(a) + ' vs ' + lab(b));
+}
+
+// Sort key for a round's matches: the score group they belong to, best first. A floated pairing
+// is played in the LOWER group (that is where the float went), so it sorts with that one.
+function swissMatchRank(m, t) {
+  if (!m || m.bracket !== 'sw') return [-1, -1];
+  const before = swissRecordsBefore(m.round, t);
+  const a = before[m.team1] || { w: 0, l: 0 }, b = before[m.team2] || { w: 0, l: 0 };
+  return [Math.min(a.w, b.w), Math.max(a.l, b.l)];
+}
+function swissQueueSort(list, t) {
+  return list.slice().sort((x, y) => {
+    const rx = swissMatchRank(x, t), ry = swissMatchRank(y, t);
+    return (ry[0] - rx[0]) || (rx[1] - ry[1]) || ((x.index || 0) - (y.index || 0));
+  });
+}
+
 function planSummary(t) {
   if (t.competition === 'ffa') {
     const c = t.ffaCfg;

@@ -2386,11 +2386,14 @@ function drawSwissRounds(el) {
     q.className = 'queue';
     q.style.marginTop = '10px';
     sec.appendChild(q);
-    fillQueue(q, ms.filter(m => m.round === r && m.team2 !== 'BYE').sort((a, b) => a.index - b.index), true);
+    fillQueue(q, swissQueueSort(ms.filter(m => m.round === r && m.team2 !== 'BYE')), true);
     for (const bm of ms.filter(m => m.round === r && m.team2 === 'BYE')) {
       const d = document.createElement('div');
       d.className = 'qitem done';
-      d.innerHTML = `<span class="qround">BYE</span><span class="qteams">${esc(teamName(bm.team1))}</span><span class="qscore muted">free win</span>`;
+      const byeRec = (bm.round > 1) ? (swissRecordsBefore(bm.round)[bm.team1] || null) : null;
+      d.innerHTML = `<span class="qround">BYE</span>`
+        + (byeRec ? `<span class="qrec" title="Record brought into this round">${esc(byeRec.w + '-' + byeRec.l)}</span>` : '')
+        + `<span class="qteams">${esc(teamName(bm.team1))}</span><span class="qscore muted">free win</span>`;
       q.appendChild(d);
     }
     el.appendChild(sec);

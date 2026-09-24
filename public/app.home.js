@@ -1826,6 +1826,11 @@ function fillQueue(el, matches, withReport) {
     const div = document.createElement('div');
     div.className = 'qitem' + (m.status === 'done' ? ' done' : '') + (m.status === 'live' ? ' live' : '');
     let inner = `<span class="qround">${roundLabel(m)}</span>`;
+    // Which score group this Swiss pairing came out of. Asked for so a round can be read at a
+    // glance ("whether they were 2-1 or 1-2 matches") without cross-referencing the standings -
+    // and the standings cannot answer it anyway once the round has been played.
+    const swRec = swissMatchRecord(m);
+    if (swRec) inner += `<span class="qrec" title="Record both players brought into this round">${esc(swRec)}</span>`;
     if (m.bracket === 'ffa') {
       const names = m.entrants.map(id => {
         const won = m.winners && m.winners.indexOf(id) >= 0;
