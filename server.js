@@ -35,7 +35,7 @@ const { swissPairRound, swissAfterReport, swissStandings,
 const { ffaCreateRound, ffaAfterReport, ffaRank } = require('./lib/ffa');
 // Team formation and map lookups.
 const { buildDraft, finishDraftIfDone, finalizeOpenTeams, formTeamsGrouped } = require('./lib/teams');
-const { mapById, publicMapView } = require('./lib/maps');
+const { mapById, publicMapView, secretNumbers, revealedSecrets, maskedMapView } = require('./lib/maps');
 // Wire the Swiss progression hook into the match core (see lib/match.js). Must come
 // after the swiss require above, since swissAfterReport is now imported, not hoisted.
 require('./lib/match').setHooks({ swissAfterReport });
@@ -3470,6 +3470,20 @@ async function handleAPI(req, res, url) {
         }
         view.mapDb = (view.mapDb || []).filter(m => m.published || inPlay[m.id]);
         view.mapPools = (view.mapPools || []).filter(p => p.published);
+
+        // Secret maps: the name, picture, description and spec are withheld until the map is
+        // actually going to be played - a player sees "Hidden Map 3" and a blank tile, and the
+        // veto board is still fully usable because every id is intact.
+        // This happens HERE, not in the client, and that is the entire feature: the real name
+        // never reaches the browser, so reading the JSON or opening devtools reveals nothing.
+        // Image filenames are random tokens we generated, so a null image cannot be guessed back.
+        const revealed = revealedSecrets(t);
+        const secretNo = secretNumbers(t);
+        view.mapDb = (view.mapDb || []).map(mv => {
+          const src = mapById(t, mv.id);
+          if (!src || !src.secret || revealed[mv.id]) return mv;
+          return maskedMapView(src, secretNo[mv.id]);
+        });
       }
       // Faction vetoes are secret until both sides finish. Replace each match's raw record with
       // the slice THIS viewer may see: a competitor gets their own choices, everyone else
@@ -5371,7 +5385,7 @@ async function handleAPI(req, res, url) {
         // copy the image file so deletes in either tournament don't affect the other
         let img = null;
         if (sm.image) { try { img = copyMapImageFile(sm.image); } catch (e) { img = null; } }
-        const nm = { id: 'map' + uid(5), name: sm.name || '', image: img, description: sm.description || '', published: 0 };
+        const nm = { id: 'map' + uid(5), name: sm.name || '', image: img, description: sm.description || '', published: 0, secret: sm.secret ? 1 : 0 };
         t.mapDb.push(nm); byName[key] = nm; idMap[sm.id] = nm.id;
         return nm.id;
       };
@@ -5529,18 +5543,38 @@ async function handleAPI(req, res, url) {
         map = mapById(t, b.id);
         if (!map) { deleteMapImage(newImageFile); return bad(res, 'Map not found'); }
       } else {
-        map = { id: 'map' + uid(5), name: '', image: null, description: '', spec: null, published: 0 };
+        map = { id: 'map' + uid(5), name: '', image: null, description: '', spec: null, published: 0, secret: 0 };
         t.mapDb.push(map);
       }
       map.name = name;
       map.description = description;
       map.spec = cleanMapSpec(b.spec);
       map.published = published;
+      if (b.secret !== undefined) map.secret = b.secret ? 1 : 0;
       if (newImageFile) { deleteMapImage(map.image); map.image = newImageFile; }
       else if (doRemoveImage) { deleteMapImage(map.image); map.image = null; }
       tlog(t, req, b.admin, (b.id ? 'edited map ' : 'added map ') + map.name);
       saveDB();
       return json(res, 200, { ok: true, id: map.id });
+    }
+
+    // Toggle secrecy. Separate from publishing: a published map is one players can SEE, a
+    // secret one is a map they can see the existence of but not the identity of until it is
+    // played. With all:1 it applies to every map in the database at once.
+    if (sub === 'map_secret') {
+      if (!canManageMaps(t, req, b)) return json(res, 403, { error: 'Map access is limited to this tournament\u2019s own organizers' });
+      if (b.all) {
+        for (const m of (t.mapDb || [])) m.secret = b.secret ? 1 : 0;
+        tlog(t, req, b.admin, (b.secret ? 'made every map secret' : 'revealed every map') + ' (' + (t.mapDb || []).length + ')');
+        saveDB();
+        return json(res, 200, { ok: true, count: (t.mapDb || []).length });
+      }
+      const map = mapById(t, b.id);
+      if (!map) return bad(res, 'Map not found');
+      map.secret = b.secret ? 1 : 0;
+      tlog(t, req, b.admin, (b.secret ? 'made map ' : 'revealed map ') + map.name + (b.secret ? ' secret' : ''));
+      saveDB();
+      return json(res, 200, { ok: true });
     }
 
     // Toggle publish state (hide/publish for TD-team prep). Organizer only.

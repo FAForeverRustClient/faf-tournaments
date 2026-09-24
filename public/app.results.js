@@ -685,8 +685,13 @@ async function drawAdmin(el) {
         <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
           <input type="checkbox" id="af_pick"${T.pickOpponents ? ' checked' : ''}> Let the top seeds choose their own opponent
         </label>
+        <div class="muted small" style="margin:4px 0 0 22px">${T.bracketType !== 'swiss'
+          ? 'Runs on round one of the bracket.'
+          : (swissStageTwoPlanned(T)
+            ? 'On a Swiss this runs on the <strong>playoff bracket</strong>. Swiss round 1 is drawn by seed, and can be rearranged by hand once the rounds start.'
+            : 'Does nothing on a Swiss with no second stage. Swiss round 1 is drawn by seed, and can be rearranged by hand once the rounds start.')}</div>
         <div id="af_pickBox" style="display:${T.pickOpponents ? 'block' : 'none'};padding:8px 0 0 22px">
-          <p class="muted small" style="margin:0 0 8px">The top half of the seeds each pick who they play in round one, in seed order. Needs a full bracket (4, 8, 16, 32...). On a two-stage tournament this runs on the playoff bracket.</p>
+          <p class="muted small" style="margin:0 0 8px">The top half of the seeds each pick who they play, in seed order. Needs a full bracket (4, 8, 16, 32...).</p>
           <div class="row" style="gap:10px;align-items:flex-end">
             <div style="width:170px"><div class="muted small">Time limit per pick</div><input type="number" id="af_pickMins" min="0" max="1440" value="${T.pickMinutes || 0}"></div>
             <div class="muted small" style="flex:1;padding-bottom:8px">Minutes. 0 means no limit. A pick that runs out of time gets the standard bracket matchup.</div>
@@ -880,6 +885,8 @@ async function drawAdmin(el) {
           <option value="manual"${v.abMode === 'manual' ? ' selected' : ''}>I set it myself for every match</option>
         </select>
         <div class="muted small" style="margin-top:6px" id="vtAbNote"></div>
+        ${(T.mapDb || []).some(m => m.secret) ? `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:14px"><input type="checkbox" id="vtRevealBans" style="width:auto"${v.revealBans ? ' checked' : ''}> Reveal a secret map when it is <strong>banned</strong></label>
+        <div class="muted small" style="margin:4px 0 0 24px">Off by default: banning blind is the point of secret maps, and revealing every ban hands the pool over one map at a time. A secret map is always revealed when it is picked for a game or left as the decider, whichever way this is set.</div>` : ''}
 
         <label style="margin-top:14px">When is the veto done?</label>
         <select id="vtMode" style="max-width:420px">
@@ -1397,13 +1404,17 @@ async function drawAdmin(el) {
       const enabled = vtEnabled.checked;
       const mode = document.getElementById('vtMode').value;
       const abMode = vtAb ? vtAb.value : 'lowerA';
+      // The checkbox only renders when the tournament actually has secret maps; when it is
+      // absent the stored setting must be carried through untouched rather than cleared.
+      const rbEl = document.getElementById('vtRevealBans');
+      const revealBans = rbEl ? (rbEl.checked ? 1 : 0) : ((T.veto && T.veto.revealBans) ? 1 : 0);
       if (enabled) {
         const pools = T.mapPools || [];
         const ready = pools.filter(p => (p.sequence || []).length && (p.sequence || []).length === (p.mapIds || []).length - 1);
         if (ready.length === 0) return toast('No pool has a valid ban/pick order yet — set one up on the Maps tab first', true);
       }
       try {
-        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, abMode }, admin: adminToken() });
+        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, abMode, revealBans }, admin: adminToken() });
         await refresh();
         toast('Vetoes saved');
       } catch (e) { toast(e.message, true); }

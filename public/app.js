@@ -262,6 +262,22 @@ function mapName(id) {
   const m = mapObj(id);
   return m ? m.name : (id || '');
 }
+// Which "Hidden Map N" a map is, for the organizer who can see the real name and still needs to
+// know what the players are calling it. Same rule as the server: position among the secret maps
+// in database order. Only meaningful to a viewer who gets the unfiltered list, i.e. map prep.
+function secretNoOf(id) {
+  let n = 0;
+  for (const m of (T.mapDb || [])) {
+    if (!m.secret) continue;
+    n++;
+    if (m.id === id) return n;
+  }
+  return 0;
+}
+// A map the server masked has no picture to show and never will until it is played, so the tile
+// says so instead of the generic "no image" - which would read as an organizer who forgot one.
+function mapNoImgLabel(m) { return (m && m.masked) ? 'HIDDEN' : 'no image'; }
+
 // a clickable map chip that opens the map's image/description (if any)
 function mapChip(id, cls) {
   const m = mapObj(id);
@@ -761,6 +777,21 @@ function swissCutCfg(t) {
   const loss = parseInt(src.lossCut, 10) || 0;
   return { on: !!(win || loss), win: win, loss: loss, decidingBo: parseInt(src.decidingBo, 10) || 0 };
 }
+// How many rounds this Swiss can run to - the same number lib/swiss.js derives, and the only
+// one worth laying map pools out against.
+// With record cuts the count is DERIVED (a 3/3 cut is five rounds: two wins, two losses and the
+// game that settles it), never typed in, so `plan.rounds` is simply absent. Reading it and
+// falling back to log2(teams) gave FOUR for a sixteen-player 3/3 stage, which is why round five
+// had no column to set a pool in.
+function swissPlannedRounds(t, n) {
+  const tt = (t || T) || {};
+  const c = swissCutCfg(tt);
+  if (c.on) return (c.win && c.loss) ? (c.win + c.loss - 1) : (c.win || c.loss);
+  const r = parseInt((tt.cfg || {}).rounds, 10) || parseInt((tt.plan || {}).rounds, 10) || 0;
+  if (r) return r;
+  const teams = n || (tt.teams || []).length || 0;
+  return Math.max(1, Math.ceil(Math.log2(Math.max(2, teams))));
+}
 function swissCutLabel(t) {
   const c = swissCutCfg(t);
   if (!c.on) return '';
@@ -771,6 +802,16 @@ function swissCutLabel(t) {
 }
 function stageTwoCfgOf(t) { const s = ((t || T) || {}).stage2; return (s && s.cutTo) ? s : null; }
 function stageTwoOn(t) { return !!stageTwoCfgOf(t); }
+// Is a playoff stage CONFIGURED (not necessarily built yet)? stageTwoLive answers "is it
+// running"; this answers "is one coming", which is what decides whether the opponent-pick
+// setting will ever fire on a Swiss.
+function swissStageTwoPlanned(t) {
+  const tt = (t || T) || {};
+  if (tt.bracketType !== 'swiss') return false;
+  if (tt.stage2) return true;
+  const src = (tt.cfg && tt.cfg.stage2 !== undefined) ? tt.cfg : (tt.plan || {});
+  return !!src.stage2;
+}
 function stageTwoLive(t) { const s = stageTwoCfgOf(t); return !!(s && s.built); }
 
 // One client-side Swiss table, used by the standings tab and by any badge that needs a

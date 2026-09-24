@@ -14,7 +14,7 @@ function showPoolPopup(pool) {
     const mo = mapObj(id);
     if (!mo) return '';
     return `<div class="pool-thumb${mo.image ? '' : ' noimg'}"${mo.image ? ' data-map-info="' + esc(id) + '"' : ''}>
-      ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">no image</span>'}
+      ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">' + mapNoImgLabel(mo) + '</span>'}
       <span class="pool-thumb-name">${esc(mo.name)}</span>
     </div>`;
   }).join('');
@@ -552,6 +552,8 @@ function editMapEntry(map) {
     <div id="mImgWrap">${curImg ? `<img src="${curImg}" alt="" style="max-height:120px;border-radius:4px;display:block;margin:6px 0"><label class="muted small" style="display:block"><input type="checkbox" id="mRemoveImg"> Remove current image</label>` : ''}</div>
     <input type="file" id="mImg" accept="image/*">
     <label style="margin-top:10px;display:block"><input type="checkbox" id="mPub" ${editing && map.published ? 'checked' : ''}> Published (visible to players)</label>
+    <label style="margin-top:6px;display:block"><input type="checkbox" id="mSecret" ${editing && map.secret ? 'checked' : ''}> Secret — players see “Hidden Map N” and no picture until it is played</label>
+    <div class="muted small" style="margin:4px 0 0 22px">Different from Published: a secret map still appears in the pool and can be banned or picked, players just cannot see which map it is. It is revealed the moment it is picked for a game or left as the decider.</div>
     <div class="actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Save map</button></div>`, root => {
     root.querySelectorAll('.spawn-chip').forEach(b => {
       b.onclick = () => b.classList.toggle('on');
@@ -574,6 +576,7 @@ function editMapEntry(map) {
           size: root.querySelector('#mSize').value
         },
         published: root.querySelector('#mPub').checked ? 1 : 0,
+        secret: root.querySelector('#mSecret').checked ? 1 : 0,
         admin: adminToken()
       };
       if (editing) body.id = map.id;
@@ -642,10 +645,13 @@ function drawMaps(el) {
       const used = directUse[m.id] || [];
       const badges = [];
       if (admin && !m.published) badges.push('<span class="idbadge late">hidden</span>');
+      // "hidden" above means players cannot see the map at all; "secret" means they can see it
+      // but not which map it is. Two different things, so two different badges.
+      if (m.secret) badges.push('<span class="idbadge late" title="Players see &quot;Hidden Map ' + (secretNoOf(m.id) || '?') + '&quot; until it is played">secret \u00b7 Hidden Map ' + (secretNoOf(m.id) || '?') + '</span>');
       if (inPool[m.id]) badges.push('<span class="idbadge verified">' + esc(inPool[m.id].join(', ')) + '</span>');
       mapsHtml += `<div class="mapdb-card">
         <div class="mapdb-thumb${m.image ? '' : ' noimg'}" ${m.image ? 'data-map-info="' + esc(m.id) + '"' : ''}>
-          ${m.image ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}">` : '<span class="mapdb-noimg-label">no image</span>'}
+          ${m.image ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}">` : '<span class="mapdb-noimg-label">' + mapNoImgLabel(m) + '</span>'}
         </div>
         <div class="mapdb-body">
           <div class="mapdb-name">${esc(m.name)} ${badges.join(' ')}</div>
@@ -658,6 +664,7 @@ function drawMaps(el) {
           ${admin ? `<div class="mapdb-actions">
             <button class="btn ghost small" data-mapedit="${m.id}">Edit</button>
             <button class="btn ghost small" data-mappub="${m.id}">${m.published ? 'Hide' : 'Publish'}</button>
+            <button class="btn ghost small" data-mapsec="${m.id}">${m.secret ? 'Reveal' : 'Make secret'}</button>
             <button class="btn danger small" data-mapdel="${m.id}">Delete</button>
           </div>` : ''}
         </div>
@@ -698,7 +705,7 @@ function drawMaps(el) {
             const mo = mapObj(id);
             if (!mo) return '';
             return `<div class="pool-thumb${mo.image ? '' : ' noimg'}"${mo.image ? ' data-map-info="' + esc(id) + '"' : ''}>
-              ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">no image</span>'}
+              ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">' + mapNoImgLabel(mo) + '</span>'}
               <span class="pool-thumb-name">${esc(mo.name)}</span>
             </div>`;
           }).join('') : '<span class="muted small">no maps</span>'}</div>
@@ -746,6 +753,11 @@ function drawMaps(el) {
   el.querySelectorAll('[data-mappub]').forEach(b => b.onclick = async () => {
     const m = mapObj(b.dataset.mappub);
     try { await api('/api/t/' + T.id + '/map_publish', { id: m.id, published: m.published ? 0 : 1, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-mapsec]').forEach(b => b.onclick = async () => {
+    const m = mapObj(b.dataset.mapsec);
+    try { await api('/api/t/' + T.id + '/map_secret', { id: m.id, secret: m.secret ? 0 : 1, admin: adminToken() }); await refresh(); }
     catch (e) { toast(e.message, true); }
   });
   el.querySelectorAll('[data-mapdel]').forEach(b => b.onclick = async () => {
@@ -1249,7 +1261,7 @@ function vetoLogHTML(v) {
     if (mo && mo.image) {
       return `<img class="vlog-thumb${banned ? ' ban' : ''}" src="/map-images/${encodeURIComponent(mo.image)}" alt="" loading="lazy" decoding="async" width="34" height="34" data-map-info="${esc(id)}">`;
     }
-    return `<span class="vlog-noimg"${mo ? ' data-map-info="' + esc(id) + '"' : ''}></span>`;
+    return `<span class="vlog-noimg"${mo ? ' data-map-info="' + esc(id) + '"' : ''}${mo && mo.masked ? ' title="Hidden until it is played"' : ''}></span>`;
   };
   const rows = log.map(e => `<div class="vlog-row with-thumb">
       <span class="vlog-n">${e.n}</span>
@@ -2112,7 +2124,7 @@ function previewBox(a, b, bo, label) {
 function drawSwissPreview(el, n) {
   const sec = document.createElement('div');
   sec.className = 'panel section';
-  const rounds = (T.plan && T.plan.rounds) || Math.max(1, Math.ceil(Math.log2(Math.max(2, n))));
+  const rounds = swissPlannedRounds(T, n);
   sec.innerHTML = `<h2>Swiss <span class="h2-strong">preview</span></h2>
     <p class="muted small" style="margin:0">${esc(String(n))} teams expected \u00b7 pairings are generated round by round once the tournament starts. Round 1 pairs by seed; later rounds by standings.</p>`;
   el.appendChild(sec);
@@ -2343,6 +2355,26 @@ function drawSwissRound1Editor(el) {
 function drawSwissRounds(el) {
   const ms = T.matches.filter(m => m.bracket === 'sw');
   const rounds = Math.max.apply(null, ms.map(m => m.round));
+
+  // Rounds that have not opened yet still need their map pool set, and this list only ever
+  // showed rounds that already had matches - so the pool for the next round could not be
+  // prepared until that round was already being played ("I also need to set the pool to that
+  // round and it doesnt come up"). Assigning a pool to a future round is already valid
+  // server-side: initMatchVetoes reads poolAssign when the round is finally created.
+  // Only while the Swiss stage is still producing rounds; once the playoffs are live the
+  // remaining rounds will never be played and offering them would be a lie.
+  const planned = swissPlannedRounds(T);
+  if (T.status === 'running' && !stageTwoLive()) {
+    for (let r = planned; r > rounds; r--) {
+      const sec = document.createElement('div');
+      sec.className = 'panel section';
+      sec.innerHTML = `<h2>Round <span class="h2-strong">${r}</span> <span class="muted small" style="font-weight:400">not started yet</span></h2>
+        <p class="muted small" style="margin:2px 0 0">Set its pool now and the veto is ready the moment the round opens.</p>`;
+      mapsLine('sw', r, sec);
+      el.appendChild(sec);
+    }
+  }
+
   for (let r = rounds; r >= 1; r--) {
     const sec = document.createElement('div');
     sec.className = 'panel section';

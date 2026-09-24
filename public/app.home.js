@@ -423,8 +423,9 @@ async function renderHost() {
           <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
             <input type="checkbox" id="pPickPhase"> Let the top seeds choose their own opponent
           </label>
+          <div class="muted small" id="pickPhaseWhere" style="margin:4px 0 0 22px"></div>
           <div id="pickPhaseBox" style="display:none;padding:8px 0 0 22px">
-            <p class="muted small" style="margin:0 0 8px">The top half of the seeds each pick who they play in round one, in seed order, instead of the bracket deciding. Needs a full bracket (4, 8, 16, 32...). For a two-stage tournament this runs on the playoff bracket.</p>
+            <p class="muted small" style="margin:0 0 8px">The top half of the seeds each pick who they play, in seed order, instead of the bracket deciding. Needs a full bracket (4, 8, 16, 32...).</p>
             <div class="row" style="gap:10px;align-items:flex-end">
               <div style="width:170px"><div class="muted small">Time limit per pick</div><input type="number" id="pPickMins" min="0" max="1440" value="0"></div>
               <div class="muted small" style="flex:1;padding-bottom:8px">Minutes. 0 means no limit. When a pick runs out of time the standard bracket matchup is used, so one absent player cannot stall the event.</div>
@@ -563,6 +564,23 @@ async function renderHost() {
 
   // Swiss record cuts + stage 2: show the sub-panels only when asked for, and tell the
   // organizer what the numbers they typed actually mean before they commit to them.
+  // Where the picking actually happens depends on the bracket type, and on a Swiss with no
+  // second stage it happens NOWHERE: the swiss start path has no round-one pick branch at all,
+  // the flag is only ever read when the playoff bracket is built. Leaving a control that
+  // silently does nothing is worse than a line of text saying so.
+  const syncPickWhere = () => {
+    const el = document.getElementById('pickPhaseWhere');
+    if (!el) return;
+    const sel = document.getElementById('cBracket');
+    const bt = (sel && sel.value) || (typeof T !== 'undefined' && T && T.bracketType) || 'single';
+    const st2 = document.getElementById('pSwStage2');
+    el.textContent = (bt !== 'swiss')
+      ? 'Runs on round one of the bracket.'
+      : ((st2 && st2.checked)
+        ? 'On a Swiss this runs on the PLAYOFF bracket. Swiss round 1 is drawn by seed, and can be rearranged by hand once the rounds start.'
+        : 'Does nothing on a Swiss with no second stage. Swiss round 1 is drawn by seed, and can be rearranged by hand once the rounds start.');
+  };
+
   const syncSwissExtras = () => {
     const box = document.getElementById('swCutBox');
     const s2box = document.getElementById('swStage2Box');
@@ -581,6 +599,7 @@ async function renderHost() {
     const pickBox = document.getElementById('pickPhaseBox');
     const pickCk = document.getElementById('pPickPhase');
     if (pickBox && pickCk) pickBox.style.display = pickCk.checked ? '' : 'none';
+    syncPickWhere();
     const hint = document.getElementById('swCutHint');
     if (hint && on) {
       const w = parseInt(document.getElementById('pSwWinCut').value, 10) || 0;
@@ -633,6 +652,7 @@ async function renderHost() {
     document.getElementById('planDouble').style.display = cBracket.value === 'double' ? '' : 'none';
     document.getElementById('planSwiss').style.display = cBracket.value === 'swiss' ? '' : 'none';
     syncSwissExtras();
+    syncPickWhere();
     document.getElementById('ffaPointsOpts').style.display = ffaMode.value === 'points' ? '' : 'none';
     document.getElementById('ffaElimOpts').style.display = ffaMode.value === 'elim' ? '' : 'none';
     document.getElementById('cFfaCutTo').style.display = cutMode.value === '1' ? '' : 'none';
