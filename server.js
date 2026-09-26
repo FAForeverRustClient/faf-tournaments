@@ -29,7 +29,7 @@ const {
 const { PRESETS, presetById, presetsFor } = require('./lib/presets');
 const PICKS = require('./lib/picks');
 const { swissPairRound, swissAfterReport, swissStandings,
-        swissCuts, swissCutRounds, swissRecord, swissAdvanced,
+        swissCuts, swissCutRounds, swissRecord, swissAdvanced, swissPlanRound1, swissShufflePlan,
         stageTwoCfg, stageTwoField, stageTwoBuild,
         swissRound1Open, swissSetRound1, swissShuffleRound1 } = require('./lib/swiss');
 const { ffaCreateRound, ffaAfterReport, ffaRank } = require('./lib/ffa');
@@ -1575,6 +1575,7 @@ function publicView(t) {
     signupMode: t.signupMode || 'open',
     playerReporting: t.playerReporting === undefined ? 1 : (t.playerReporting ? 1 : 0),
     veto: t.veto || { enabled: false, mode: 'upfront' },
+    plannedR1: Array.isArray(t.plannedR1) ? t.plannedR1.map(p => p.slice()) : null,
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
     eventDays: (t.eventDays && t.eventDays.length) ? t.eventDays.slice() : null,
@@ -5639,6 +5640,7 @@ async function handleAPI(req, res, url) {
         if (['signup', 'draft', 'drafted'].indexOf(t.status) < 0) return bad(res, 'Bracket already started');
         t.status = 'signup';
         t.teams = []; t.draft = null; t.subs = [];
+        t.plannedR1 = null;
         for (const p of t.players) p.teamId = null;
         tlog(t, req, b.admin, 'reopened signups (teams reset)');
         saveDB();
@@ -5923,6 +5925,22 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (t.bracketType !== 'swiss') return bad(res, 'This only applies to a Swiss stage');
       // Order matters: a finished tournament that is told "has not started yet" reads as a bug.
+      // Before the stage starts there are no matches to rewrite, so the matchups are PINNED
+      // instead and applied when it starts. This is the fix for the race that made the feature
+      // unusable: an organizer had to start the stage to reach the editor, and a player opening
+      // their veto in the next few seconds locked it for good.
+      if (t.status === 'drafted') {
+        if (!(t.teams || []).length) return bad(res, 'No entrants yet');
+        const perr = b.shuffle ? swissShufflePlan(t)
+          : swissPlanRound1(t, Array.isArray(b.pairs) ? b.pairs : null);
+        if (perr) return bad(res, perr);
+        const nmp = id => { const tm = teamById(t, id); return tm ? tm.name : id; };
+        tlog(t, req, b.admin, b.shuffle ? 're-drew the round 1 matchups (before the start)'
+          : 'set the round 1 matchups by hand (before the start)');
+        saveDB();
+        return json(res, 200, { ok: true, planned: 1, pairs: (t.plannedR1 || []).map(p => p.slice()),
+          names: (t.plannedR1 || []).map(p => [nmp(p[0]), nmp(p[1])]) });
+      }
       if (!swissRound1Open(t)) return bad(res, 'Round 1 has already started - the matchups are locked in');
       if (t.status !== 'running') return bad(res, 'The Swiss stage has not started yet');
       const removed = [];

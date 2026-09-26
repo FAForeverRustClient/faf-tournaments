@@ -1810,7 +1810,11 @@ function drawBracketPreview(el) {
   el.appendChild(head);
 
   if (T.competition === 'ffa') { drawFfaPreview(el, n); return; }
-  if (T.bracketType === 'swiss') { drawSwissPreview(el, n); return; }
+  if (T.bracketType === 'swiss') {
+    drawSwissPreview(el, n);
+    if (T.status === 'drafted') drawSwissRound1Editor(el);
+    return;
+  }
   if (n < 2) {
     const p = document.createElement('div');
     p.className = 'panel section';
@@ -2292,19 +2296,61 @@ function drawPickPhase(el) {
 // Round 1 has no records to pair on, so the site draws it by seed - the same every time. Some
 // formats want the opening matchups chosen instead, so while the round is untouched an organizer
 // can rearrange it here. It disappears the moment anything is reported.
+// The round 1 matchup editor, on either side of the start.
+// BEFORE the stage starts there are no matches yet, so the rows come from the pinned plan (or a
+// seed-order proposal) and saving pins them. That path exists because the editor used to appear
+// only after starting, which left a race an organizer could not win: start the stage, and a
+// player opening their veto seconds later locked the matchups for good.
+// AFTER the start it rewrites the real matches, and still locks once anyone has acted.
+// What the pre-start editor starts from: the pinned plan when there is one that still fits the
+// field, otherwise adjacent seed order (1v2, 3v4, ...), which is what a plain Swiss would draw.
+// A plan naming players who are no longer entered is ignored rather than rendered with gaps.
+function plannedPairsFor(teams) {
+  const ids = {}; for (const x of teams) ids[x.id] = 1;
+  const plan = T.plannedR1;
+  if (Array.isArray(plan) && plan.length) {
+    const seen = {}; let good = true;
+    for (const p of plan) {
+      if (!Array.isArray(p) || p.length !== 2) { good = false; break; }
+      for (const x of p) { if (!ids[x] || seen[x]) { good = false; break; } seen[x] = 1; }
+      if (!good) break;
+    }
+    const left = teams.filter(x => !seen[x.id]).map(x => x.id);
+    if (good && left.length <= 1) return { pairs: plan.map(p => p.slice()), bye: left[0] || null };
+  }
+  const pool = teams.map(x => x.id);
+  const pairs = [];
+  while (pool.length > 1) pairs.push([pool.shift(), pool.shift()]);
+  return { pairs, bye: pool[0] || null };
+}
+
 function drawSwissRound1Editor(el) {
-  if (!T.swissR1Open || !viewerIsOrganizer()) return;
-  const r1 = (T.matches || []).filter(m => m.bracket === 'sw' && m.round === 1 && m.team2 !== 'BYE');
-  if (!r1.length) return;
-  const bye = (T.matches || []).find(m => m.bracket === 'sw' && m.round === 1 && m.team2 === 'BYE');
+  if (!viewerIsOrganizer() || T.bracketType !== 'swiss') return;
+  const planning = T.status === 'drafted';
+  if (!planning && !T.swissR1Open) return;
+
   const nm = id => { const tm = (T.teams || []).find(x => x.id === id); return tm ? tm.name : id; };
+  let r1, bye;
+  if (planning) {
+    const teams = (T.teams || []).slice().sort((a, b) => (a.seed || 0) - (b.seed || 0));
+    if (teams.length < 2) return;
+    const plan = plannedPairsFor(teams);
+    r1 = plan.pairs.map(p => ({ team1: p[0], team2: p[1] }));
+    bye = plan.bye ? { team1: plan.bye } : null;
+  } else {
+    r1 = (T.matches || []).filter(m => m.bracket === 'sw' && m.round === 1 && m.team2 !== 'BYE');
+    if (!r1.length) return;
+    bye = (T.matches || []).find(m => m.bracket === 'sw' && m.round === 1 && m.team2 === 'BYE') || null;
+  }
   const opts = sel => (T.teams || []).map(x =>
     '<option value="' + esc(x.id) + '"' + (x.id === sel ? ' selected' : '') + '>' + esc(x.name) + '</option>').join('');
 
   const sec = document.createElement('div');
   sec.className = 'panel section r1edit';
   sec.innerHTML = `<h2>Round 1 <span class="h2-strong">matchups</span></h2>
-    <p class="muted small" style="margin:2px 0 10px">Round 1 is drawn by seed, because there are no results to pair on yet. Set the opening matchups here if you want to choose them. Locked as soon as the first result comes in.</p>
+    <p class="muted small" style="margin:2px 0 10px">${planning
+      ? 'There are no results to pair on in round 1, so set the opening matchups here before you start. They are applied the moment the stage starts, so nobody can lock them by opening a veto first.'
+      : 'Round 1 is drawn by seed, because there are no results to pair on yet. Set the opening matchups here if you want to choose them. Locked as soon as the first result comes in.'}</p>
     <div class="r1rows">${r1.map((m, i) => `<div class="r1row">
       <span class="r1n mono">${i + 1}</span>
       <select data-r1a="${i}">${opts(m.team1)}</select>
